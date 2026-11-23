@@ -90,6 +90,7 @@ search-index-paused = Index de recherche en pause
 indexing-for-search = Indexation pour la recherche
 settings = Réglages
 checking-what-was-already-downloaded = Vérification de ce qui est déjà téléchargé…
+finding-the-fastest-source = Recherche de la source la plus rapide…
 to-read-the-text-in = Pour lire le texte d’une image, le modèle local a besoin de son module de vision. Les images restent sur cet appareil.
 one-download-and-then-images = Un seul téléchargement, et ensuite les images fonctionnent directement.
 read-the-image = Lire l’image

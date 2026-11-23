@@ -205,6 +205,8 @@ pub struct Progress {
     pub source: Option<String>,
     /// Checking what an earlier attempt left, before asking for the rest.
     pub verifying: bool,
+    /// Trying each source, to take the fastest.
+    pub testing: bool,
 }
 
 #[derive(Debug)]
@@ -217,6 +219,42 @@ pub enum Outcome {
 /// system's proxy, as a mirror in China is faster without it.
 fn agent(url: &str, direct: bool) -> ureq::Agent {
     net::agent_for(url, direct, Duration::from_secs(20)).timeout_read(STALL).build()
+}
+
+/// How much of the file a source is asked for to tell how fast it is, and how long it may take.
+const PROBE_BYTES: u64 = 1 << 20;
+const PROBE_TIME: Duration = Duration::from_secs(5);
+
+/// The sources, fastest first. Each is asked at once for a little of the file from `from` on, through the
+/// proxy it would download through, and timed from the request to the last byte, so a slow start counts. A
+/// source that fails or sends nothing goes last, in the catalog's order, still tried if the others drop.
+fn fastest_first<'a>(sources: &'a [Source], from: u64, cancel: &AtomicBool) -> Vec<&'a Source> {
+    let speeds: Vec<u64> = std::thread::scope(|scope| {
+        let probes: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                scope.spawn(move || -> u64 {
+                    let started = Instant::now();
+                    let agent = net::agent_for(&source.url, source.direct, PROBE_TIME).timeout(PROBE_TIME).build();
+                    let Ok(response) = agent.get(&source.url).set("Range", &format!("bytes={from}-{}", from + PROBE_BYTES - 1)).call() else { return 0 };
+                    let mut reader = response.into_reader().take(PROBE_BYTES);
+                    let (mut got, mut buffer) = (0_u64, vec![0; 64 * 1024]);
+                    while started.elapsed() < PROBE_TIME && !cancel.load(Ordering::Relaxed) {
+                        match reader.read(&mut buffer) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => got += n as u64,
+                        }
+                    }
+                    (got as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64
+                })
+            })
+            .collect();
+        probes.into_iter().map(|p| p.join().unwrap_or(0)).collect()
+    });
+    let mut order: Vec<usize> = (0..sources.len()).collect();
+    // Stable, so sources equally fast, or all failing, keep the catalog's order.
+    order.sort_by_key(|&i| std::cmp::Reverse(speeds[i]));
+    order.into_iter().map(|i| &sources[i]).collect()
 }
 
 /// Download a model, resuming anything left by an earlier attempt. `report` runs a few times a second.
@@ -232,7 +270,7 @@ pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn
     let mut hasher = Sha256::new();
     let mut have = 0_u64;
     if let Ok(mut file) = File::open(&part) {
-        report(Progress { done: 0, total: model.size, speed: 0, source: None, verifying: true });
+        report(Progress { done: 0, total: model.size, speed: 0, source: None, verifying: true, testing: false });
         let mut buffer = vec![0; CHUNK];
         loop {
             if cancel.load(Ordering::Relaxed) {
@@ -260,14 +298,25 @@ pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn
 
     let mut failure = anyhow!("all download sources failed");
     let mut buffer = vec![0; CHUNK];
-    for source in &model.sources {
+    // Every start, a resumed one too, tries each source first: which is fastest changes with the network
+    // and the proxy, and a source is kept to the end unless it fails.
+    let sources = if have < model.size && model.sources.len() > 1 {
+        report(Progress { done: have, total: model.size, speed: 0, source: None, verifying: false, testing: true });
+        fastest_first(&model.sources, have, cancel)
+    } else {
+        model.sources.iter().collect()
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(Outcome::Cancelled);
+    }
+    for source in sources {
         if have >= model.size {
             break;
         }
         if cancel.load(Ordering::Relaxed) {
             return Ok(Outcome::Cancelled);
         }
-        report(Progress { done: have, total: model.size, speed: 0, source: Some(source.name.clone()), verifying: false });
+        report(Progress { done: have, total: model.size, speed: 0, source: Some(source.name.clone()), verifying: false, testing: false });
         let mut request = agent(&source.url, source.direct).get(&source.url);
         if have > 0 {
             request = request.set("Range", &format!("bytes={have}-"));
@@ -315,7 +364,7 @@ pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn
             }
             if last_report.elapsed() >= Duration::from_millis(200) {
                 last_report = Instant::now();
-                report(Progress { done: have, total: model.size, speed, source: Some(source.name.clone()), verifying: false });
+                report(Progress { done: have, total: model.size, speed, source: Some(source.name.clone()), verifying: false, testing: false });
             }
         }
         file.sync_all()?;
@@ -368,6 +417,8 @@ mod tests {
         /// Cuts the connection after this many bytes of the body.
         Breaks(usize),
         Missing,
+        /// Sends slowly: a short pause after every 16 KB.
+        Slow,
     }
 
     fn serve(body: Vec<u8>, behaviour: Behaviour) -> (String, Arc<Mutex<Vec<Option<usize>>>>) {
@@ -391,18 +442,27 @@ mod tests {
                 break;
             }
             if let Some(v) = line.to_lowercase().strip_prefix("range: bytes=") {
-                range = v.trim_end_matches('-').parse::<usize>().ok();
+                range = v.split('-').next().and_then(|from| from.parse::<usize>().ok());
             }
         }
         seen.lock().unwrap().push(range);
         let (status, slice) = match (behaviour, range) {
             (Behaviour::Missing, _) => ("404 Not Found", &body[..0]),
-            (Behaviour::Honest | Behaviour::Breaks(_), Some(from)) => ("206 Partial Content", &body[from..]),
+            (Behaviour::Honest | Behaviour::Breaks(_) | Behaviour::Slow, Some(from)) => ("206 Partial Content", &body[from..]),
             _ => ("200 OK", body),
         };
         let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", slice.len());
         stream.write_all(header.as_bytes()).unwrap();
         let sent = if let Behaviour::Breaks(n) = behaviour { &slice[..n.min(slice.len())] } else { slice };
+        if let Behaviour::Slow = behaviour {
+            for chunk in sent.chunks(16 * 1024) {
+                if stream.write_all(chunk).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return;
+        }
         let _ = stream.write_all(sent);
     }
 
@@ -425,6 +485,25 @@ mod tests {
 
     fn fetch(m: &Model, dir: &Path) -> Result<Outcome> {
         download(m, dir, &AtomicBool::new(false), &mut |_| {})
+    }
+
+    #[test]
+    fn the_fastest_source_is_tried_first_from_where_a_download_stands() {
+        let data = body();
+        let (slow, slow_ranges) = serve(data.clone(), Behaviour::Slow);
+        let (fast, fast_ranges) = serve(data.clone(), Behaviour::Honest);
+        let (gone, _) = serve(data.clone(), Behaviour::Missing);
+        let m = model(&data, &[&gone, &slow, &fast]);
+        let order: Vec<&str> = fastest_first(&m.sources, 500_000, &AtomicBool::new(false)).iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(order, [fast.as_str(), slow.as_str(), gone.as_str()], "fastest first, a missing one last");
+        assert_eq!(*fast_ranges.lock().unwrap(), [Some(500_000)], "asked from where the download stands");
+        assert_eq!(*slow_ranges.lock().unwrap(), [Some(500_000)]);
+        // A download asks the fast one for the file after trying them all, the slow one never again.
+        let dir = Dir::new();
+        fetch(&m, &dir.0).unwrap();
+        assert_eq!(fast_ranges.lock().unwrap().len(), 3, "tried twice, then the download");
+        assert_eq!(slow_ranges.lock().unwrap().len(), 2, "only tried");
+        assert_eq!(fs::read(dir.0.join(&m.file)).unwrap(), data);
     }
 
     #[test]
@@ -464,11 +543,12 @@ mod tests {
     #[test]
     fn a_broken_source_hands_over_to_the_next_keeping_what_arrived() {
         let (dir, data) = (Dir::new(), body());
+        // The one that breaks is the faster, so it is tried first.
         let (bad, _) = serve(data.clone(), Behaviour::Breaks(1_500_000));
-        let (good, ranges) = serve(data.clone(), Behaviour::Honest);
+        let (good, ranges) = serve(data.clone(), Behaviour::Slow);
         let m = model(&data, &[&bad, &good]);
         fetch(&m, &dir.0).unwrap();
-        let asked = ranges.lock().unwrap()[0].unwrap();
+        let asked = ranges.lock().unwrap().last().copied().flatten().unwrap();
         assert!(asked > 0, "the next source must continue, not restart");
         assert_eq!(fs::read(dir.0.join(&m.file)).unwrap(), data);
     }

@@ -1487,6 +1487,12 @@ struct Download {
     cancel: Arc<AtomicBool>,
     updates: Receiver<DownloadUpdate>,
     progress: Option<Progress>,
+    /// What it is fetching, to start it again.
+    model: Model,
+    /// The proxy it started through: another one stops it, to start again through the new one.
+    proxy: alcyo_models::net::Proxy,
+    /// Stopped to start again, not paused.
+    restart: bool,
 }
 
 enum DownloadUpdate {
@@ -1665,6 +1671,8 @@ struct Workbench {
     search_dir: PathBuf,
     binaries: PathBuf,
     download: Option<Download>,
+    /// Counts proxy changes, so a download restarts once typing stops rather than at every key.
+    proxy_generation: u64,
     update: UpdateState,
     silent_check: bool,
     update_events: Option<Receiver<UpdateEvent>>,
@@ -3380,9 +3388,11 @@ impl Workbench {
             }
         }
         let Some(result) = finished else { return };
-        let (id, label) = (download.id, download.label);
+        let (id, label, restart, model) = (download.id, download.label, download.restart, download.model.clone());
         self.download = None;
         match result {
+            // Stopped for a new proxy: on again from where it was, trying every source through it first.
+            Ok(Outcome::Cancelled) if restart => self.begin_download(model),
             Ok(Outcome::Finished(_)) => {
                 if let Some(model) = alcyo_models::catalog().iter().find(|m| m.id == id) {
                     if let Err(e) = alcyo_models::select(model, &self.models) {
@@ -3569,13 +3579,19 @@ impl Workbench {
     }
 
     fn start_download(&mut self, model: Model, cx: &mut Context<Self>) {
+        self.begin_download(model);
+        cx.notify();
+    }
+
+    fn begin_download(&mut self, model: Model) {
         if self.download.is_some() {
             return;
         }
         let (tx, updates) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let (flag, dir) = (cancel.clone(), self.models.clone());
-        self.download = Some(Download { id: model.id, label: model.label, cancel, updates, progress: None });
+        let proxy = alcyo_models::net::chosen();
+        self.download = Some(Download { id: model.id, label: model.label, cancel, updates, progress: None, model: model.clone(), proxy, restart: false });
         self.form.note = None;
         std::thread::spawn(move || {
             let progress = tx.clone();
@@ -3584,7 +3600,28 @@ impl Workbench {
             });
             let _ = tx.send(DownloadUpdate::Finished(result.map_err(|e| format!("{e:#}"))));
         });
-        cx.notify();
+    }
+
+    /// After the proxy setting changes, and once it has stayed the same a moment, a download still going
+    /// through the old proxy stops and starts again through the new one.
+    fn proxy_changed(&mut self, cx: &mut Context<Self>) {
+        self.apply_proxy();
+        self.proxy_generation += 1;
+        let generation = self.proxy_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1500)).await;
+            let _ = this.update(cx, |this, _| {
+                if this.proxy_generation != generation {
+                    return;
+                }
+                let now = alcyo_models::net::chosen();
+                if let Some(download) = this.download.as_mut().filter(|d| !d.restart && d.proxy != now) {
+                    download.restart = true;
+                    download.cancel.store(true, Ordering::Relaxed);
+                }
+            });
+        })
+        .detach();
     }
 
     fn use_model(&mut self, model: &Model, cx: &mut Context<Self>) {
@@ -4765,7 +4802,7 @@ impl Workbench {
     /// Choose how model downloads and remote models reach the internet.
     fn choose_proxy(&mut self, choice: &str, cx: &mut Context<Self>) {
         self.form.saved.proxy = choice.to_string();
-        self.apply_proxy();
+        self.proxy_changed(cx);
         cx.notify();
     }
 
@@ -5988,6 +6025,7 @@ impl Workbench {
                 let downloading = self.download.as_ref().filter(|d| d.id == add_on.id);
                 let progress = downloading.map(|d| match &d.progress {
                     Some(p) if p.verifying => t("checking-what-was-already-downloaded").to_string(),
+                    Some(p) if p.testing => t("finding-the-fastest-source").to_string(),
                     Some(p) => format!("{} / {}", gigabytes(p.done), gigabytes(p.total)),
                     None => t("starting").to_string(),
                 });
@@ -8032,6 +8070,7 @@ impl Render for Workbench {
         let progress_row = self.download.as_ref().map(|d| {
             let text = match &d.progress {
                 Some(p) if p.verifying => ta!("name-checking-what-was-downloaded", name = d.label.to_string()),
+                Some(p) if p.testing => format!("{} · {}", d.label, t("finding-the-fastest-source")),
                 Some(p) => format!(
                     "{} {} / {}{}",
                     d.label,
@@ -9708,7 +9747,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 cx.subscribe_in(&proxy_url, window, |this: &mut Workbench, field, event, _, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.form.saved.proxy_url = field.read(cx).value().trim().to_string();
-                        this.apply_proxy();
+                        this.proxy_changed(cx);
                         cx.notify();
                     }
                 })
@@ -9716,7 +9755,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 cx.subscribe_in(&proxy_user, window, |this: &mut Workbench, field, event, _, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.form.saved.proxy_user = field.read(cx).value().trim().to_string();
-                        this.apply_proxy();
+                        this.proxy_changed(cx);
                         cx.notify();
                     }
                 })
@@ -9725,7 +9764,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     if matches!(event, InputEvent::Change) {
                         // A password is kept exactly as typed: spaces can be part of it.
                         this.form.saved.proxy_password = field.read(cx).value().to_string();
-                        this.apply_proxy();
+                        this.proxy_changed(cx);
                         cx.notify();
                     }
                 })
@@ -9872,6 +9911,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     search_dir,
                     binaries,
                     download: None,
+                    proxy_generation: 0,
                     update: UpdateState::Idle,
                     silent_check: false,
                     update_events: None,

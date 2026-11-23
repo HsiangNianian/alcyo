@@ -91,6 +91,7 @@ search-index-paused = Search index paused
 indexing-for-search = Indexing for search
 settings = Settings
 checking-what-was-already-downloaded = Checking what was already downloaded…
+finding-the-fastest-source = Finding the fastest source…
 to-read-the-text-in = To read the text in an image, the local model needs its vision add-on. Images stay on this device.
 one-download-and-then-images = One download, and then images just work.
 read-the-image = Read the image

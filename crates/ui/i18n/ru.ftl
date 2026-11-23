@@ -90,6 +90,7 @@ search-index-paused = Индексация для поиска приостан�
 indexing-for-search = Индексация для поиска
 settings = Настройки
 checking-what-was-already-downloaded = Проверка уже скачанного…
+finding-the-fastest-source = Ищем самый быстрый источник…
 to-read-the-text-in = Чтобы читать текст на изображении, локальной модели нужен модуль зрения. Изображения остаются на этом устройстве.
 one-download-and-then-images = Одна загрузка, и изображения будут работать.
 read-the-image = Прочитать изображение

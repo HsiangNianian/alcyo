@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+alcyo-models.workspace = true
 anyhow.workspace = true
 alcyo-board.workspace = true
 fancy-regex = "0.14"

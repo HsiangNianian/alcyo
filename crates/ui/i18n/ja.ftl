@@ -90,6 +90,7 @@ search-index-paused = 検索インデックスを一時停止中
 indexing-for-search = 検索用にインデックス作成中
 settings = 設定
 checking-what-was-already-downloaded = ダウンロード済みの内容を確認しています…
+finding-the-fastest-source = いちばん速いダウンロード元を探しています…
 to-read-the-text-in = 画像内の文字を読み取るには、ローカルモデルに画像認識アドオンが必要です。画像はこのデバイスから出ません。
 one-download-and-then-images = 一度ダウンロードするだけで、画像もそのまま使えます。
 read-the-image = 画像を読み取る

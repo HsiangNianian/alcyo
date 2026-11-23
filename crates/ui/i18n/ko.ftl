@@ -90,6 +90,7 @@ search-index-paused = 검색 색인 일시 중지됨
 indexing-for-search = 검색용 색인 생성 중
 settings = 설정
 checking-what-was-already-downloaded = 이미 다운로드된 항목을 확인하는 중…
+finding-the-fastest-source = 가장 빠른 다운로드 소스를 찾는 중…
 to-read-the-text-in = 이미지 속 글자를 읽으려면 로컬 모델에 비전 추가 기능이 필요합니다. 이미지는 이 기기에만 있습니다.
 one-download-and-then-images = 한 번 다운로드하면 이후에는 바로 쓸 수 있습니다.
 read-the-image = 이미지 읽기
