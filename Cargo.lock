@@ -197,6 +197,7 @@ dependencies = [
  "alcyo-keep",
  "anyhow",
  "cpal",
+ "libc",
  "objc2-avf-audio",
  "serde_json",
  "sherpa-onnx",

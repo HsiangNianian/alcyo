@@ -50,6 +50,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Alcyo listens to the meeting to write its transcript and draw the board. What it hears stays on this iPad.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>When you choose Apple's speech recognition, Alcyo uses it to write the meeting's transcript, on this iPad.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Alcyo shares the board with phones and computers on the same network when you start a live share.</string>
 	<!-- Only HTTPS to the model service, which is exempt from export documentation. -->
