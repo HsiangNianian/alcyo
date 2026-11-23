@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Meetings · Home</title>
+<link rel="stylesheet" href="ipad.css">
+<style>
+.screen{background:var(--chrome)}
+.hdr{position:absolute;left:0;right:0;top:24px;padding:14px 32px 0;display:flex;align-items:center;gap:10px}
+.hdr .brand{display:flex;align-items:center;gap:10px}
+.hdr .brand svg{width:30px;height:24px}
+.hdr h1{margin:0;font-size:34px;font-weight:700;letter-spacing:-.03em}
+.hsearch{margin-left:auto;width:340px;height:44px;border-radius:13px;background:rgba(118,118,128,.12);display:flex;align-items:center;gap:9px;padding:0 12px;color:var(--faint);font-size:15.5px}
+.hsearch .kbd{margin-left:auto}
+.ib{width:44px;height:44px;border-radius:13px;background:rgba(118,118,128,.12);display:flex;align-items:center;justify-content:center}
+.newbtn{height:44px;border-radius:13px;background:var(--text);color:var(--paper);display:flex;align-items:center;gap:8px;padding:0 18px 0 14px;font-size:15px;font-weight:600}
+.chips{position:absolute;left:32px;top:96px;display:flex;gap:8px}
+.chips>span{height:34px;display:flex;align-items:center;gap:6px;padding:0 14px;border-radius:999px;font-size:13.5px;font-weight:500;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
+.chips>span.on{background:var(--text);color:var(--paper);box-shadow:none}
+.chips .meta{color:inherit;opacity:.6}
+.idx{position:absolute;right:32px;top:104px;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--faint)}
+.idx i{width:90px;height:3px;border-radius:2px;background:var(--track);display:block;position:relative;overflow:hidden}
+.idx i::after{content:'';position:absolute;inset:0;width:41%;background:var(--text)}
+.sec{position:absolute;left:32px;right:32px}
+.sec h2{margin:0 0 12px;font-size:20px;font-weight:700;letter-spacing:-.02em;display:flex;align-items:baseline;gap:10px}
+.sec h2 .meta{font-weight:400}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.card{display:flex;flex-direction:column;gap:9px}
+.th{height:168px;border-radius:16px;background-color:var(--paper);background-image:radial-gradient(var(--dot) 1px,transparent 1.3px);background-size:14px 14px;box-shadow:0 0 0 1px var(--line),0 1px 2px rgba(0,0,0,.04);position:relative;overflow:hidden}
+.th svg{position:absolute;inset:0}
+.th svg text{font-family:var(--hand)}
+.ct{display:flex;flex-direction:column;gap:3px;padding:0 4px}
+.ct b{font-size:15px;font-weight:600;display:flex;align-items:center;gap:6px}
+.ct span{font-size:12.5px;color:var(--faint);display:flex;align-items:center;gap:6px}
+.faces{display:flex;margin-left:auto}
+.faces .who{width:20px;height:20px;font-size:10px;margin-left:-5px;box-shadow:0 0 0 2px var(--chrome)}
+.badge{position:absolute;left:10px;top:10px;height:24px;padding:0 9px;border-radius:999px;background:var(--rec);color:#fff;font-size:11.5px;font-weight:700;letter-spacing:.04em;display:flex;align-items:center;gap:6px}
+.badge i{width:6px;height:6px;border-radius:50%;background:#fff}
+.newcard .th{background:#111;color:#fff;background-image:radial-gradient(rgba(255,255,255,.16) 1.1px,transparent 1.4px);background-size:6px 6px;display:flex;flex-direction:column;justify-content:flex-end;padding:16px;box-shadow:none}
+.newcard .th::before{content:'';position:absolute;inset:0;background:radial-gradient(120% 90% at 85% 10%,transparent 20%,#111 70%)}
+.newcard .th>*{position:relative}
+.newcard .th>.mark{position:absolute}
+.newcard .mark{position:absolute;left:auto;bottom:auto;right:18px;top:16px;width:96px;height:76px}
+.fadeb{position:absolute;left:0;right:0;bottom:0;height:70px;background:linear-gradient(rgba(243,243,241,0),var(--chrome) 75%);z-index:5}
+.pinned{position:absolute;right:10px;top:10px;width:28px;height:28px;border-radius:50%;background:var(--surface);box-shadow:0 0 0 1px var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+<symbol id="sidebar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M9.5 4.5v15M5.5 8h1.5M5.5 11h1.5"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 20.5 20.5"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="share" viewBox="0 0 24 24"><path d="M8.5 9.5H7A1.5 1.5 0 0 0 5.5 11v8A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 17 9.5h-1.5M12 3.5v11M8.5 7 12 3.5 15.5 7"/></symbol>
+<symbol id="live" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.8" fill="currentColor"/><path d="M8.6 8.6a4.8 4.8 0 0 0 0 6.8M15.4 8.6a4.8 4.8 0 0 1 0 6.8M5.8 5.8a8.8 8.8 0 0 0 0 12.4M18.2 5.8a8.8 8.8 0 0 1 0 12.4"/></symbol>
+<symbol id="more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none"/></symbol>
+<symbol id="bubble" viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-7.5L6 20.5V17A2 2 0 0 1 4 15z"/><path d="M8 8.8h8M8 12.2h5"/></symbol>
+<symbol id="lasso" viewBox="0 0 24 24"><path d="M5.2 13.6C3.6 12.5 3 11.2 3 10c0-3.3 4-6 9-6s9 2.7 9 6-4 6-9 6c-1.4 0-2.7-.2-3.9-.6"/><path d="M8.6 15.2c-1.6-.6-3.3.1-3.4 1.7-.1 1.8 2.2 2.4 2.2 4.1"/></symbol>
+<symbol id="mark" viewBox="0 0 24 24"><path d="M14.5 4.2 19.8 9.5 11 18.3H5.7V13z"/><path d="M12 6.7 17.3 12M4 21h10"/></symbol>
+<symbol id="crop" viewBox="0 0 24 24"><path d="M7 2.5V17h14.5M2.5 7H17v14.5"/></symbol>
+<symbol id="undo" viewBox="0 0 24 24"><path d="M9 14.5 4 9.5l5-5"/><path d="M4 9.5h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+<symbol id="redo" viewBox="0 0 24 24"><path d="m15 14.5 5-5-5-5"/><path d="M20 9.5H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+<symbol id="tidy" viewBox="0 0 24 24"><path d="M4 20 14.5 9.5M12.8 7.8l3.4 3.4M18 3v3.5M16.25 4.75h3.5M20.5 11.5v2.5M19.25 12.75h2.5M9 3v2.5M7.75 4.25h2.5"/></symbol>
+<symbol id="pen" viewBox="0 0 24 24"><path d="M4.5 19.5 5.5 15 16 4.5a2.1 2.1 0 0 1 3 3L8.5 18z"/><path d="m14 6.5 3 3"/></symbol>
+<symbol id="finger" viewBox="0 0 24 24"><path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11m0-1.5a1.5 1.5 0 0 1 3 0V11m0-.5a1.5 1.5 0 0 1 3 0v4.5a6 6 0 0 1-6 6h-.6a6 6 0 0 1-4.6-2.2L4.6 16a1.5 1.5 0 0 1 2.3-1.9L9 16"/></symbol>
+<symbol id="chl" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
+<symbol id="chr" viewBox="0 0 24 24"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
+<symbol id="chd" viewBox="0 0 24 24"><path d="M6 9.5 12 15.5 18 9.5"/></symbol>
+<symbol id="chu" viewBox="0 0 24 24"><path d="M6 14.5 12 8.5 18 14.5"/></symbol>
+<symbol id="sliders" viewBox="0 0 24 24"><path d="M4 7.5h9M17 7.5h3M4 16.5h3M11 16.5h9"/><circle cx="15" cy="7.5" r="2.2"/><circle cx="9" cy="16.5" r="2.2"/></symbol>
+<symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></symbol>
+<symbol id="airplay" viewBox="0 0 24 24"><path d="M6.5 17H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1.5"/><path d="M12 14.5 16.5 20h-9z" fill="currentColor"/></symbol>
+<symbol id="grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></symbol>
+<symbol id="export" viewBox="0 0 24 24"><path d="M12 15V3.5M7.5 8 12 3.5 16.5 8M5 12.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19v-6.5"/></symbol>
+<symbol id="import" viewBox="0 0 24 24"><path d="M12 3.5V15M7.5 10.5 12 15l4.5-4.5M5 12.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19v-6.5"/></symbol>
+<symbol id="replay" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 9"/><path d="M4.5 4.5V9H9"/><path d="M10.5 9.5v5l4-2.5z" fill="currentColor"/></symbol>
+<symbol id="list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.8" cy="6.5" r="1" fill="currentColor"/><circle cx="4.8" cy="12" r="1" fill="currentColor"/><circle cx="4.8" cy="17.5" r="1" fill="currentColor"/></symbol>
+<symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2M15.5 4.6a3.5 3.5 0 0 1 0 6.8M17.8 14.2c2.2.8 3.7 3 3.7 5.8"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M6.5 6.5 17.5 17.5M17.5 6.5 6.5 17.5"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19 7"/></symbol>
+<symbol id="pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 5 3.5 3.5v1.5h-11v-1.5L10 9z"/><path d="M12 14v6.5"/></symbol>
+<symbol id="cloud" viewBox="0 0 24 24"><path d="M7 18.5h10.5a4 4 0 0 0 .6-8 6 6 0 0 0-11.5-1.6A4.8 4.8 0 0 0 7 18.5z"/></symbol>
+<symbol id="chip" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx=".8"/><path d="M9.5 3v3.5M14.5 3v3.5M9.5 17.5V21M14.5 17.5V21M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21"/></symbol>
+<symbol id="waveform" viewBox="0 0 24 24"><path d="M3.5 10v4M7 7v10M10.5 4v16M14 8v8M17.5 6v12M21 10.5v3"/></symbol>
+<symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.2 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.2-3.6-8.5S9.6 5.9 12 3.5z"/></symbol>
+<symbol id="keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14h8"/></symbol>
+<symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.01"/></symbol>
+<symbol id="moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/></symbol>
+<symbol id="doc" viewBox="0 0 24 24"><path d="M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h4.5"/></symbol>
+<symbol id="sparkle" viewBox="0 0 24 24"><path d="M12 3.5c.8 4.3 2.9 6.6 7.5 7.5-4.6.9-6.7 3.2-7.5 7.5-.8-4.3-2.9-6.6-7.5-7.5 4.6-.9 6.7-3.2 7.5-7.5z"/></symbol>
+<symbol id="lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+<symbol id="eraser" viewBox="0 0 24 24"><path d="M8.5 20.5 3.8 15.8a1.5 1.5 0 0 1 0-2.1l9-9a1.5 1.5 0 0 1 2.1 0l5.3 5.3a1.5 1.5 0 0 1 0 2.1L11.5 20.5zM9 9.5l6 6M8.5 20.5H20"/></symbol>
+<symbol id="zoom" viewBox="0 0 24 24"><path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/></symbol>
+<symbol id="cc" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M10.5 10.2a2.3 2.3 0 1 0 0 3.6M17 10.2a2.3 2.3 0 1 0 0 3.6"/></symbol>
+<symbol id="wifi" viewBox="0 0 17 12"><path d="M8.5 2.3c2.5 0 4.7 1 6.4 2.6l1.1-1.1A10.6 10.6 0 0 0 8.5.7 10.6 10.6 0 0 0 1 3.8l1.1 1.1A9 9 0 0 1 8.5 2.3zm0 3.3c1.6 0 3 .6 4.1 1.6l1.1-1.1a7.4 7.4 0 0 0-10.4 0l1.1 1.1A5.8 5.8 0 0 1 8.5 5.6zm0 3.3c.7 0 1.3.3 1.8.7L8.5 11.4 6.7 9.6c.5-.4 1.1-.7 1.8-.7z" fill="currentColor" stroke="none"/></symbol>
+<symbol id="halcy" viewBox="20 100 480 380"><path d="M48 430 C120 392 168 300 214 236 C240 182 280 134 334 132 C370 131 394 150 398 172 L480 194 L390 204 C374 226 348 244 316 262 C262 292 214 330 168 372 C134 402 102 426 70 448 L84 429 Z" fill="#0a7ea4" stroke="none"/><path d="M372 236 C350 274 300 318 246 352 C214 372 182 390 148 402 C196 404 252 386 298 352 C336 324 362 284 372 236 Z" fill="#f07a2b" stroke="none"/><path d="M318 176 C330 167 352 163 370 168 C354 175 336 179 318 176 Z" fill="var(--paper,#fbfbf9)" stroke="none"/><path d="M150 372 C190 318 232 262 290 222 C246 270 206 320 168 370 Z" fill="var(--paper,#fbfbf9)" stroke="none"/></symbol>
+<filter id="rough" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency=".035" numOctaves="2" seed="4"/><feDisplacementMap in="SourceGraphic" scale="2.6"/></filter>
+<filter id="rough2" x="-5%" y="-5%" width="110%" height="110%"><feTurbulence type="fractalNoise" baseFrequency=".05" numOctaves="2" seed="9"/><feDisplacementMap in="SourceGraphic" scale="3.4"/></filter>
+</defs>
+</svg>
+
+<div class="stage">
+  <div class="ipad"><div class="screen">
+    <div class="status"><div class="t">9:41<span>Mon 23 Nov</span></div><div class="r"><svg width="17" height="12" viewBox="0 0 17 12"><use href="#wifi"/></svg><span style="font-weight:500">100%</span><svg width="27" height="13" viewBox="0 0 27 13"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity=".4"/><rect x="2.5" y="2.5" width="19" height="8" rx="2" fill="currentColor"/><path d="M25 4.5v4c.8-.3 1.3-1.1 1.3-2s-.5-1.7-1.3-2z" fill="currentColor" opacity=".45"/></svg></div></div>
+
+    <div class="hdr">
+      <div class="brand"><svg><use href="#halcy"/></svg><h1>Meetings</h1></div>
+      <div class="hsearch"><svg class="i s"><use href="#search"/></svg>Search what was said<span class="kbd">⌘K</span></div>
+      <button class="ib" aria-label="Import"><svg class="i"><use href="#import"/></svg></button>
+      <button class="ib" aria-label="Settings"><svg class="i"><use href="#sliders"/></svg></button>
+      <button class="newbtn"><svg class="i"><use href="#plus"/></svg>New meeting</button>
+    </div>
+    <div class="chips"><span class="on">All <span class="meta">17</span></span><span><svg class="i xs"><use href="#pin"/></svg>Pinned <span class="meta">2</span></span><span>With summary</span><span>Imported</span></div>
+    <div class="idx">Indexing for search<i></i><span class="meta">7 / 17</span></div>
+
+    <section class="sec" style="top:150px">
+      <h2>Today</h2>
+      <div class="cards">
+        <div class="card newcard">
+          <div class="th">
+            <svg class="mark" viewBox="20 100 480 380"><use href="#halcy"/></svg>
+            <span style="display:flex;align-items:center;gap:8px;font-size:12px;color:#c4c4c4"><i class="dotrec"></i>iPad microphone · ready</span>
+            <b style="font-size:21px;font-weight:600;letter-spacing:-.02em;margin-top:6px">Start listening</b>
+          </div>
+          <div class="ct"><b>New meeting</b><span>The board draws as people talk</span></div>
+        </div>
+        <div class="card">
+          <div class="th"><svg viewBox="20 20 900 630" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style="padding:10px 6px 6px"><g fill="none" stroke="var(--ink0)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+  <!-- title -->
+  <g class="b-ttl">
+  <text x="60" y="74" font-size="38" fill="var(--ink0)" stroke="none">登录流程 <tspan font-size="30" dx="6">Login flow</tspan></text>
+  <path filter="url(#rough)" d="M58 88 C150 84 260 90 352 85"/>
+  </g>
+  <g filter="url(#rough)">
+    <!-- user -->
+    <circle cx="118" cy="160" r="13"/>
+    <path d="M118 173 L118 203 M98 186 C108 183 128 183 139 185 M118 203 L105 226 M118 203 L131 225"/>
+    <!-- gateway -->
+    <path d="M252 151 L409 149 L411 228 L250 230 Z"/>
+    <!-- auth -->
+    <path d="M492 150 L650 152 L649 229 L491 227 Z"/>
+    <!-- redis -->
+    <ellipse cx="830" cy="161" rx="60" ry="12"/>
+    <path d="M770 161 L770 219 M890 161 L890 219 M770 219 C775 236 885 236 890 219"/>
+    <!-- mysql -->
+    <path d="M500 303 L641 301 L640 357 L501 358 Z"/>
+    <!-- arrows -->
+    <path d="M150 190 C190 188 220 191 246 189 M235 181 L247 189 L235 198"/>
+    <path d="M413 189 C440 190 465 188 487 189 M476 181 L488 189 L476 197"/>
+    <path d="M652 189 C700 188 740 190 766 189 M755 181 L767 189 L755 197"/>
+    <path d="M570 232 C572 255 568 276 570 298 M562 288 L570 299 L578 288"/>
+  </g>
+  <g fill="var(--ink0)" stroke="none" text-anchor="middle">
+    <text x="118" y="256" font-size="21">用户</text>
+    <text x="331" y="197" font-size="24">API 网关</text>
+    <text x="570" y="190" font-size="24">鉴权服务</text>
+    <text x="570" y="215" font-size="16">签发 JWT</text>
+    <text x="830" y="205" font-size="24">Redis</text>
+    <text x="570" y="337" font-size="19">MySQL 用户库</text>
+    <text x="200" y="176" font-size="16">HTTPS</text>
+    <text x="450" y="176" font-size="16">限流</text>
+    <text x="728" y="176" font-size="15">refresh</text>
+    <text x="586" y="272" font-size="15" text-anchor="start">查账号</text>
+  </g>
+  <!-- red circle + note -->
+  <path filter="url(#rough2)" stroke="var(--ink1)" stroke-width="3" d="M484 166 C468 132 560 118 640 128 C700 138 688 232 624 243 C560 254 486 248 474 212 C466 186 480 150 528 138"/>
+  <text x="570" y="110" font-size="18" fill="var(--ink1)" stroke="none" text-anchor="middle">下周单独评审!</text>
+  <text x="830" y="264" font-size="16" fill="var(--ink2)" stroke="none" text-anchor="middle">TTL 7 天</text>
+
+  <!-- decisions -->
+  <text x="60" y="412" font-size="27" fill="var(--ink0)" stroke="none">决定 <tspan font-size="22">Decisions</tspan></text>
+  <path filter="url(#rough)" d="M58 424 C120 421 190 426 252 422"/>
+  <path filter="url(#rough)" d="M80 486 L402 484 L404 511 L82 513 Z" fill="var(--hl)" stroke="none" opacity=".6" style="mix-blend-mode:multiply"/>
+  <g fill="var(--ink0)" stroke="none" font-size="21">
+    <text x="60" y="464">1. Access token 15 分钟过期</text>
+    <text x="60" y="504">2. Refresh token 存 Redis，7 天</text>
+    <text x="60" y="544">3. 限流放在 API 网关</text>
+    <text x="60" y="584">4. 短信验证码登录</text>
+  </g>
+  <path filter="url(#rough)" fill="var(--ink1)" stroke="none" d="M368 444 L372 454 L383 454 L374 461 L378 472 L368 465 L358 472 L362 461 L353 454 L364 454 Z"/>
+  <path filter="url(#rough)" stroke="var(--ink1)" stroke-width="2.6" d="M80 577 C140 575 200 574 244 572"/>
+  <text x="256" y="584" font-size="16" fill="var(--ink1)" stroke="none">这期不做</text>
+  <text x="60" y="624" font-size="21" fill="var(--ink2)" stroke="none">? 要不要接公司 SSO</text>
+  <circle cx="268" cy="618" r="4.5" fill="var(--ink2)" stroke="none"/>
+
+  <!-- todo -->
+  <text x="620" y="412" font-size="27" fill="var(--ink0)" stroke="none">待办 <tspan font-size="22">To-do</tspan></text>
+  <path filter="url(#rough)" d="M618 424 C670 421 730 426 776 422"/>
+  <g filter="url(#rough)" stroke-width="2">
+    <path d="M621 448 L637 447 L638 463 L620 464 Z"/>
+    <path d="M621 488 L637 487 L638 503 L620 504 Z"/>
+    <path d="M621 528 L637 527 L638 543 L620 544 Z"/>
+  </g>
+  <g fill="var(--ink0)" stroke="none" font-size="20">
+    <text x="650" y="463">王磊 · 网关限流规则</text>
+    <text x="650" y="503">林 · 评估 Redis 集群</text>
+    <text x="650" y="543">陈 · 画登录时序图</text>
+  </g>
+</g>
+</svg><span class="badge"><i></i>LIVE 12:48</span></div>
+          <div class="ct"><b>登录方案评审</b><span>14:02 · board 2 of 3<span class="faces"><span class="who wA">王</span><span class="who wB">林</span><span class="who wC">陈</span></span></span></div>
+        </div>
+        <div class="card">
+          <div class="th"><svg viewBox="0 0 266 168"><g filter="url(#rough)" fill="none" stroke="#1e1e1e" stroke-width="1.4" stroke-linecap="round"><path d="M22 44 C60 42 100 45 128 43"/><path d="M160 84 l2.5 5 5.5.5-4 4 1 5.5-5-2.5-5 2.5 1-5.5-4-4 5.5-.5z" fill="#e03131" stroke="none"/><path d="M24 128 C60 126 90 126 112 125" stroke="#e03131" stroke-width="1.6"/></g><g fill="#1e1e1e" font-size="17"><text x="22" y="38" font-size="20">Office plan</text><text x="22" y="70">1. Desks by the window</text><text x="22" y="96">2. Printer room</text><text x="22" y="122">3. Quiet zone</text><text x="22" y="148" fill="#1971c2">? Who gets the corner</text></g></svg></div>
+          <div class="ct"><b>Office plan</b><span>09:30 · 22 min<span class="faces"><span class="who wB">M</span><span class="who wC">N</span></span></span></div>
+        </div>
+        <div class="card">
+          <div class="th"><svg viewBox="0 0 266 168"><rect x="18" y="18" width="230" height="132" rx="3" fill="#fff" stroke="#e2e2e2"/><g fill="#e4e4e0"><rect x="32" y="32" width="120" height="9"/><rect x="32" y="50" width="200" height="5"/><rect x="32" y="60" width="180" height="5"/><rect x="32" y="78" width="60" height="44"/><rect x="102" y="78" width="60" height="44"/><rect x="172" y="78" width="60" height="44"/><rect x="32" y="130" width="140" height="5"/></g><path filter="url(#rough2)" d="M26 38 C40 22 160 24 162 38 C164 52 40 54 28 44" fill="none" stroke="#e03131" stroke-width="1.8"/><path filter="url(#rough)" d="M98 76 L166 76 L166 124 L98 124 Z" fill="#ffe066" opacity=".45"/></svg></div>
+          <div class="ct"><b>API 服务拆分 · 方案.pdf</b><span>08:15 · imported, 4 pages</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" style="top:452px">
+      <h2>Yesterday <span class="meta">Sun 22 Nov</span></h2>
+      <div class="cards">
+        <div class="card">
+          <div class="th"><svg viewBox="0 0 266 168"><g filter="url(#rough)" fill="none" stroke="#1e1e1e" stroke-width="1.4" stroke-linecap="round"><path d="M16 40 L82 39 L83 72 L15 73 Z"/><path d="M104 40 L168 41 L167 73 L105 72 Z"/><path d="M190 40 L252 40 L251 73 L191 72 Z"/><path d="M84 56 L102 56 M96 51 L103 56 L96 61"/><path d="M169 56 L188 56 M182 51 L189 56 L182 61"/><path d="M136 74 C140 96 200 100 220 76 M213 77 L221 75 L222 83" stroke="#e03131"/></g><g fill="#1e1e1e" font-size="12.5" text-anchor="middle"><text x="49" y="61">支付网关</text><text x="136" y="61">回调队列</text><text x="221" y="61">订单服务</text><text x="180" y="112" fill="#e03131" font-size="13">失败重试 3 次</text></g><g fill="#1e1e1e" font-size="13"><text x="18" y="140">· 幂等键用订单号</text><text x="18" y="158">· 超时 30s 告警</text></g></svg></div>
+          <div class="ct"><b>支付回调重试</b><span>17:20 · 41 min<span class="faces"><span class="who wA">王</span><span class="who wC">陈</span></span></span></div>
+        </div>
+        <div class="card">
+          <div class="th"><svg viewBox="0 0 266 168"><g fill="#1e1e1e" font-size="15"><text x="22" y="38" font-size="20">埋点方案 v2</text><text x="22" y="72">↳ page_view</text><text x="22" y="98">↳ click_login</text><text x="22" y="124">↳ scroll_depth</text><text x="148" y="124" font-size="12" fill="#e03131">不要了</text><text x="22" y="150" fill="#1971c2">? 采样率多少</text></g><path filter="url(#rough)" d="M20 44 C60 42 100 45 140 43 M38 119 C70 118 110 117 140 116" fill="none" stroke="#1e1e1e" stroke-width="1.4"/><path filter="url(#rough)" d="M36 86 L140 85 L141 103 L37 104 Z" fill="#ffe066" opacity=".5"/></svg></div>
+          <div class="ct"><b>埋点方案 v2</b><span>15:05 · 35 min<span class="faces"><span class="who wB">林</span><span class="who wA">王</span></span></span></div>
+        </div>
+        <div class="card">
+          <div class="th"><svg viewBox="0 0 266 168"><g filter="url(#rough)" fill="none" stroke="#1e1e1e" stroke-width="1.4" stroke-linecap="round"><path d="M100 22 L166 22 L166 50 L100 50 Z"/><path d="M133 50 L133 66 M60 66 L206 66 M60 66 L60 84 M133 66 L133 84 M206 66 L206 84"/><path d="M30 86 L90 86 L90 112 L30 112 Z"/><path d="M103 86 L163 86 L163 112 L103 112 Z"/><path d="M176 86 L236 86 L236 112 L176 112 Z"/></g><g fill="#1e1e1e" font-size="13" text-anchor="middle"><text x="133" y="41">Owner</text><text x="60" y="104">Build</text><text x="133" y="104">Docs</text><text x="206" y="104" fill="#1971c2">Release ?</text><text x="133" y="146" font-size="12" fill="#e03131">hand over by Friday</text></g></svg><span class="pinned"><svg class="i xs"><use href="#pin"/></svg></span></div>
+          <div class="ct"><b>Owner handoff</b><span>11:40 · 18 min<span class="faces"><span class="who wC">I</span><span class="who wB">N</span></span></span></div>
+        </div>
+        <div class="card">
+          <div class="th"><svg viewBox="0 0 266 168"><g fill="#1e1e1e" font-size="15"><text x="22" y="38" font-size="20">Release checklist</text><text x="22" y="70">1. Load testing</text><text x="22" y="94">2. Accessibility audit</text><text x="22" y="118">3. Release notes</text><text x="22" y="142">4. Dark mode</text></g><path filter="url(#rough)" d="M20 44 C70 42 130 45 180 43 M36 137 C60 136 90 136 112 135" fill="none" stroke="#1e1e1e" stroke-width="1.4"/><path d="M36 137 C60 136 90 136 112 135" stroke="#e03131" stroke-width="1.6" fill="none"/><path d="M140 58 l2.5 5 5.5.5-4 4 1 5.5-5-2.5-5 2.5 1-5.5-4-4 5.5-.5z" fill="#e03131"/></svg></div>
+          <div class="ct"><b>Release checklist</b><span>10:15 · 27 min<span class="faces"><span class="who wA">M</span><span class="who wB">N</span><span class="who wC">I</span></span></span></div>
+        </div>
+      </div>
+    </section>
+    <section class="sec" style="top:752px">
+      <h2>Earlier <span class="meta">Week 47</span></h2>
+      <div class="cards">
+        <div class="card"><div class="th"><svg viewBox="0 0 266 168"><g fill="#1e1e1e" font-size="15"><text x="22" y="38" font-size="20">Weekly sync</text><text x="22" y="70">1. Hiring loop</text><text x="22" y="94">2. Q1 roadmap</text></g></svg></div></div>
+        <div class="card"><div class="th"><svg viewBox="0 0 266 168"><g fill="#1e1e1e" font-size="15"><text x="22" y="38" font-size="20">字幕切分 · 时间对齐</text><text x="22" y="70">↳ 按句号切</text><text x="22" y="94">↳ 说话人换了就切</text></g></svg></div></div>
+        <div class="card"><div class="th"><svg viewBox="0 0 266 168"><g fill="#1e1e1e" font-size="15"><text x="22" y="38" font-size="20">Platform groups</text><text x="22" y="70">↳ Mac · iPad</text><text x="22" y="94">↳ Linux · Windows</text></g></svg></div></div>
+        <div class="card"><div class="th"><svg viewBox="0 0 266 168"><g fill="#1e1e1e" font-size="15"><text x="22" y="38" font-size="20">Auth correction</text><text x="22" y="70">1. Token scope</text><text x="22" y="94" fill="#1971c2">? Who owns SSO</text></g></svg></div></div>
+      </div>
+    </section>
+    <div class="fadeb"></div>
+    <div class="home"></div>
+  </div></div>
+
+  <div class="notes">
+    <span class="kicker">Home · 11" landscape</span>
+    <h1>Meetings</h1>
+    <p class="lead">On iPad the meeting list is a place of its own, not a strip beside the board. Boards are what people remember, so each meeting shows its board.</p>
+    <ol>
+      <li><span><b>Boards as thumbnails.</b> A grid of real boards grouped by day, with who spoke and how long, reads faster than a list of titles.</span></li>
+      <li><span><b>New meeting is the first card.</b> One tap starts listening on the iPad microphone; the live meeting sits next to it with its timer.</span></li>
+      <li><span><b>Search what was said.</b> The search field looks inside transcripts and boards (⌘K with a keyboard); filters replace the desktop's Pinned group.</span></li>
+      <li><span><b>Touch actions.</b> Long-press a card for Pin, Rename, Export and Delete; drag a PDF from Files onto the grid to import it.</span></li>
+    </ol>
+    <div class="spec">4 columns at 11", 5 at 13", 2 in portrait<br>card thumbnail 168 pt, 18 pt gutters</div>
+  </div>
+</div>
+</body>
+</html>
