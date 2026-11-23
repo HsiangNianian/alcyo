@@ -159,6 +159,9 @@ impl Drop for SystemSpeech {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Its own: the module above imports Command only where it starts the helper, which is not on iOS.
+    #[cfg(target_os = "ios")]
+    use std::process::Command;
 
     /// A stand-in helper that speaks the same protocol and says how many samples it got.
     const FAKE: &str = r#"
