@@ -43,3 +43,46 @@ jobs:
           name: mistralrs-ios-spike-macos
           path: spikes/mistralrs-ios/target/aarch64-apple-darwin/release/mistralrs-ios-spike
           retention-days: 7
+
+  # Both engines on the same CI Mac, on the 459 recorded board requests (spikes/mistralrs-ios/replay.jsonl), with
+  # the model and llama.cpp build Alcyo ships. A CI Mac is a VM with a small GPU: the times compare the engines,
+  # not what an M-series iPad or Mac would do.
+  compare:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 240
+    env:
+      MODEL: Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+      MODEL_SHA256: 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
+      LLAMA_BUILD: b11954
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mistralrs-ios-spike-macos
+          path: spike
+      - name: Cache the model
+        uses: actions/cache@v4
+        with:
+          path: model
+          key: model-${{ env.MODEL_SHA256 }}
+      - name: Model and llama-server, as Alcyo uses them
+        run: |
+          mkdir -p model llama
+          [ -f "model/$MODEL" ] || curl -fL --retry 5 -o "model/$MODEL" "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/$MODEL"
+          echo "$MODEL_SHA256  model/$MODEL" | shasum -a 256 -c
+          curl -fL --retry 5 -o llama.tar.gz "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_BUILD/llama-$LLAMA_BUILD-bin-macos-arm64.tar.gz"
+          tar -xzf llama.tar.gz -C llama
+          find llama -name llama-server -type f
+          system_profiler SPDisplaysDataType | grep -E "Chipset|Metal" || true
+      - name: Compare
+        run: |
+          server=$(find "$PWD/llama" -name llama-server -type f | head -1)
+          sh spikes/mistralrs-ios/compare.sh "$PWD/spike/mistralrs-ios-spike" "$PWD/model/$MODEL" "$server"
+          for f in spikes/mistralrs-ios/results-*/*-summary.txt; do echo "### $f"; cat "$f"; done | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compare-results
+          path: spikes/mistralrs-ios/results-*
+          retention-days: 14
