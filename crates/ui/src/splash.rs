@@ -11,8 +11,18 @@ use std::time::{Duration, Instant};
 const WORD: &str = "Alcyo";
 const SIZE: f32 = 56.0;
 const INK: u32 = 0x1e_1e_1e;
-/// As long as the name takes to write, so it never flashes past half written.
-pub const WRITING: Duration = Duration::from_millis(900);
+/// As long as the name takes to write, so it never flashes past half written: an unhurried hand, about
+/// twice the pace it once had.
+pub const WRITING: Duration = Duration::from_millis(1700);
+/// The written name stays a moment before the app takes over, so it is read rather than glimpsed.
+pub const HOLD: Duration = Duration::from_millis(380);
+
+/// How much of the name is written `elapsed` in: the pen starts gently, finds its pace and eases off on the
+/// last letters, as a hand does.
+fn written_share(elapsed: Duration) -> f32 {
+    let t = (elapsed.as_secs_f32() / WRITING.as_secs_f32()).clamp(0.0, 1.0);
+    0.5 - 0.5 * (t * std::f32::consts::PI).cos()
+}
 const SAY_MORE_AFTER: Duration = Duration::from_secs(2);
 
 /// The pen's strokes for the name, around (0, 0).
@@ -106,7 +116,7 @@ pub fn splash(strokes: &[Inked], started: Instant, window: &mut Window) -> impl 
     }
     let strokes = strokes.to_vec();
     let total: f32 = strokes.iter().map(|s| s.length).sum();
-    let written = total * (elapsed.as_secs_f32() / WRITING.as_secs_f32()).min(1.0);
+    let written = total * written_share(elapsed);
     div()
         .size_full()
         .relative()

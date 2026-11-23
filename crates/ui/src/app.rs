@@ -4,7 +4,7 @@ use alcyo_board::glyphs::{Glyphs, HanziSource, Pt};
 use alcyo_board::board_layout::{target_at, Bounds as BoardBounds, Rect, StableLayout};
 use alcyo_board::check::check;
 use alcyo_board::compose::{annotation_look, compose, ink_boxes, InkBox, Owner, Style};
-use alcyo_board::graph::{parse_ops, Annotation, Clip, Graph, Kind, Op, Ref, Utterance, ANNOTATION_TOOLS};
+use alcyo_board::graph::{parse_ops, Annotation, Clip, Graph, Kind, Op, Ref, Utterance};
 use alcyo_agent::sound::Glossary;
 use alcyo_board::follow;
 use alcyo_board::sugiyama::first_diagram;
@@ -1850,6 +1850,8 @@ fn erased(mark: &[[f64; 2]], rub: &[[f32; 2]], reach: f64) -> bool {
 fn mark_tool_name(tool: &str) -> &'static str {
     match tool {
         "pen" => t("red-pen"),
+        "pen-black" => t("black-pen"),
+        "pen-blue" => t("blue-pen"),
         "green" => t("green-highlighter"),
         "pink" => t("pink-highlighter"),
         _ => t("yellow-highlighter"),
@@ -4414,6 +4416,8 @@ impl Workbench {
                 Some((w, h)) if f64::from(line[0][0]) <= w && f64::from(line[0][1]) <= h && line[0][0] >= 0.0 && line[0][1] >= 0.0 => {
                     Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() }
                 }
+                // On the iPad the Pencil marks the board itself too, where the lines stay as they were drawn.
+                _ if crate::platform::ipad_layout() => Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() },
                 _ => {
                     self.notice = Some(t("marks-go-on-an-imported").to_string());
                     return;
@@ -7357,7 +7361,7 @@ impl Render for Workbench {
         let keycap = |text: String| div().flex().items_center().h(px(18.)).px(px(5.)).border_1().rounded(px(2.)).font_family(theme::MONO).text_meta().child(text);
         // The colours of the marker, in a small bar of their own just above the tools while marking.
         let swatches = (editable && marking).then(|| {
-            float().id("mark-colours").h(px(32.)).px(px(theme::space::S)).gap(px(4.)).children(ANNOTATION_TOOLS.iter().map(|&tool| {
+            float().id("mark-colours").h(px(32.)).px(px(theme::space::S)).gap(px(4.)).children(["yellow", "green", "pink", "pen"].iter().map(|&tool| {
                 let (color, alpha, _) = annotation_look(tool);
                 let mut fill: Hsla = rgb(pal().ink(color)).into();
                 fill.a = if tool == "pen" { 1.0 } else { (alpha * 1.6).min(1.0) };
@@ -9545,7 +9549,8 @@ impl Render for Shell {
         // Laid out for the iPad, the board runs under them and what floats over it keeps clear (ipad.rs).
         let safe = if crate::platform::ipad_layout() && self.workbench.is_some() { gpui_kit::Edges::default() } else { window.insets().safe_area };
         div().size_full().font(theme::interface_font()).bg(rgb(pal().paper)).pt(safe.top).pb(safe.bottom).pl(safe.left).pr(safe.right).map(|d| match &self.workbench {
-            Some(workbench) => d.child(workbench.clone()).into_any_element(),
+            // The app comes up through the written name rather than cutting to it.
+            Some(workbench) => d.child(div().size_full().child(workbench.clone()).with_animation("hand-off", motion::ease(Duration::from_millis(360)), |d, t| d.opacity(t))).into_any_element(),
             // The bar is there from the start, so the window can be moved while the app gets ready.
             None => d.flex().flex_col().child(title_bar()).child(div().flex_1().min_h_0().child(crate::splash::splash(&self.word, self.started, window))).into_any_element(),
         })
@@ -10089,7 +10094,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                                 },
                             }
                         }
-                        let written = this.update(cx, |shell: &mut Shell, _| shell.started.elapsed() >= crate::splash::WRITING).unwrap_or(true);
+                        let written = this.update(cx, |shell: &mut Shell, _| shell.started.elapsed() >= crate::splash::WRITING + crate::splash::HOLD).unwrap_or(true);
                         if ready.is_some() && (written || scripted) {
                             break;
                         }

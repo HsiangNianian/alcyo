@@ -9,6 +9,7 @@
 //! the workbench's state directly.
 
 use super::*;
+use alcyo_board::graph::{is_pen, PENS};
 use gpui_kit::{AnyElement, BoxShadow, Edges, FontWeight};
 
 /// How long without a touch, while listening, before the bars step back, and how far they go.
@@ -541,7 +542,8 @@ impl Workbench {
             (ink.circling, ink.cropping, ink.marking, ink.mark_tool)
         };
         let on_page = self.live.graph.underlay().is_some();
-        let can_mark = on_page || self.live.graph.nodes.iter().any(|n| n.kind == Kind::Clip);
+        // The Pencil marks anywhere on the iPad: pages, clips and the board itself.
+        let can_mark = true;
         let erasing = marking && mark_tool == ERASER;
         let place = |d: gpui_kit::Div| d.occlude().absolute().left(px(f.margin)).top(px(f.palette_top()));
         if !self.ipad.tools_open {
@@ -598,15 +600,18 @@ impl Workbench {
                     })),
             )
             .child(tool("ipad-circle", "circle", circling, true, |ink| ink.circling = true))
-            .child(tool("ipad-mark", "mark", marking && !erasing, can_mark, |ink| ink.marking = true))
+            .child(tool("ipad-mark", "mark", marking && !erasing && !is_pen(mark_tool), can_mark, |ink| {
+                ink.marking = true;
+                ink.mark_tool = "yellow";
+            }))
             .child(tool("ipad-crop", "crop", cropping, on_page, |ink| ink.cropping = true))
             .child(tool("ipad-eraser", "eraser", erasing, can_mark, |ink| {
                 ink.marking = true;
                 ink.mark_tool = ERASER;
             }))
             .child(divider())
-            // The marker's colours: the red pen and the highlighters.
-            .children(["pen", "yellow", "green", "pink"].into_iter().map(|name| {
+            // The pens: black, red and blue.
+            .children(PENS.into_iter().map(|name| {
                 let (color, _, _) = annotation_look(name);
                 let chosen = mark_tool == name;
                 div()
