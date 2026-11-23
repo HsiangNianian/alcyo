@@ -32,7 +32,7 @@ name="alcyo-$version-ipados"
 out="target/package/$name"
 app="$out/Payload/Alcyo.app"
 rm -rf "$out"
-mkdir -p "$app/Frameworks" "$app/resources/voice/speaker" "$app/resources/licenses"
+mkdir -p "$app/Frameworks" "$app/assets/voice/speaker" "$app/assets/licenses"
 
 install -m755 "target/$target/release/alcyo" "$app/alcyo"
 strip -x "$app/alcyo" 2>/dev/null || true
@@ -57,7 +57,9 @@ xcrun actool "$icons/Assets.xcassets" --compile "$app" --platform iphoneos --min
 /usr/libexec/PlistBuddy -c "Merge $icons/partial.plist" "$app/Info.plist"
 rm -rf "$icons"
 
-lib="$app/resources"
+# Not "resources": the file system takes it for "Resources", which makes the app an old-style bundle to
+# codesign, with every file beside it taken for code.
+lib="$app/assets"
 target/release/alcyo-tools pack-glyphs assets/hanzi "$lib/glyphs.pack"
 cp resources/voice/silero_vad.onnx "$lib/voice/"
 cp resources/voice/speaker/campplus_zh_en.onnx resources/voice/speaker/nemotron-3-diarization.int8.onnx "$lib/voice/speaker/"

@@ -25,9 +25,10 @@ fn installed_dir() -> Option<PathBuf> {
     // Canonical, so a symlink on PATH still leads back to the real install.
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     // <prefix>/bin/alcyo beside <prefix>/lib/alcyo, or inside an app on a Mac.
-    // An iPad app is flat: the program and a resources folder side by side in Alcyo.app.
+    // An iPad app is flat: the program and its assets side by side in Alcyo.app. Not "resources": a folder
+    // of that name, which the file system takes for "Resources", makes it an old-style bundle to codesign.
     #[cfg(target_os = "ios")]
-    return Some(exe.parent()?.join("resources")).filter(|dir| dir.join("glyphs.pack").is_file());
+    return Some(exe.parent()?.join("assets")).filter(|dir| dir.join("glyphs.pack").is_file());
     #[cfg(not(target_os = "ios"))]
     {
         let top = exe.parent()?.parent()?;
