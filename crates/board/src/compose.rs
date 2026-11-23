@@ -1053,6 +1053,8 @@ pub fn ink_boxes(pieces: &[Piece]) -> Vec<InkBox> {
 pub fn annotation_look(tool: &str) -> (u32, f32, f32) {
     match tool {
         "pen" => (RED, 1.0, 2.6),
+        "pen-black" => (INK, 1.0, 2.6),
+        "pen-blue" => (BLUE, 1.0, 2.6),
         "green" => (0x8c_e9_9a, MARKER_ALPHA, 16.0),
         "pink" => (0xff_a8_c5, MARKER_ALPHA, 16.0),
         _ => (HIGHLIGHT, MARKER_ALPHA, 16.0),
@@ -1136,7 +1138,7 @@ pub fn compose(g: &Graph, l: &Layout, glyphs: &mut Glyphs) -> (Vec<Piece>, Vec<S
             continue;
         }
         let (rgb, alpha, width) = annotation_look(&a.tool);
-        let flat = a.tool != "pen";
+        let flat = !crate::graph::is_pen(&a.tool);
         let key = format!("a{i}|{}", a.tool);
         let at = points[0];
         c.pieces.push(Piece {
@@ -1367,6 +1369,20 @@ pub fn compose(g: &Graph, l: &Layout, glyphs: &mut Glyphs) -> (Vec<Piece>, Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_three_pens_draw_in_their_inks_over_the_board_and_the_highlighters_under_it() {
+        assert_eq!(annotation_look("pen"), (RED, 1.0, 2.6), "the red pen meetings were drawn with before stays red");
+        assert_eq!(annotation_look("pen-black").0, INK);
+        assert_eq!(annotation_look("pen-blue").0, BLUE);
+        assert_eq!(annotation_look("yellow").0, HIGHLIGHT);
+        for pen in crate::graph::PENS {
+            assert!(crate::graph::is_pen(pen) && annotation_look(pen).1 == 1.0);
+        }
+        for marker in ["yellow", "green", "pink"] {
+            assert!(!crate::graph::is_pen(marker) && annotation_look(marker).1 < 1.0);
+        }
+    }
 
     fn checkout_glyphs() -> Glyphs {
         Glyphs::from_checkout(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))).unwrap()
