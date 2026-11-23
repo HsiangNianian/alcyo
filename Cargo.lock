@@ -258,6 +258,7 @@ name = "alcyo-import"
 version = "0.34.1"
 dependencies = [
  "alcyo-board",
+ "alcyo-models",
  "anyhow",
  "fancy-regex",
  "image",
