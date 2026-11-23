@@ -95,7 +95,13 @@ if [ -n "${IOS_CERT_P12:-}" ] && [ -n "${IOS_PROFILE:-}" ]; then
   /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$work/profile.plist" > "$work/entitlements.plist"
   echo "signing with $(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Distribution/ { print $2; exit }'), profile $(/usr/libexec/PlistBuddy -c 'Print :Name' "$work/profile.plist")"
   codesign --force --sign "$identity" --timestamp=none "$app/Frameworks/SherpaOnnxC.framework"
-  codesign --force --sign "$identity" --timestamp=none --entitlements "$work/entitlements.plist" "$app"
+  if ! codesign --force --sign "$identity" --timestamp=none --entitlements "$work/entitlements.plist" --verbose=4 "$app"; then
+    # Why codesign took a resource for code: its type and attributes, and the bundle's top level.
+    echo "--- signing the app failed; what is at its top level:" >&2
+    for f in "$app"/*; do printf '%s: ' "$(basename "$f")"; file -b "$f"; xattr -l "$f" | sed 's/^/    /'; done
+    ls -le@ "$app"
+    exit 1
+  fi
   codesign --verify --strict --deep --verbose=2 "$app"
   signed=1
 else
