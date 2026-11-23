@@ -291,12 +291,34 @@ const PICTOGRAMS: [(&str, &str); 43] = [
     ("icons/x.svg", include_str!("../icons/x.svg")),
 ];
 
+/// The iPad's line icons, drawn for touch at 22 pt (crates/ui/src/ipad.rs), under `icons/ipad/`.
+const IPAD_ICONS: [(&str, &str); 18] = [
+    ("icons/ipad/chevron-down.svg", include_str!("../icons/ipad/chevron-down.svg")),
+    ("icons/ipad/chevron-left.svg", include_str!("../icons/ipad/chevron-left.svg")),
+    ("icons/ipad/chevron-right.svg", include_str!("../icons/ipad/chevron-right.svg")),
+    ("icons/ipad/chevron-up.svg", include_str!("../icons/ipad/chevron-up.svg")),
+    ("icons/ipad/circle.svg", include_str!("../icons/ipad/circle.svg")),
+    ("icons/ipad/crop.svg", include_str!("../icons/ipad/crop.svg")),
+    ("icons/ipad/eraser.svg", include_str!("../icons/ipad/eraser.svg")),
+    ("icons/ipad/export.svg", include_str!("../icons/ipad/export.svg")),
+    ("icons/ipad/live.svg", include_str!("../icons/ipad/live.svg")),
+    ("icons/ipad/mark.svg", include_str!("../icons/ipad/mark.svg")),
+    ("icons/ipad/plus.svg", include_str!("../icons/ipad/plus.svg")),
+    ("icons/ipad/redo.svg", include_str!("../icons/ipad/redo.svg")),
+    ("icons/ipad/replay.svg", include_str!("../icons/ipad/replay.svg")),
+    ("icons/ipad/sidebar.svg", include_str!("../icons/ipad/sidebar.svg")),
+    ("icons/ipad/sparkle.svg", include_str!("../icons/ipad/sparkle.svg")),
+    ("icons/ipad/tidy.svg", include_str!("../icons/ipad/tidy.svg")),
+    ("icons/ipad/transcript.svg", include_str!("../icons/ipad/transcript.svg")),
+    ("icons/ipad/undo.svg", include_str!("../icons/ipad/undo.svg")),
+];
+
 /// The icons the toolkit carries, the few more this window asks for, and our own pictograms over both.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {

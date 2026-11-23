@@ -566,3 +566,15 @@ share-network-wifi = Wi-Fi
 share-network-wired = Ethernet
 share-scan-on = Scan with a phone on { $network }, code included
 share-retired = Sharing stopped: too many wrong access codes were tried. Start again for a new code.
+# The iPad's status pill over the board: the board model at work, by its name.
+ipad-model-drawing = { $model } is drawing
+# Under the meeting's name on the iPad: when it started, and how many people spoke.
+ipad-meeting-started = { $when } · { $n ->
+        [one] { $n } speaker
+       *[other] { $n } speakers
+    }
+# The iPad's tool palette and transcript card fold away and come back.
+ipad-put-tools-away = Put the tools away
+ipad-show-tools = Show the tools
+ipad-collapse-transcript = Collapse the transcript
+ipad-show-transcript = Show the transcript
