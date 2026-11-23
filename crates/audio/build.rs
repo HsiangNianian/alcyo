@@ -39,6 +39,10 @@ fn main() {
     if let Some(toolchain) = PathBuf::from(swiftc).parent().and_then(|bin| bin.parent()) {
         println!("cargo:rustc-link-search=native={}", toolchain.join("lib/swift").join(sdk).display());
     }
+    // `#available` checks call ___isPlatformVersionAtLeast, from clang's runtime, which Xcode links and Rust does not.
+    let resources = output(Command::new("xcrun").args(["--sdk", sdk, "clang", "-print-resource-dir"]));
+    println!("cargo:rustc-link-search=native={resources}/lib/darwin");
+    println!("cargo:rustc-link-lib=static={}", if simulator { "clang_rt.iossim" } else { "clang_rt.ios" });
     for framework in ["Speech", "AVFoundation", "Foundation"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
