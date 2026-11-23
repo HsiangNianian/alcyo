@@ -400,7 +400,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
             started: Instant::now(),
         },
     };
-    gpui_kit::application().run(move |cx: &mut App| {
+    crate::platform::application().run(move |cx: &mut App| {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                 point(px(0.), px(0.)),

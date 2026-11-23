@@ -238,6 +238,7 @@ in-use = Utilisé
 use = Utiliser
 board-model = Modèle de tableau
 to-draw-the-board-download = Pour dessiner le tableau, téléchargez un modèle qui s’exécute sur cet ordinateur, ou configurez un modèle distant. La reconnaissance vocale est déjà incluse.
+to-draw-the-board-remote = Pour dessiner le tableau, configurez un modèle distant comme DeepSeek. La reconnaissance vocale est déjà incluse.
 on-this-computer = Sur cet ordinateur
 remote = Distant
 pause = Pause

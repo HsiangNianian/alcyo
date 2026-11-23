@@ -238,6 +238,7 @@ in-use = En uso
 use = Usar
 board-model = Modelo de pizarra
 to-draw-the-board-download = Para dibujar la pizarra, descarga un modelo que se ejecute en este equipo o configura uno remoto. El reconocimiento de voz ya está incluido.
+to-draw-the-board-remote = Para dibujar la pizarra, configura un modelo remoto como DeepSeek. El reconocimiento de voz ya está incluido.
 on-this-computer = En este equipo
 remote = Remoto
 pause = Pausar

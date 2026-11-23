@@ -238,6 +238,7 @@ in-use = 사용 중
 use = 사용
 board-model = 보드 모델
 to-draw-the-board-download = 보드를 그리려면 이 컴퓨터에서 실행되는 모델을 다운로드하거나 원격 모델을 설정하세요. 음성 인식은 이미 포함되어 있습니다.
+to-draw-the-board-remote = 판서를 그리려면 DeepSeek 같은 원격 모델을 설정하세요. 음성 인식은 이미 포함되어 있습니다.
 on-this-computer = 이 컴퓨터
 remote = 원격
 pause = 일시 중지

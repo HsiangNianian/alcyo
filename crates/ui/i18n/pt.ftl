@@ -238,6 +238,7 @@ in-use = Em uso
 use = Usar
 board-model = Modelo do quadro
 to-draw-the-board-download = Para desenhar o quadro, baixe um modelo que roda neste computador ou configure um remoto. O reconhecimento de fala já está incluído.
+to-draw-the-board-remote = Para desenhar o quadro, configure um modelo remoto como o DeepSeek. O reconhecimento de voz já está incluído.
 on-this-computer = Neste computador
 remote = Remoto
 pause = Pausar

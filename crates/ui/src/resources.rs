@@ -25,8 +25,14 @@ fn installed_dir() -> Option<PathBuf> {
     // Canonical, so a symlink on PATH still leads back to the real install.
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     // <prefix>/bin/alcyo beside <prefix>/lib/alcyo, or inside an app on a Mac.
-    let top = exe.parent()?.parent()?;
-    ["lib/alcyo", "Resources/alcyo"].into_iter().map(|d| top.join(d)).find(|dir| dir.join("glyphs.pack").is_file())
+    // An iPad app is flat: the program and a resources folder side by side in Alcyo.app.
+    #[cfg(target_os = "ios")]
+    return Some(exe.parent()?.join("resources")).filter(|dir| dir.join("glyphs.pack").is_file());
+    #[cfg(not(target_os = "ios"))]
+    {
+        let top = exe.parent()?.parent()?;
+        ["lib/alcyo", "Resources/alcyo"].into_iter().map(|d| top.join(d)).find(|dir| dir.join("glyphs.pack").is_file())
+    }
 }
 
 /// A checkout of the repository above this executable, as when running from `target/`.

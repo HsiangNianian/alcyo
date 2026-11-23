@@ -17,5 +17,9 @@ serde_json.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["pulseaudio"] }
 
+# The iPad's audio session, which has to be set to record before the microphone gives anything.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
+
 [dev-dependencies]
 alcyo-board.workspace = true

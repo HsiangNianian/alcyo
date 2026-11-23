@@ -89,6 +89,10 @@ jobs:
               - 'scripts/build-apple-speech.sh'
             ios:
               - *app
+              - 'LICENSE'
+              - 'packaging/models.sh'
+              - 'packaging/icons/**'
+              - 'packaging/ios/**'
               - 'scripts/ios-check.sh'
             windows:
               - *app
@@ -243,8 +247,25 @@ jobs:
           key: ios
       - run: sh scripts/ios-check.sh
         env:
-          # All but audio and ui, which stop at sherpa-onnx: the fork's release has no iOS library yet.
-          MUST: alcyo-board alcyo-models alcyo-fonts alcyo-meetings alcyo-export alcyo-search alcyo-share alcyo-keep alcyo-update alcyo-import alcyo-agent
+          # Every crate of the app.
+          MUST: alcyo-board alcyo-models alcyo-fonts alcyo-meetings alcyo-export alcyo-search alcyo-share alcyo-keep alcyo-update alcyo-import alcyo-agent alcyo-audio alcyo-ui
+      - name: Cache voice models
+        uses: actions/cache@v4
+        with:
+          path: resources/voice
+          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+      - name: Cache the meeting search model
+        uses: actions/cache@v4
+        with:
+          path: resources/search
+          key: search-${{ hashFiles('crates/models/src/lib.rs') }}
+      # The whole app, signed when the certificate is there, but never sent to TestFlight from here.
+      - name: Build the iPad app
+        run: sh packaging/ios/package.sh
+        env:
+          IOS_CERT_P12: ${{ secrets.IOS_CERT_P12 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          IOS_PROFILE: ${{ secrets.IOS_PROFILE }}
 
   windows:
     name: windows package

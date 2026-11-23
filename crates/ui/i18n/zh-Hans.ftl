@@ -238,6 +238,7 @@ in-use = 使用中
 use = 使用
 board-model = 板书模型
 to-draw-the-board-download = 要开始画板书，请下载一个在本机运行的模型，或者设置远程模型。语音识别已经内置。
+to-draw-the-board-remote = 要画板书，请设置一个远程模型，比如 DeepSeek。语音识别已经内置。
 on-this-computer = 本机
 remote = 远程
 pause = 暂停

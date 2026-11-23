@@ -31,8 +31,21 @@ pub enum Listen {
 }
 
 impl Listen {
-    /// From a saved setting: "microphone", "computer" or "both"; anything else is the microphone.
+    /// What this device can listen to. An iPad has no way to hear what it plays, only its microphone.
+    pub fn available() -> &'static [Listen] {
+        if cfg!(target_os = "ios") {
+            &[Self::Microphone]
+        } else {
+            &[Self::Microphone, Self::Computer, Self::Both]
+        }
+    }
+
+    /// From a saved setting: "microphone", "computer" or "both"; anything else, or a source this device
+    /// cannot hear, is the microphone.
     pub fn from_setting(setting: &str) -> Self {
+        if cfg!(target_os = "ios") {
+            return Self::Microphone;
+        }
         match setting {
             "computer" => Self::Computer,
             "both" => Self::Both,
@@ -119,8 +132,27 @@ pub fn computer_sounds() -> Vec<Input> {
     devices.unwrap_or_default()
 }
 
+/// On the iPad the microphone gives nothing until the audio session is set to record, which cpal leaves to
+/// the app. Playing stays possible, through the speaker rather than the earpiece, and Bluetooth headsets
+/// can be the microphone.
+#[cfg(target_os = "ios")]
+fn record_session() -> Result<()> {
+    use objc2_avf_audio::{AVAudioSession, AVAudioSessionCategoryOptions, AVAudioSessionCategoryPlayAndRecord};
+    // SAFETY: the shared session is a process-wide singleton, and these are its documented setters.
+    unsafe {
+        let session = AVAudioSession::sharedInstance();
+        let category = AVAudioSessionCategoryPlayAndRecord.context("no record category")?;
+        let options = AVAudioSessionCategoryOptions::DefaultToSpeaker | AVAudioSessionCategoryOptions::AllowBluetoothHFP;
+        session.setCategory_withOptions_error(category, options).map_err(|e| anyhow::anyhow!("the audio session refused to record: {e:?}"))?;
+        session.setActive_error(true).map_err(|e| anyhow::anyhow!("the audio session could not start: {e:?}"))?;
+    }
+    Ok(())
+}
+
 /// The chosen device, or the default when it is not there; true when it fell back.
 fn microphone(host: &cpal::Host, chosen: Option<&str>) -> Result<(cpal::Device, bool)> {
+    #[cfg(target_os = "ios")]
+    record_session()?;
     let picked = chosen.and_then(|want| host.input_devices().ok()?.find(|d| id(d).as_deref() == Some(want)));
     let fell_back = chosen.is_some() && picked.is_none();
     let device = match picked {

@@ -238,6 +238,7 @@ in-use = In uso
 use = Usa
 board-model = Modello della lavagna
 to-draw-the-board-download = Per disegnare la lavagna, scarica un modello che gira su questo computer o configurane uno remoto. Il riconoscimento vocale è già incluso.
+to-draw-the-board-remote = Per disegnare la lavagna, configura un modello remoto come DeepSeek. Il riconoscimento vocale è già incluso.
 on-this-computer = Su questo computer
 remote = Remoto
 pause = Pausa

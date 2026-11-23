@@ -1750,6 +1750,9 @@ fn backend_from(settings: &Settings, local_only: bool, binaries: &std::path::Pat
     if settings.enabled && settings.is_complete() && !local_only {
         return Backend::Ready(Provider::Remote { base_url: settings.base_url.clone(), key: settings.api_key.clone(), model: settings.model.clone() });
     }
+    if !crate::platform::LOCAL_MODELS {
+        return Backend::NoModel;
+    }
     match alcyo_models::current(models) {
         Some(model) => Backend::ManagedLocal(Arc::new(LocalServer { binaries: binaries.to_path_buf(), model, shaders: Some(shader_dir(models)) })),
         None => Backend::NoModel,
@@ -4993,7 +4996,7 @@ impl Workbench {
             model: value(&self.form.model),
             // An empty field keeps the saved key, which is never shown again.
             api_key: if key.is_empty() { self.form.saved.api_key.clone() } else { key },
-            enabled: self.form.remote,
+            enabled: self.form.remote || !crate::platform::LOCAL_MODELS,
             diarize: self.form.saved.diarize,
             turn_pages: self.form.saved.turn_pages,
             glossary: self.form.saved.glossary.clone(),
@@ -7362,7 +7365,7 @@ impl Render for Workbench {
                         .child(icon("chevron-down").size(px(8.)).text_color(ink))
                         .tooltip(ta!("listening-to", what = listen_name(listen)))
                         .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomLeft, move |menu, _, _| {
-                            let menu = [Listen::Microphone, Listen::Computer, Listen::Both].into_iter().fold(menu.min_w(px(200.)), |menu, choice_of| {
+                            let menu = Listen::available().iter().copied().fold(menu.min_w(px(200.)), |menu, choice_of| {
                                 let workbench = workbench.clone();
                                 menu.item(PopupMenuItem::new(listen_name(choice_of)).checked(listen == choice_of).on_click(move |_, _, cx| {
                                     let _ = workbench.update(cx, |this, cx| this.choose_listening(move |s| s.listen = choice_of.setting().into(), cx));
@@ -8204,17 +8207,22 @@ impl Render for Workbench {
                             .child(Quiet::new("save-settings").solid().label(t("save")).on_click(cx.listener(|this, _, window, cx| this.save_settings(window, cx))))
                             .child(button("test-settings", t("test")).on_click(cx.listener(|this, _, _, cx| this.test_settings(cx)))),
                     );
+                // Where no board model can run on the device (the iPad), the remote one is the only choice.
+                let local = crate::platform::LOCAL_MODELS;
+                let remote_shown = self.form.remote || !local;
                 div()
                     .flex()
                     .flex_col()
-                    .child(intro(if self.needs_model {
+                    .child(intro(if !local && self.needs_model {
+                        t("to-draw-the-board-remote")
+                    } else if self.needs_model {
                         t("to-draw-the-board-download")
                     } else {
                         t("the-model-turns-what-is")
                     }))
-                    .child(section(None, vec![place.into_any_element()]))
-                    .when(!self.form.remote, |d| d.child(section(Some(t("models")), models)))
-                    .when(self.form.remote, |d| d.child(section(Some(t("remote-model")), vec![remote.into_any_element()])))
+                    .when(local, |d| d.child(section(None, vec![place.into_any_element()])))
+                    .when(!remote_shown, |d| d.child(section(Some(t("models")), models)))
+                    .when(remote_shown, |d| d.child(section(Some(t("remote-model")), vec![remote.into_any_element()])))
                     // Leaving the remote model takes effect on saving, like choosing it does.
                     .when(!self.form.remote && self.form.saved.enabled, |d| {
                         d.child(div().flex().pt_3().child(Quiet::new("save-local").solid().label(t("save")).on_click(cx.listener(|this, _, window, cx| this.save_settings(window, cx)))))
@@ -8266,8 +8274,9 @@ impl Render for Workbench {
                     }))
                 };
                 let listen_row = row(t("sound-from"), Some(listen_hint(listen))).child(segmented(
-                    [Listen::Microphone, Listen::Computer, Listen::Both]
-                        .into_iter()
+                    Listen::available()
+                        .iter()
+                        .copied()
                         .map(|choice_of| {
                             choice(gpui_kit::ElementId::Name(format!("listen-{}", choice_of.setting()).into()), listen_name(choice_of), listen == choice_of)
                                 .on_click(cx.listener(move |this, _, _, cx| this.choose_listening(move |s| s.listen = choice_of.setting().into(), cx)))
@@ -9606,7 +9615,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
         let _ = startup.send(Startup::Ready(Box::new(prepared)));
     });
     let reduce_motion = chosen.reduce_motion;
-    gpui_kit::application().with_assets(theme::Assets).run(move |cx: &mut App| {
+    crate::platform::application().with_assets(theme::Assets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(reduce_motion);
         // The system may ask for less motion too; asking it takes a moment, so it is done off to the side.
