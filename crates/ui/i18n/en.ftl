@@ -593,3 +593,21 @@ ipad-note = Note
 ipad-note-text = Note
 ipad-new-board = New board
 ipad-remove = Remove
+# The iPad's meetings page: its search field, filters, the card that starts a meeting, and each card's line.
+home-search = Search what was said
+home-all = All
+home-with-summary = With summary
+home-imported = Imported
+home-week = Week { $n }
+home-weeks = Weeks { $from }–{ $to }
+home-mic-ready = iPad microphone · ready
+home-new-hint = The board draws as people talk
+home-board-of = board { $page } of { $pages }
+home-minutes = { $n } min
+home-imported-pages = imported, { $n ->
+        [one] { $n } page
+       *[other] { $n } pages
+    }
+home-pin = Pin
+home-nothing-here = Nothing here yet.
+home-nothing-found = No meeting has that in its name or in what was said.
