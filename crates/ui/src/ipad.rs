@@ -109,8 +109,6 @@ pub(super) struct Chrome {
     map_corner: Corner,
     /// The transcript sheet's height when upright or narrow.
     pub(super) sheet: f32,
-    /// Only the Pencil marks; fingers pan and zoom.
-    pencil_only: bool,
     /// The meeting, and whether its transcript was out, when the transcript last went to its newest line.
     pub(super) newest_for: Option<(String, bool)>,
     /// When the screen was last touched, and whether the bars stepped back at the last frame. Shared with the
@@ -136,7 +134,6 @@ impl Chrome {
             sheet: DETENTS[1],
             map_corner: Corner::TopLeft,
             word_search: (String::new(), vec![]),
-            pencil_only: true,
             newest_for: None,
             touched: Rc::new(Cell::new(Instant::now())),
             faded: Rc::new(Cell::new(false)),
@@ -447,7 +444,7 @@ impl Workbench {
 
     /// Whether only the Pencil marks the board, fingers panning and zooming.
     pub(super) fn ipad_pencil_only(&self) -> bool {
-        self.ipad.pencil_only
+        self.form.saved.pencil_only
     }
 
     pub(super) fn ipad_sidebar_shown(&self) -> bool {
@@ -635,7 +632,7 @@ impl Workbench {
         // The meter eases toward the level heard, so it moves with the voice without twitching.
         self.ipad.level += (self.level - self.ipad.level) * 0.35;
         let circling_card = self.ink.borrow().circling && !self.ink.borrow().pointed.is_empty();
-        let fading = self.ipad.fading(listening) && self.panel.beside_board() && self.ipad.sidebar.is_none() && !circling_card && self.ipad.drag.is_none();
+        let fading = self.form.saved.fade_tools && self.ipad.fading(listening) && self.panel.beside_board() && self.ipad.sidebar.is_none() && !circling_card && self.ipad.drag.is_none();
         self.ipad.faded.set(fading);
         // The bars step back together, slowly; a touch brings them back at once.
         let fade = move |id: &'static str, el: gpui_kit::Div| {

@@ -44,3 +44,6 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 # gpui-kit leaves the platform to a mobile app: on the iPad it is Zed's UIKit and Metal one.
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui_ios = { package = "gpui-pre-ios", version = "=0.3.11" }
+# Asking for the microphone on the first run, and keeping the screen on while listening.
+objc2 = "0.6"
+block2 = "0.6"

@@ -72,6 +72,11 @@ mod home;
 // Presenter mode on the iPad: the room's picture on an external display, with the iPad's controls around it.
 #[path = "presenter.rs"]
 mod presenter;
+// The iPad's Settings sheet and first run, laid over its screen; beside this file too.
+#[path = "sheet.rs"]
+mod sheet;
+#[path = "onboarding.rs"]
+mod onboarding;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -1761,12 +1766,14 @@ struct Workbench {
     exit_when_done: bool,
     /// A failed save blocked closing once; the next attempt closes anyway.
     close_refused: bool,
-    /// What the iPad's screen keeps for itself (ipad.rs).
+    /// What the iPad's screen keeps for itself (ipad.rs), its Settings sheet (sheet.rs) and first run (onboarding.rs).
     ipad: ipad::Chrome,
     /// What the iPad's meetings page keeps (home.rs).
     home: home::Home,
     /// Presenter mode, on the iPad (presenter.rs).
     presenter: presenter::Presenter,
+    sheet: sheet::Sheet,
+    intro: onboarding::Intro,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -2483,7 +2490,7 @@ impl Workbench {
             changed |= std::mem::replace(&mut self.clock_second, second) != second;
         }
         // On the iPad, the bars step back a while after the last touch.
-        changed |= crate::platform::ipad_layout() && self.ipad.fade_changed(self.pipeline.listening());
+        changed |= crate::platform::ipad_layout() && self.form.saved.fade_tools && self.ipad.fade_changed(self.pipeline.listening());
         while let Ok(event) = self.pipeline.events.try_recv() {
             changed = true;
             match event {
@@ -5174,6 +5181,7 @@ impl Workbench {
             proxy_password: self.form.saved.proxy_password.clone(),
             keep_audio: self.form.saved.keep_audio,
             reduce_motion: self.form.saved.reduce_motion,
+            ..self.form.saved.clone()
         }
     }
 
@@ -9389,8 +9397,8 @@ impl Render for Workbench {
         }
         // The iPad lays the same parts out its own way: the board over the whole screen, the rest floating on it.
         if ipad {
+            // Settings is a sheet over the meeting there (sheet.rs), not a page in its place.
             let page = match self.panel {
-                Panel::Settings => Some(settings.into_any_element()),
                 Panel::Library => overlay.take(),
                 _ => None,
             };
@@ -9417,11 +9425,7 @@ impl Render for Workbench {
             if self.presenter.on {
                 return self.presenter_screen(parts, window, cx);
             }
-            if self.panel == Panel::Library {
-                return self.home_screen(parts, window, cx);
-            }
-            let screen = self.ipad_screen(parts, window, cx);
-            return self.home_zoom_over(screen, window, cx);
+            return self.ipad_layers(parts, window, cx);
         }
         let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
         let canvas_area = div()
@@ -10154,6 +10158,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     ipad: ipad::Chrome::new(),
                     home: home::Home::new(),
                     presenter: presenter::Presenter::new(),
+                    sheet: sheet::Sheet::new(),
+                    intro: onboarding::Intro::new(),
                 };
                 workbench.show_page_image();
                 if start_replaying {

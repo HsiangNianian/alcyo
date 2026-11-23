@@ -329,12 +329,28 @@ const HOME_ICONS: [(&str, &str); 7] = [
     ("icons/ipad/trash.svg", include_str!("../icons/ipad/trash.svg")),
 ];
 
+/// The iPad's Settings sheet and first run (crates/ui/src/sheet.rs, onboarding.rs), in the same hand.
+const IPAD_SHEET_ICONS: [(&str, &str); 12] = [
+    ("icons/ipad/airplay.svg", include_str!("../icons/ipad/airplay.svg")),
+    ("icons/ipad/check.svg", include_str!("../icons/ipad/check.svg")),
+    ("icons/ipad/chip.svg", include_str!("../icons/ipad/chip.svg")),
+    ("icons/ipad/cloud.svg", include_str!("../icons/ipad/cloud.svg")),
+    ("icons/ipad/download.svg", include_str!("../icons/ipad/download.svg")),
+    ("icons/ipad/info.svg", include_str!("../icons/ipad/info.svg")),
+    ("icons/ipad/keyboard.svg", include_str!("../icons/ipad/keyboard.svg")),
+    ("icons/ipad/lasso.svg", include_str!("../icons/ipad/lasso.svg")),
+    ("icons/ipad/lock.svg", include_str!("../icons/ipad/lock.svg")),
+    ("icons/ipad/mic.svg", include_str!("../icons/ipad/mic.svg")),
+    ("icons/ipad/sliders.svg", include_str!("../icons/ipad/sliders.svg")),
+    ("icons/ipad/waveform.svg", include_str!("../icons/ipad/waveform.svg")),
+];
+
 /// The icons the toolkit carries, the few more this window asks for, and our own pictograms over both.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {
