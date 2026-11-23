@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alcyo for iPad</title>
+<style>
+@font-face{font-family:'DM Sans';src:url(fonts/DMSans.ttf) format('truetype');font-weight:100 1000}
+@font-face{font-family:'JetBrains Mono';src:url(fonts/JetBrainsMono.ttf) format('truetype');font-weight:100 800}
+*{box-sizing:border-box}
+body{margin:0;background:#e8e7e3;color:#111;font-family:'DM Sans','Noto Sans CJK SC',sans-serif;-webkit-font-smoothing:antialiased}
+.page{max-width:1480px;margin:0 auto;padding:48px 32px 80px;display:flex;flex-direction:column;gap:48px}
+.lbl{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#6e6e6e}
+h1{margin:8px 0 12px;font-size:40px;font-weight:700;letter-spacing:-.03em}
+h2{margin:0 0 6px;font-size:22px;font-weight:650;letter-spacing:-.02em}
+p{margin:0;font-size:15px;line-height:1.55;color:#444;max-width:820px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,430px),1fr));gap:22px}
+.grid.three{grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr))}
+a.card{display:flex;flex-direction:column;gap:12px;color:inherit;text-decoration:none;background:#f6f5f2;border-radius:20px;padding:12px 12px 18px;box-shadow:0 0 0 1px rgba(0,0,0,.05),0 8px 24px -12px rgba(0,0,0,.15);transition:transform .2s,box-shadow .2s}
+a.card:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(0,0,0,.08),0 16px 36px -14px rgba(0,0,0,.25)}
+.thumb{border-radius:12px;overflow:hidden;background:#e8e7e3;aspect-ratio:16/10}
+.thumb img{width:100%;height:100%;object-fit:cover;object-position:left top;display:block}
+.card .t{padding:0 6px;display:flex;flex-direction:column;gap:4px}
+.card b{font-size:17px;font-weight:650}
+.card span{font-size:13.5px;line-height:1.5;color:#555}
+.rec{background:#111;color:#f2f2f2;border-radius:24px;padding:28px 32px;display:flex;gap:28px;align-items:flex-start}
+.rec p{color:#c4c4c4}
+.rec b{color:#fff}
+.rec svg{width:64px;height:50px;flex:none}
+.tag{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:10.5px;padding:2px 7px;border-radius:6px;background:#111;color:#fff;margin-left:6px;vertical-align:2px}
+footer{font-size:13px;color:#6e6e6e}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <span class="lbl">Alcyo · iPad · design directions · Nov 2026</span>
+    <h1>Alcyo for iPad</h1>
+    <p>The iPad gets its own layout instead of the desktop's squeezed onto a tablet. Three directions for the live meeting screen, then the screens around it. The palette, ink and fonts are the shipping app's (crates/ui/src/theme.rs); devices are drawn at true point size, 11" at 1194 × 834 and 13" at 1376 × 1032. Each page opens at full size with notes beside the device.</p>
+  </header>
+
+  <section style="display:flex;flex-direction:column;gap:16px">
+    <div><h2>Live meeting · three directions</h2><p>The same board and the same moment in the meeting, so only the layout differs.</p></div>
+    <div class="grid three">
+      <a class="card" href="A-canvas.html"><div class="thumb"><img src="shots/A-canvas.png" alt="Direction A, canvas first"></div><div class="t"><b>A · Canvas first <span class="tag">recommended</span></b><span>Full-bleed board, glass toolbars, a Pencil palette, the transcript as a floating card, one dock in thumb reach.</span></div></a>
+      <a class="card" href="B-split.html"><div class="thumb"><img src="shots/B-split.png" alt="Direction B, split view"></div><div class="t"><b>B · Split view</b><span>Native two columns: board plus a permanent transcript, a real bottom toolbar, meetings as an overlay sidebar.</span></div></a>
+      <a class="card" href="C-presenter.html"><div class="thumb"><img src="shots/C-presenter.png" alt="Direction C, presenter"></div><div class="t"><b>C · Presenter</b><span>For a projector or AirPlay: the room sees a clean 16:9 board with captions; the iPad keeps big controls on a dark surround.</span></div></a>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:16px">
+    <div><h2>Around the live screen</h2><p>Shown in direction A, which these screens assume.</p></div>
+    <div class="grid">
+      <a class="card" href="Home.html"><div class="thumb"><img src="shots/Home.png" alt="Meetings home"></div><div class="t"><b>Meetings</b><span>Boards as thumbnails grouped by day, New meeting as the first card, search inside what was said.</span></div></a>
+      <a class="card" href="Settings.html"><div class="thumb"><img src="shots/Settings.png" alt="Settings sheet"></div><div class="t"><b>Settings sheet</b><span>Board model (DeepSeek or on this iPad), Speech (Apple or bundled models, microphone), General with Pencil options.</span></div></a>
+      <a class="card" href="Onboarding.html"><div class="thumb"><img src="shots/Onboarding.png" alt="Onboarding" style="object-position:left 70%"></div><div class="t"><b>Onboarding</b><span>Three steps: microphone with a reason, who draws the board, where to put the iPad.</span></div></a>
+      <a class="card" href="Portrait.html"><div class="thumb"><img src="shots/Portrait.png" alt="Portrait"></div><div class="t"><b>Portrait</b><span>Transcript as a bottom sheet with detents, the dock riding its edge, the palette folded into a puck.</span></div></a>
+      <a class="card" href="Dark.html"><div class="thumb"><img src="shots/Dark.png" alt="Dark, 13 inch"></div><div class="t"><b>Dark · 13"</b><span>Dark glass and the app's dark ink, with the floating card switched to the summary.</span></div></a>
+      <a class="card" href="Pencil.html"><div class="thumb"><img src="shots/Pencil.png" alt="Pencil close-up"></div><div class="t"><b>Circle, then say it</b><span>A Pencil loop selects and tints what it caught; the card shows the spoken command as it is heard.</span></div></a>
+      <a class="card" href="StageManager.html"><div class="thumb"><img src="shots/StageManager.png" alt="Stage Manager"></div><div class="t"><b>Stage Manager</b><span>A 600 pt window beside the slides: Listening, one transcript line, tools folded by priority.</span></div></a>
+    </div>
+  </section>
+
+  <section class="rec">
+    <svg viewBox="20 100 480 380" aria-hidden="true"><path d="M48 430 C120 392 168 300 214 236 C240 182 280 134 334 132 C370 131 394 150 398 172 L480 194 L390 204 C374 226 348 244 316 262 C262 292 214 330 168 372 C134 402 102 426 70 448 L84 429 Z" fill="#0a7ea4"/><path d="M372 236 C350 274 300 318 246 352 C214 372 182 390 148 402 C196 404 252 386 298 352 C336 324 362 284 372 236 Z" fill="#f07a2b"/></svg>
+    <div><h2 style="color:#fff">Build A first</h2>
+    <p><b>Canvas first</b> is the most iPad-native: the board gets the whole screen, the Pencil always marks while fingers move it, and every control the meeting needs sits in one dock under the thumbs. Its parts carry over: the floating card becomes B's column on 13" when wanted, the dock shrinks for Stage Manager, and C can follow later as a mode that only changes what the external display shows.</p></div>
+  </section>
+
+  <footer>Static HTML, CSS and inline SVG. Screenshots in shots/ come from headless Chromium.</footer>
+</div>
+</body>
+</html>
