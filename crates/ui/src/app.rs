@@ -663,6 +663,41 @@ impl Ink {
         [v.x + (f32::from(at.x) - f32::from(self.canvas.origin.x)) / v.k, v.y + (f32::from(at.y) - f32::from(self.canvas.origin.y)) / v.k]
     }
 
+    /// A press with a tool in hand starts its stroke: a mark, a crop, a circle. True when it did, so the
+    /// board stays put. Shared by the mouse and, on the iPad, a finger.
+    fn tool_down(&mut self, at: Point<Pixels>) -> bool {
+        let start = self.on_board(at);
+        if self.marking {
+            self.scribble = Some(vec![start]);
+        } else if self.cropping {
+            self.crop = Some((start, start));
+        } else if self.circling {
+            self.drawing = Some(vec![start]);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// The stroke a tool started goes on to `at`. True when there was one.
+    fn tool_drag(&mut self, at: Point<Pixels>) -> bool {
+        let at = self.on_board(at);
+        let k = self.shown().k;
+        if let Some(line) = self.scribble.as_mut() {
+            // A point every couple of screen pixels is plenty, and keeps a long line light.
+            if line.last().is_none_or(|p| (p[0] - at[0]).hypot(p[1] - at[1]) * k >= 2.0) {
+                line.push(at);
+            }
+        } else if let Some((_, end)) = self.crop.as_mut() {
+            *end = at;
+        } else if let Some(shape) = self.drawing.as_mut() {
+            shape.push(at);
+        } else {
+            return false;
+        }
+        true
+    }
+
     /// Close the circle being drawn, and take in whatever has its middle inside it.
     fn close_loop(&mut self) {
         let Some(shape) = self.drawing.take().filter(|s| s.len() >= 3) else { return };
@@ -4327,6 +4362,28 @@ impl Workbench {
 
     /// Put a line drawn by hand on the board. On a clip it is kept on the clip; on the page it stays where it
     /// was drawn. Elsewhere the layout moves things about, so it is not kept.
+    /// Lift the tool: a mark is put on the page, a crop cut, a circle closed. True when one was being drawn.
+    fn tool_up(&mut self, cx: &mut Context<Self>) -> bool {
+        let line = self.ink.borrow_mut().scribble.take();
+        if let Some(line) = line {
+            self.annotate(&line, cx);
+            return true;
+        }
+        let cut = self.ink.borrow_mut().crop.take();
+        if let Some((from, to)) = cut {
+            self.cut_clip(from, to, cx);
+            return true;
+        }
+        let mut b = self.ink.borrow_mut();
+        if b.drawing.is_some() {
+            b.close_loop();
+            drop(b);
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
     fn annotate(&mut self, line: &[[f32; 2]], cx: &mut Context<Self>) {
         cx.notify();
         if !self.editable() || line.len() < 2 {
@@ -6363,8 +6420,16 @@ fn speaker_marker(speakers: &[String], name: &str) -> u32 {
 
 /// The window's own bar, as it looks from the first frame: a little taller than the toolkit's where the system
 /// leaves its height to us. A Mac puts its window buttons in it, placed for the toolkit's height.
+#[cfg(not(target_os = "ios"))]
 fn title_bar() -> TitleBar {
     TitleBar::new().bg(rgb(pal().surface)).border_color(rgb(pal().line)).when(cfg!(not(target_os = "macos")), |bar| bar.h(px(BAR_H)))
+}
+
+/// On the iPad there is no window to move, shrink or close, so the same bar without the toolkit's window
+/// buttons, which it draws on every system but the Mac's.
+#[cfg(target_os = "ios")]
+fn title_bar() -> gpui_kit::Div {
+    div().flex_shrink_0().flex().flex_row().items_center().justify_between().h(px(BAR_H)).px(px(12.)).border_b_1().border_color(rgb(pal().line)).bg(rgb(pal().surface))
 }
 
 /// A point that notes, as it is laid out, how far down the window it is: where a list starts (`row` false), or
@@ -6566,6 +6631,7 @@ impl Render for Workbench {
             (ink.reading, ink.shown().k)
         };
         let ink = self.ink.clone();
+        let (touch_ink, touch_this) = (self.ink.clone(), cx.entity().downgrade());
         let wheel = self.ink.clone();
         let press = self.ink.clone();
         let moved = self.ink.clone();
@@ -6587,19 +6653,7 @@ impl Render for Workbench {
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                 window.focus(&this.focus, cx);
                 let mut b = press.borrow_mut();
-                if b.marking {
-                    let start = b.on_board(e.position);
-                    b.scribble = Some(vec![start]);
-                    return;
-                }
-                if b.cropping {
-                    let start = b.on_board(e.position);
-                    b.crop = Some((start, start));
-                    return;
-                }
-                if b.circling {
-                    let start = b.on_board(e.position);
-                    b.drawing = Some(vec![start]);
+                if b.tool_down(e.position) {
                     return;
                 }
                 // A press on a clip card takes hold of the card rather than the board.
@@ -6636,28 +6690,7 @@ impl Render for Workbench {
                     cx.notify();
                     return;
                 }
-                if b.scribble.is_some() && e.pressed_button == Some(MouseButton::Left) {
-                    let at = b.on_board(e.position);
-                    let k = b.shown().k;
-                    let line = b.scribble.as_mut().expect("scribbling");
-                    // A point every couple of screen pixels is plenty, and keeps a long line light.
-                    if line.last().is_none_or(|p| (p[0] - at[0]).hypot(p[1] - at[1]) * k >= 2.0) {
-                        line.push(at);
-                    }
-                    cx.notify();
-                    return;
-                }
-                if b.crop.is_some() && e.pressed_button == Some(MouseButton::Left) {
-                    let at = b.on_board(e.position);
-                    if let Some((_, end)) = b.crop.as_mut() {
-                        *end = at;
-                    }
-                    cx.notify();
-                    return;
-                }
-                if b.drawing.is_some() && e.pressed_button == Some(MouseButton::Left) {
-                    let at = b.on_board(e.position);
-                    b.drawing.as_mut().expect("drawing").push(at);
+                if e.pressed_button == Some(MouseButton::Left) && b.tool_drag(e.position) {
                     cx.notify();
                     return;
                 }
@@ -6691,22 +6724,10 @@ impl Render for Workbench {
                     }
                     return;
                 }
-                let line = release.borrow_mut().scribble.take();
-                if let Some(line) = line {
-                    this.annotate(&line, cx);
-                    return;
-                }
-                let cut = release.borrow_mut().crop.take();
-                if let Some((from, to)) = cut {
-                    this.cut_clip(from, to, cx);
+                if this.tool_up(cx) {
                     return;
                 }
                 let mut b = release.borrow_mut();
-                if b.drawing.is_some() {
-                    b.close_loop();
-                    cx.notify();
-                    return;
-                }
                 if let Some((from, _)) = b.drag.take() {
                     let d = e.position - from;
                     if f32::from(d.x).hypot(f32::from(d.y)) < CLICK_SLOP {
@@ -6719,6 +6740,31 @@ impl Render for Workbench {
                 canvas(
                     |_, _, _| (),
                     move |bounds: Bounds<Pixels>, (), window: &mut Window, _: &mut App| {
+                        // A finger dragging the board moves it, unless a tool is in hand: then, claimed as it
+                        // starts, the drag draws the tool's stroke, as the mouse does. Only the iPad sends these.
+                        window.on_mouse_event(move |e: &gpui_kit::TouchDragEvent, phase, window, cx| {
+                            if phase != gpui_kit::DispatchPhase::Bubble {
+                                return;
+                            }
+                            match e.phase {
+                                gpui_kit::TouchPhase::Started => {
+                                    let mut b = touch_ink.borrow_mut();
+                                    if bounds.contains(&e.start_position) && b.tool_down(e.start_position) {
+                                        b.tool_drag(e.position);
+                                        window.prevent_default();
+                                        window.refresh();
+                                    }
+                                }
+                                gpui_kit::TouchPhase::Moved => {
+                                    if touch_ink.borrow_mut().tool_drag(e.position) {
+                                        window.refresh();
+                                    }
+                                }
+                                gpui_kit::TouchPhase::Ended | gpui_kit::TouchPhase::Cancelled => {
+                                    let _ = touch_this.update(cx, |this, cx| this.tool_up(cx));
+                                }
+                            }
+                        });
                         let mut b = ink.borrow_mut();
                         // What floats over the board is sized by it: a new size is drawn once more to fit it.
                         if b.canvas.size != bounds.size {
@@ -8368,7 +8414,8 @@ impl Render for Workbench {
                     .flex_col()
                     .child(intro(t("what-is-heard-and-how")))
                     .child(section(Some(t("listen-to-2")), vec![listen_row.into_any_element()]))
-                    .when(listen.microphone(), |d| d.child(section(Some(t("microphone")), vec![microphones.into_any_element()])))
+                    // The iPad has one input, which the system routes (a headset, AirPods), so there is nothing to choose.
+                    .when(listen.microphone() && !cfg!(target_os = "ios"), |d| d.child(section(Some(t("microphone")), vec![microphones.into_any_element()])))
                     .when(listen.computer(), |d| d.child(section(Some(t("device-sound-2")), vec![outputs.into_any_element()])))
                     .when(listen.computer() && cfg!(target_os = "macos"), |d| d.child(footnote(t("on-a-mac-hearing-the").into(), pal().muted)))
                     .child(section(Some(t("recognition")), recognition))
@@ -9435,7 +9482,10 @@ struct Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().font(theme::interface_font()).bg(rgb(pal().paper)).map(|d| match &self.workbench {
+        // Clear of what the system draws over the window: the iPad's status bar, its home indicator, the
+        // corners of a rounded screen. Nothing on a desktop window.
+        let safe = window.insets().safe_area;
+        div().size_full().font(theme::interface_font()).bg(rgb(pal().paper)).pt(safe.top).pb(safe.bottom).pl(safe.left).pr(safe.right).map(|d| match &self.workbench {
             Some(workbench) => d.child(workbench.clone()).into_any_element(),
             // The bar is there from the start, so the window can be moved while the app gets ready.
             None => d.flex().flex_col().child(title_bar()).child(div().flex_1().min_h_0().child(crate::splash::splash(&self.word, self.started, window))).into_any_element(),
