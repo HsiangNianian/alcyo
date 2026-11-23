@@ -66,6 +66,13 @@ copy_search "$lib/search"
 printf 'all\n' > "$lib/variant"
 cp LICENSE assets/licenses/* crates/fonts/files/OFL-*.txt assets/hanzi/ARPHICPL.TXT "$lib/licenses/"
 
+# Only the program and the framework are code. codesign takes any other file marked executable, or
+# carrying extended attributes, for code it must sign, and refuses the app.
+xattr -cr "$app"
+find "$app" -type f ! -path "$app/alcyo" ! -path "$app/Frameworks/*" -exec chmod 644 {} +
+find "$app" -type d -exec chmod 755 {} +
+ls -l "$app" | head -20
+
 if [ -n "${IOS_CERT_P12:-}" ] && [ -n "${IOS_PROFILE:-}" ]; then
   work=$(mktemp -d)
   keychain="$work/alcyo-ios.keychain-db"
@@ -89,7 +96,7 @@ if [ -n "${IOS_CERT_P12:-}" ] && [ -n "${IOS_PROFILE:-}" ]; then
   echo "signing with $(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Distribution/ { print $2; exit }'), profile $(/usr/libexec/PlistBuddy -c 'Print :Name' "$work/profile.plist")"
   codesign --force --sign "$identity" --timestamp=none "$app/Frameworks/SherpaOnnxC.framework"
   codesign --force --sign "$identity" --timestamp=none --entitlements "$work/entitlements.plist" "$app"
-  codesign --verify --strict --deep "$app"
+  codesign --verify --strict --deep --verbose=2 "$app"
   signed=1
 else
   echo "no IOS_CERT_P12 or IOS_PROFILE: built, not signed" >&2
