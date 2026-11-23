@@ -39,6 +39,11 @@ fn main() {
     if let Some(toolchain) = PathBuf::from(swiftc).parent().and_then(|bin| bin.parent()) {
         println!("cargo:rustc-link-search=native={}", toolchain.join("lib/swift").join(sdk).display());
     }
+    // `#available` checks call ___isPlatformVersionAtLeast, from clang's runtime, which Xcode links and Rust does not.
+    let resources = output(Command::new("xcrun").args(["--sdk", sdk, "clang", "-print-resource-dir"]));
+    println!("cargo:rustc-link-search=native={resources}/lib/darwin");
+    // Handed to the linker as it is: rustc cannot read a fat archive to bundle it into this crate's rlib.
+    println!("cargo:rustc-link-lib=static:-bundle={}", if simulator { "clang_rt.iossim" } else { "clang_rt.ios" });
     for framework in ["Speech", "AVFoundation", "Foundation"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }
