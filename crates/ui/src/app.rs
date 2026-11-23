@@ -9626,6 +9626,10 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
+    // On the iPad a cold start lands on the meetings rather than the last one, unless something was asked for.
+    if crate::platform::ipad_layout() && start_panel == Panel::Transcript && open.is_none() && demo.is_none() && wav.is_none() && case.is_none() && synthetic.is_none() && start_import.is_none() && !start_replaying {
+        start_panel = Panel::Library;
+    }
     let mut turns = vec![];
     if let Some(id) = case {
         let root = root.as_ref().context("--case needs --root <checkout>")?;
@@ -10111,7 +10115,10 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     }
                     let build = build.take().expect("runs once");
                     let _ = this.update_in(cx, |shell: &mut Shell, window, cx| {
-                        shell.workbench = Some(build(prepared, window, cx));
+                        let workbench = build(prepared, window, cx);
+                        // The written name hands over to the iPad's meetings page, which takes it into its title.
+                        workbench.update(cx, |workbench, _| workbench.home_intro(shell.word.clone()));
+                        shell.workbench = Some(workbench);
                         cx.notify();
                     });
                 })

@@ -91,6 +91,9 @@ pub(super) struct Home {
     renaming: Option<String>,
     rename_input: Option<Entity<InputState>>,
     placeholder: bool,
+    /// The app's name as the splash wrote it, and when the page took over from the splash: on a cold start
+    /// the name flows into the page's title and the rest follows.
+    intro: Option<(Vec<Inked>, Instant)>,
 }
 
 impl Home {
@@ -112,6 +115,7 @@ impl Home {
             renaming: None,
             rename_input: None,
             placeholder: false,
+            intro: None,
         }
     }
 }
@@ -329,6 +333,14 @@ impl Workbench {
         }
     }
 
+    /// The splash is done and the page takes over: on the iPad's meetings page its written name flows into the
+    /// title. Elsewhere nothing changes.
+    pub(super) fn home_intro(&mut self, word: Vec<Inked>) {
+        if crate::platform::ipad_layout() && self.panel == Panel::Library {
+            self.home.intro = Some((word, Instant::now()));
+        }
+    }
+
     /// Open a meeting from its card, growing the card into the board.
     fn home_open(&mut self, id: &str, cx: &mut Context<Self>) {
         self.home.menu = None;
@@ -495,6 +507,12 @@ impl Workbench {
                 self.home.zoom = None;
             }
         }
+        let (intro_for, _) = intro_animation();
+        if self.home.intro.as_ref().is_some_and(|(_, at)| at.elapsed() > intro_for + INTRO_REST + STAGGER * 16 + Duration::from_millis(400)) {
+            self.home.intro = None;
+        }
+        // Cold from the splash, the rest of the page waits for the title to arrive.
+        let after = if self.home.intro.is_some() { INTRO_REST } else { Duration::ZERO };
         if !self.home.placeholder {
             self.home.placeholder = true;
             self.library_query.update(cx, |state, cx| state.set_placeholder(t("home-search"), window, cx));
@@ -594,11 +612,11 @@ impl Workbench {
             };
             let mut cards: Vec<AnyElement> = vec![];
             if start_card {
-                cards.push(self.start_card(opened, order, cx));
+                cards.push(self.start_card(opened, order, after, cx));
                 order += 1;
             }
             for e in group {
-                cards.push(self.meeting_card(e, age, opened, order, listening, cx));
+                cards.push(self.meeting_card(e, age, opened, order, after, listening, cx));
                 order += 1;
             }
             sections.push(
@@ -639,8 +657,10 @@ impl Workbench {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(gpui_kit::img("icons/ipad/halcy.svg").w(px(30.)).h(px(24.)))
-                    .child(div().text_size(px(34.)).font_weight(FontWeight::BOLD).whitespace_nowrap().child(t("meetings"))),
+                    .text_size(px(34.))
+                    .child(gpui_kit::img("icons/ipad/halcy.svg").flex_none().w(px(30.)).h(px(24.)))
+                    .child(div().font_weight(FontWeight::BOLD).whitespace_nowrap().child(t("meetings")))
+                    .map(|brand| self.intro_brand(brand, window)),
             )
             .child(div().flex_1())
             .when(self.store.is_some(), |d| {
@@ -825,8 +845,9 @@ impl Workbench {
             .text_color(rgb(p.text))
             .child(list)
             .child(fade)
+            .when_some(self.intro_word(window), |d, word| d.child(word))
             .child(header)
-            .child(chips)
+            .child(chips.map(|chips| follow(chips, "home-intro-chips", after)))
             .when_some(deleted, |d, deleted| d.child(deleted))
             .when_some(notices, |d, notices| d.child(div().absolute().top(px(list_top)).left(px(SIDE)).right(px(SIDE)).child(notices)))
             .when_some(menu, |d, menu| d.child(menu))
@@ -899,7 +920,7 @@ impl Workbench {
     }
 
     /// The first card: start a meeting and listen, on the iPad's microphone.
-    fn start_card(&self, opened: usize, order: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn start_card(&self, opened: usize, order: usize, after: Duration, cx: &mut Context<Self>) -> AnyElement {
         let p = pal();
         let dark = theme::is_dark();
         let pressed = self.home.pressed.as_deref() == Some("");
@@ -960,11 +981,11 @@ impl Workbench {
                 cx.notify();
             }))
             .on_click(cx.listener(|this, _, _, cx| this.home_listen(cx)));
-        stagger(card, opened, order)
+        stagger(card, opened, order, after)
     }
 
     /// A meeting's card: its board, its name, when and how long, and who spoke.
-    fn meeting_card(&self, e: &Entry, age: usize, opened: usize, order: usize, listening: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn meeting_card(&self, e: &Entry, age: usize, opened: usize, order: usize, after: Duration, listening: bool, cx: &mut Context<Self>) -> AnyElement {
         let p = pal();
         let thumb = self.home.thumbs.get(&e.id);
         let meta = thumb.map(|t| t.meta.clone()).unwrap_or_default();
@@ -1080,7 +1101,7 @@ impl Workbench {
                 cx.notify();
             }))
             .when(!renaming, |d| d.on_click(cx.listener(move |this, _, _, cx| this.home_open(&open_id, cx))));
-        stagger(card, opened, order)
+        stagger(card, opened, order, after)
     }
 
     /// A card's actions, held out by a long press: pin, rename, export and delete.
@@ -1157,7 +1178,105 @@ fn press<E: gpui_kit::Styled>(el: E, v: f32) -> E {
 }
 
 /// Cards rise into place one after the other each time the page comes up.
-fn stagger(card: gpui_kit::Stateful<gpui_kit::Div>, opened: usize, order: usize) -> AnyElement {
-    let delay = STAGGER * order.min(16) as u32;
+fn stagger(card: gpui_kit::Stateful<gpui_kit::Div>, opened: usize, order: usize, after: Duration) -> AnyElement {
+    let delay = after + STAGGER * order.min(16) as u32;
     card.with_animation(("home-rise", opened * 10_000 + order), rise(delay), |d, t| d.opacity(t.clamp(0., 1.)).relative().top(px(16. * (1. - t)))).into_any_element()
+}
+
+/// How long the splash's name takes to become the title, and its curve.
+fn intro_animation() -> (Duration, gpui_kit::Animation) {
+    let (settle, easing) = gpui_kit::sampled_easing(ZOOM, 0.002);
+    (settle, gpui_kit::Animation::new(settle).with_easing(easing))
+}
+
+/// What comes in after the title on a cold start: faded in and risen a little, `after` the page took over.
+fn follow(el: gpui_kit::Div, id: &'static str, after: Duration) -> gpui_kit::AnimationElement<gpui_kit::Div> {
+    el.with_animation(id, rise(after), |d, t| d.opacity(t.clamp(0., 1.)).mt(px(10. * (1. - t))))
+}
+
+/// Once the title has nearly arrived, the rest of the page comes in.
+const INTRO_REST: Duration = Duration::from_millis(320);
+/// The title's size while it is still the splash's name, and the size the splash writes the name at.
+const INTRO_TITLE: f32 = 52.;
+const SPLASH_SIZE: f32 = 56.;
+
+impl Workbench {
+    /// Where the splash wrote the name: the middle of the window under its bar.
+    fn splash_centre(window: &Window) -> (f32, f32) {
+        let size = window.viewport_size();
+        let inset = window.insets().safe_area;
+        let (top, bottom) = (f32::from(inset.top) + BAR_H, f32::from(inset.bottom));
+        (f32::from(size.width) / 2., top + (f32::from(size.height) - top - bottom) / 2.)
+    }
+
+    /// The page's title on a cold start, travelling from where the splash wrote the name into its place,
+    /// shrinking to its size and coming up as the written name fades.
+    fn intro_brand(&self, brand: gpui_kit::Div, window: &Window) -> AnyElement {
+        if self.home.intro.is_none() {
+            return brand.into_any_element();
+        }
+        let top = f32::from(crate::platform::safe_area(window).top);
+        let (cx, cy) = Self::splash_centre(window);
+        let (_, animation) = intro_animation();
+        // The brand's width at a title size: the mark, the gap and the word, near enough.
+        let width = |size: f32| 40. + size * 4.85;
+        let home_y = top + 14. + 22.;
+        brand
+            .relative()
+            .with_animation("home-intro-brand", animation, move |d, t| {
+                let size = INTRO_TITLE + (34. - INTRO_TITLE) * t;
+                let left = (cx - width(size) / 2. - SIDE) * (1. - t);
+                let down = (cy - home_y) * (1. - t);
+                d.text_size(px(size)).left(px(left)).top(px(down)).opacity(((t - 0.1) / 0.4).clamp(0., 1.))
+            })
+            .into_any_element()
+    }
+
+    /// The splash's written name, fading as the title takes over and drifting the same way, shrinking with it.
+    fn intro_word(&self, window: &Window) -> Option<AnyElement> {
+        let (word, _) = self.home.intro.as_ref()?;
+        let word = word.clone();
+        let (cx, cy) = Self::splash_centre(window);
+        let top = f32::from(crate::platform::safe_area(window).top);
+        let (to_x, to_y) = (SIDE + (40. + 34. * 4.85) / 2., top + 14. + 22.);
+        let (_, animation) = intro_animation();
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .with_animation("home-intro-word", animation, move |d, t| {
+                    let word = word.clone();
+                    let k = 1. - (1. - 34. / SPLASH_SIZE) * t;
+                    let (x, y) = (cx + (to_x - cx) * t, cy + (to_y - cy) * t);
+                    let fade = (1. - t / 0.6).clamp(0., 1.);
+                    d.child(
+                        canvas(
+                            |_, _, _| (),
+                            move |_, (), window: &mut Window, _| {
+                                if fade <= 0. {
+                                    return;
+                                }
+                                let mut color: Hsla = rgb(pal().ink(0x1e_1e_1e)).into();
+                                color.a = fade;
+                                let at = |p: &Pt| point(px(x + p[0] * k), px(y + p[1] * k));
+                                for stroke in &word {
+                                    let shape = outline(stroke, 1.0);
+                                    let Some(first) = shape.first() else { continue };
+                                    let mut pb = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::non_zero()));
+                                    pb.move_to(at(first));
+                                    shape[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                    pb.close();
+                                    if let Ok(path) = pb.build() {
+                                        window.paint_path(path, Background::from(color));
+                                    }
+                                }
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
 }
