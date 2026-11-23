@@ -14,3 +14,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [features]
 metal = ["mistralrs/metal"]
+
+# sysinfo 0.36.1, which mistral.rs pins, uses libc items that exist only for the Mac on the iPad too; this copy
+# keeps them to the Mac (vendor/sysinfo, marked "Alcyo spike").
+[patch.crates-io]
+sysinfo = { path = "vendor/sysinfo" }
