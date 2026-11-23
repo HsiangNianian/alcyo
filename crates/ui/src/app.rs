@@ -64,6 +64,11 @@ use std::time::{Duration, Instant};
 // The iPad's screen, a child of this module so it reaches the workbench's state; kept beside this file.
 #[path = "ipad.rs"]
 mod ipad;
+// The iPad's Settings sheet and first run, laid over its screen; beside this file too.
+#[path = "sheet.rs"]
+mod sheet;
+#[path = "onboarding.rs"]
+mod onboarding;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -1745,8 +1750,10 @@ struct Workbench {
     exit_when_done: bool,
     /// A failed save blocked closing once; the next attempt closes anyway.
     close_refused: bool,
-    /// What the iPad's screen keeps for itself (ipad.rs).
+    /// What the iPad's screen keeps for itself (ipad.rs), its Settings sheet (sheet.rs) and first run (onboarding.rs).
     ipad: ipad::Chrome,
+    sheet: sheet::Sheet,
+    intro: onboarding::Intro,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -5130,6 +5137,7 @@ impl Workbench {
             proxy_password: self.form.saved.proxy_password.clone(),
             keep_audio: self.form.saved.keep_audio,
             reduce_motion: self.form.saved.reduce_motion,
+            ..self.form.saved.clone()
         }
     }
 
@@ -9294,8 +9302,8 @@ impl Render for Workbench {
         }
         // The iPad lays the same parts out its own way: the board over the whole screen, the rest floating on it.
         if ipad {
+            // Settings is a sheet over the meeting there (sheet.rs), not a page in its place.
             let page = match self.panel {
-                Panel::Settings => Some(settings.into_any_element()),
                 Panel::Library => overlay.take(),
                 _ => None,
             };
@@ -9317,7 +9325,7 @@ impl Render for Workbench {
                 waiting,
                 not_drawn,
             };
-            return self.ipad_screen(parts, window, cx);
+            return self.ipad_layers(parts, window, cx);
         }
         let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
         let canvas_area = div()
@@ -10042,6 +10050,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     exit_when_done,
                     close_refused: false,
                     ipad: ipad::Chrome::new(),
+                    sheet: sheet::Sheet::new(),
+                    intro: onboarding::Intro::new(),
                 };
                 workbench.show_page_image();
                 if start_replaying {

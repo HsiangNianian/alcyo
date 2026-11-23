@@ -339,6 +339,93 @@ verifying-and-installing = Verifying and installing…
 save-and-restart = Save and restart
 try-again = Try again
 about = About
+# The iPad's Settings, a sheet over the meeting (sheet.rs).
+ipad-version = Alcyo { $version }
+ipad-model-intro = The board model listens to the transcript and draws. Speech recognition is already included and never needs a network.
+ipad-remote-card = DeepSeek or any OpenAI-compatible API. Fast; the transcript is sent to the provider.
+ipad-on-this-ipad = On this iPad
+ipad-local-card = Runs on the iPad's chip. Private and offline; needs 3 GB free.
+# Over the remote model's fields, once it answered: how long it took.
+ipad-connected = Connected · { $ms } ms
+ipad-checking = Checking…
+ipad-not-connected = Not connected
+ipad-provider = Provider
+ipad-endpoint = Endpoint
+ipad-other-provider = Other
+# Where the API key is kept.
+ipad-keychain = Keychain
+ipad-key-file = Encrypted file
+# Over the models that can be downloaded: the room left on the device.
+ipad-free = { $size } free
+ipad-model-draws = draws boards, writes summaries
+ipad-model-reads = also reads imported images and PDFs
+ipad-model-other = draws boards
+ipad-recognize-with = Recognize speech with
+ipad-apple-speech = Apple speech recognition
+ipad-apple-speech-hint = Built into iPadOS, on device. Nothing to download.
+ipad-alcyo-speech = Alcyo speech models
+ipad-alcyo-speech-hint = Bundled with the app. Hears Chinese and English in one sentence.
+ipad-microphone-name = iPad microphone
+ipad-speech-note = Apple hears one language at a time; Chinese also hears English. The board and summary follow the meeting's own language. A USB or Bluetooth microphone shows up here when connected.
+ipad-keep-sound = Keep the sound with the meeting
+ipad-keep-sound-hint = About 10 MB an hour, for replay and export. Never uploaded.
+ipad-glossary = Glossary
+ipad-glossary-hint = Names and terms to hear right.
+ipad-glossary-hint-names = Names and terms to hear right: { $names }
+ipad-fade-tools = Fade the tools while listening
+ipad-fade-tools-hint = After 3 seconds without a touch. The listening button stays.
+ipad-reduce-motion-hint = Things change in place. Also on when iPadOS asks for less motion.
+ipad-keep-screen-on = Keep the screen on while listening
+ipad-keep-screen-on-hint = So a meeting is not cut off by Auto-Lock.
+ipad-pencil-touch = Pencil & touch
+ipad-pencil-only = Only Pencil marks the board
+ipad-pencil-only-hint = Fingers pan and zoom. Turn off to mark with a finger.
+ipad-double-tap = Double-tap Pencil
+ipad-squeeze = Squeeze Pencil Pro
+# What a Pencil's double tap or squeeze does.
+ipad-pencil-undo = Undo
+ipad-pencil-eraser = Eraser
+ipad-pencil-tools = Show tools
+ipad-pencil-off = Nothing
+ipad-about-line = Draws the meeting as it is said.
+ipad-meetings-folder = Where meetings are kept
+# The iPad's first run, three steps (onboarding.rs).
+ob-step = { $n } / { $of }
+ob-1-title =
+    Your meeting,
+    drawn as it is said.
+ob-1-text = Alcyo listens to the room and draws a board while people talk: flow charts, lists, decisions and open questions, in a hand-drawn style.
+ob-1-tip = It needs the microphone
+ob-1-tip-hint = Speech is recognized on this iPad. The sound is not uploaded or kept unless you choose to.
+ob-1-allow = Allow the microphone
+# Captions along the foot of each step's picture.
+ob-art-1 = Alcyo
+ob-art-1-2 = listens · draws
+ob-art-2 = The board model
+ob-art-2-2 = draws this
+ob-art-3 = Circle with Pencil
+ob-art-3-2 = then say it
+ob-2-title =
+    Who draws
+    the board?
+ob-2-text = Speech recognition is built in. The board needs a language model: remote is quicker to set up, on this iPad keeps everything private.
+ob-2-remote = Remote · DeepSeek
+ob-2-remote-hint = Paste an API key. The transcript is sent to DeepSeek to draw.
+ob-2-local = On this iPad · { $model }
+ob-2-local-hint = { $size } download, works offline. It keeps downloading while you start.
+ob-paste = Paste
+ob-continue = Continue
+ob-later = Change it later in Settings
+ob-3-title =
+    Ready when
+    the room is.
+ob-3-tip-1 = Put the iPad near the talking
+ob-3-tip-1-hint = In the middle of the table, within a few meters of everyone.
+ob-3-tip-2 = Circle, then say what to do
+ob-3-tip-2-hint = "Review this next week", "link these two". Pencil marks, fingers move.
+ob-3-tip-3 = Show it on the projector
+ob-3-tip-3-hint = AirPlay or a cable shows a clean board with captions.
+ob-3-past = Open a past meeting
 graphics-cache = Graphics cache
 safe-to-delete-the-model = Safe to delete; the model compiles it again in about half a minute.
 transcript-2 = Transcript
