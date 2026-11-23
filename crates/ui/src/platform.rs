@@ -89,6 +89,37 @@ pub fn on_multi_finger_tap(cx: &mut gpui_kit::App, handler: impl FnMut(u8, &mut 
     let _ = (cx, handler);
 }
 
+/// Something done on the Apple Pencil itself.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PencilAction {
+    /// A double tap on its side (Pencil 2 and Pro).
+    DoubleTap,
+    /// A squeeze (Pencil Pro, iPadOS 17.5 and later).
+    Squeeze,
+}
+
+/// Calls `handler` when the Pencil is double-tapped or squeezed. A desktop build never calls it.
+#[allow(dead_code)]
+pub fn on_pencil_action(cx: &mut gpui_kit::App, handler: impl FnMut(PencilAction, &mut gpui_kit::App) + 'static) {
+    #[cfg(target_os = "ios")]
+    {
+        let cx = cx.to_async();
+        let handler = std::rc::Rc::new(std::cell::RefCell::new(handler));
+        // UIKit calls back from its own run loop; handle the action once that has unwound.
+        gpui_ios::on_pencil_action(move |action| {
+            let action = match action {
+                gpui_ios::PencilAction::DoubleTap => PencilAction::DoubleTap,
+                gpui_ios::PencilAction::Squeeze => PencilAction::Squeeze,
+            };
+            let handler = handler.clone();
+            cx.spawn(async move |cx| cx.update(|cx| (handler.borrow_mut())(action, cx))).detach();
+        });
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = (cx, handler);
+}
+
 /// Whether the touch being handled comes from the Apple Pencil rather than a finger. Read it in a touch or
 /// pointer handler, while the event is dispatched: it describes the touch being delivered.
 ///
