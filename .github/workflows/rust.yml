@@ -243,7 +243,8 @@ jobs:
           key: ios
       - run: sh scripts/ios-check.sh
         env:
-          MUST: ''
+          # All but audio and ui, which stop at sherpa-onnx: the fork's release has no iOS library yet.
+          MUST: alcyo-board alcyo-models alcyo-fonts alcyo-meetings alcyo-export alcyo-search alcyo-share alcyo-keep alcyo-update alcyo-import alcyo-agent
 
   windows:
     name: windows package
