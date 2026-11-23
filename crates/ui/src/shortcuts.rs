@@ -152,14 +152,14 @@ impl Keys {
             "enter" => "Enter".to_string(),
             "tab" => "Tab".to_string(),
             "backspace" => "⌫".to_string(),
-            "/" if self.shift => return if cfg!(target_os = "macos") { "?".into() } else { "Shift+/".into() },
+            "/" if self.shift => return if cfg!(any(target_os = "macos", target_os = "ios")) { "?".into() } else { "Shift+/".into() },
             k if k.chars().count() == 1 => k.to_uppercase(),
             k => {
                 let mut c = k.chars();
                 c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
             }
         };
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", target_os = "ios")) {
             format!("{}{}{}{key}", if self.alt { "⌥" } else { "" }, if self.shift { "⇧" } else { "" }, if self.command { "⌘" } else { "" })
         } else {
             let mut parts: Vec<String> = vec![];
