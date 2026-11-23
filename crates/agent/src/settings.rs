@@ -78,11 +78,11 @@ fn config_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("ALCYO_CONFIG") {
         return Ok(PathBuf::from(dir));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     let base = PathBuf::from(std::env::var("HOME").context("HOME is not set")?).join("Library/Application Support");
     #[cfg(windows)]
     let base = PathBuf::from(std::env::var("APPDATA").context("APPDATA is not set")?);
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", windows)))]
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => PathBuf::from(std::env::var("HOME").context("HOME is not set")?).join(".config"),

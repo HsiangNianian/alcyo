@@ -238,6 +238,7 @@ in-use = In Verwendung
 use = Verwenden
 board-model = Tafelmodell
 to-draw-the-board-download = Zum Zeichnen der Tafel ein Modell herunterladen, das auf diesem Computer läuft, oder ein entferntes einrichten. Spracherkennung ist bereits enthalten.
+to-draw-the-board-remote = Um die Tafel zu zeichnen, richte ein entferntes Modell wie DeepSeek ein. Die Spracherkennung ist bereits enthalten.
 on-this-computer = Auf diesem Computer
 remote = Entfernt
 pause = Pause

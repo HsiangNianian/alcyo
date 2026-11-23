@@ -1,4 +1,4 @@
-//! Where the API key and the proxy password are kept: the system keychain (the macOS Keychain, the
+//! Where the API key and the proxy password are kept: the system keychain (the macOS and iPadOS Keychain, the
 //! Windows Credential Manager, the Secret Service of GNOME Keyring or KWallet on Linux), never the
 //! settings file.
 //!
@@ -165,7 +165,7 @@ fn file_set(dir: &Path, name: &str, value: &str) -> Result<()> {
 }
 
 /// The system keychain. Tests never touch the real one: they behave as a machine without a keychain.
-#[cfg(any(test, not(any(target_os = "linux", target_os = "macos", windows))))]
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos", target_os = "ios", windows))))]
 mod keychain {
     pub fn get(_name: &str) -> Result<Option<String>, ()> {
         Err(())
@@ -175,7 +175,7 @@ mod keychain {
     }
 }
 
-#[cfg(all(not(test), any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(not(test), any(target_os = "linux", target_os = "macos", target_os = "ios", windows)))]
 mod keychain {
     use super::SERVICE;
     use keyring::{Entry, Error};

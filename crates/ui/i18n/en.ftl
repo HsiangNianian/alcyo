@@ -241,6 +241,7 @@ in-use = In use
 use = Use
 board-model = Board model
 to-draw-the-board-download = To draw the board, download a model that runs on this computer, or set up a remote one. Speech recognition is already included.
+to-draw-the-board-remote = To draw the board, set up a remote model such as DeepSeek. Speech recognition is already included.
 on-this-computer = On this computer
 remote = Remote
 pause = Pause

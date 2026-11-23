@@ -238,6 +238,7 @@ in-use = 使用中
 use = 使用
 board-model = ボードモデル
 to-draw-the-board-download = ボードを描くには、このコンピューターで動くモデルをダウンロードするか、リモートモデルを設定してください。音声認識は最初から含まれています。
+to-draw-the-board-remote = 板書を描くには、DeepSeek などのリモートモデルを設定してください。音声認識は組み込み済みです。
 on-this-computer = このコンピューター
 remote = リモート
 pause = 一時停止
