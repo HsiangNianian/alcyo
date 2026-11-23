@@ -19,6 +19,7 @@ cpal = { version = "0.18", features = ["pulseaudio"] }
 
 # The iPad's audio session, which has to be set to record before the microphone gives anything.
 [target.'cfg(target_os = "ios")'.dependencies]
+libc = "0.2"
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
 
 [dev-dependencies]

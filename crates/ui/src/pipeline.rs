@@ -41,8 +41,12 @@ pub struct Speech {
 }
 
 impl Speech {
-    /// Apple's helper sits beside the app's executable in a Mac package.
+    /// Apple's helper sits beside the app's executable in a Mac package. The iPad has it built in, so any path
+    /// stands for it there.
     pub fn helper_path() -> Option<PathBuf> {
+        if cfg!(target_os = "ios") {
+            return Some(PathBuf::from("built in"));
+        }
         let helper = std::env::current_exe().ok()?.parent()?.join("alcyo-speech");
         helper.is_file().then_some(helper)
     }
