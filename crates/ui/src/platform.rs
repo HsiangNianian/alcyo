@@ -32,6 +32,12 @@ pub fn ipad_layout() -> bool {
     *ON.get_or_init(|| std::env::var("ALCYO_IPAD_LAYOUT").is_ok_and(|v| v == "1"))
 }
 
+/// Whether the touch being handled comes from the Apple Pencil rather than a finger. A mouse counts as the
+/// Pencil: it is what draws on a desktop.
+pub fn touch_is_pencil() -> bool {
+    true
+}
+
 /// What the system draws over the window, for the iPad layout to keep clear of: the status bar, the home
 /// indicator and a rounded screen's corners. A desktop build laid out for the iPad gets an iPad's landscape
 /// insets (a 24 pt status bar, a 20 pt home indicator), so it lines up with the iPad's screen.

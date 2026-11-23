@@ -580,3 +580,16 @@ ipad-put-tools-away = Put the tools away
 ipad-show-tools = Show the tools
 ipad-collapse-transcript = Collapse the transcript
 ipad-show-transcript = Show the transcript
+# The iPad's zoom chip, while zoomed in.
+ipad-zoom-fit = { $percent } % · double-tap to fit
+# The card under a Pencil circle: how many were caught, what is being said, and what to do to them.
+ipad-circled = { $n } circled
+ipad-say-what-to-do = Say what to do with them
+ipad-listen-to-say = Listen, then say what to do with them
+ipad-highlight = Highlight
+ipad-group = Group
+ipad-group-name = Group
+ipad-note = Note
+ipad-note-text = Note
+ipad-new-board = New board
+ipad-remove = Remove

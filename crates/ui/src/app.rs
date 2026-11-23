@@ -64,6 +64,8 @@ use std::time::{Duration, Instant};
 // The iPad's screen, a child of this module so it reaches the workbench's state; kept beside this file.
 #[path = "ipad.rs"]
 mod ipad;
+#[path = "ipad_card.rs"]
+mod ipad_card;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -455,6 +457,8 @@ struct Ink {
     page_src: Option<String>,
     zoom_test: Option<ZoomTest>,
     instant: bool,
+    /// When the last circle closed, for the iPad's circle to settle and what it caught to tint in.
+    closed_at: Option<Instant>,
 }
 
 /// A scripted zoom sweep that reports what zooming costs.
@@ -714,6 +718,7 @@ impl Ink {
         let over = self.pointed.len().saturating_sub(alcyo_board::graph::MAX_POINTED);
         self.pointed.drain(..over);
         self.loops.push(shape);
+        self.closed_at = Some(Instant::now());
     }
 
     fn stop_cropping(&mut self) {
@@ -3974,6 +3979,11 @@ impl Workbench {
             cx.notify();
             return;
         }
+        self.show_new_board(cx);
+    }
+
+    /// Show the board just made from what was taken off this one, to the model and on screen.
+    fn show_new_board(&mut self, cx: &mut Context<Self>) {
         self.page_hint = None;
         self.page_quiet = QUIET_AFTER_TURNING;
         let history: Vec<Utterance> = self.live.history.iter().filter_map(|h| serde_json::from_value(h.clone()).ok()).collect();
@@ -6661,6 +6671,9 @@ impl Render for Workbench {
         let moved = self.ink.clone();
         let release = self.ink.clone();
         let listening = self.pipeline.listening();
+        let on_ipad = crate::platform::ipad_layout();
+        let pencil_only = on_ipad && self.ipad_pencil_only();
+        let pinch = self.ink.clone();
         let mut board = div()
             .id("board")
             .absolute()
@@ -6669,20 +6682,46 @@ impl Render for Workbench {
             .bg(rgb(pal().paper))
             .on_drop(cx.listener(|this, card: &TrayCard, window, cx| this.bring(&card.id, window.mouse_position(), cx)))
             .on_scroll(cx.listener(move |_, e: &ScrollEvent, window, cx| {
+                // On the iPad a finger pans the board; two pinch it.
+                if on_ipad && e.source == gpui_kit::ScrollSource::Touch {
+                    let d = e.delta.pixel_delta(window.line_height());
+                    let mut b = wheel.borrow_mut();
+                    let v = b.shown();
+                    b.view = Some(View { x: v.x - f32::from(d.x) / v.k, y: v.y - f32::from(d.y) / v.k, k: v.k });
+                    b.reading = true;
+                    b.glide = None;
+                    b.touched = Instant::now();
+                    cx.notify();
+                    return;
+                }
                 let dy = f32::from(e.delta.pixel_delta(window.line_height()).y);
                 // Same response as the current app's wheel: exponential in the scrolled distance.
                 wheel.borrow_mut().zoom_at(e.position, (dy * 0.0015).exp());
                 cx.notify();
             }))
+            .when(on_ipad, |d| {
+                d.on_pinch(cx.listener(move |_, e: &gpui_kit::PinchEvent, _, cx| {
+                    pinch.borrow_mut().zoom_at(e.position, (1.0 + e.delta).max(0.2));
+                    cx.notify();
+                }))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                 window.focus(&this.focus, cx);
                 let mut b = press.borrow_mut();
-                if b.tool_down(e.position) {
+                // On the iPad only the Pencil draws with the tool in hand, unless fingers may mark too.
+                let may_draw = !pencil_only || crate::platform::touch_is_pencil();
+                if may_draw && b.tool_down(e.position) {
                     return;
                 }
                 // A press on a clip card takes hold of the card rather than the board.
                 let at = b.on_board(e.position);
                 let card = b.clips.iter().find(|(r, _)| f64::from(at[0]) >= r.x && f64::from(at[0]) <= r.x + r.w && f64::from(at[1]) >= r.y && f64::from(at[1]) <= r.y + r.h).map(|(r, _)| r.id.clone());
+                // On the iPad a double tap with a finger on the board fits it again.
+                if on_ipad && e.click_count >= 2 && card.is_none() {
+                    drop(b);
+                    this.fit_board(cx);
+                    return;
+                }
                 // A double click on a document's card opens it.
                 if e.click_count >= 2 {
                     let doc = card.as_ref().and_then(|id| b.graph.as_ref()?.nodes.iter().find(|n| &n.id == id)?.opens().map(str::to_string));
@@ -6773,7 +6812,9 @@ impl Render for Workbench {
                             match e.phase {
                                 gpui_kit::TouchPhase::Started => {
                                     let mut b = touch_ink.borrow_mut();
-                                    if bounds.contains(&e.start_position) && b.tool_down(e.start_position) {
+                                    // A finger pans unless fingers may mark; the Pencil always draws the tool in hand.
+                                    let may_draw = !pencil_only || crate::platform::touch_is_pencil();
+                                    if may_draw && bounds.contains(&e.start_position) && b.tool_down(e.start_position) {
                                         b.tool_drag(e.position);
                                         window.prevent_default();
                                         window.refresh();
@@ -6929,8 +6970,13 @@ impl Render for Workbench {
                                     });
                                 }
                             }
+                            // On the iPad: what the circles caught, tinted in the accent one after another, and the circles
+                            // themselves dashed, the last closing with a short settle.
+                            if on_ipad {
+                                ipad::paint_circles(&b, origin, v.k, window);
+                            }
                             // The circles, in the accent's ink: an aid for pointing, never part of the board.
-                            for shape in b.loops.iter().chain(b.drawing.iter()) {
+                            for shape in b.loops.iter().chain(b.drawing.iter()).filter(|_| !on_ipad) {
                                 let mut pb = PathBuilder::stroke(px(2.5));
                                 let at = |p: &[f32; 2]| origin + point(px(p[0] * v.k), px(p[1] * v.k));
                                 if let Some(first) = shape.first() {
@@ -9082,10 +9128,16 @@ impl Render for Workbench {
             let ink = self.ink.borrow();
             (ink.extent.x1 > ink.extent.x0, f32::from(ink.canvas.size.height), ink.canvas.origin)
         };
-        let minimap = (map_on && has_ink && !blank && canvas_width >= ZOOM_TOOLS_FROM).then(|| {
+        // On the iPad the map comes out only while zoomed in, under the meeting's card.
+        let zoomed_in = { let ink = self.ink.borrow(); ink.shown().k > ink.fit().k * 1.08 };
+        let map_wanted = if ipad { zoomed_in } else { map_on };
+        if ipad {
+            self.ink.borrow_mut().set_map(zoomed_in);
+        }
+        let minimap = (map_wanted && has_ink && !blank && canvas_width >= ZOOM_TOOLS_FROM).then(|| {
             let (shown, press, moved, lift, lift_out) = (self.ink.clone(), self.ink.clone(), self.ink.clone(), self.ink.clone(), self.ink.clone());
             // Where it was dragged to, or the top right corner; kept on the board if the window has shrunk since.
-            let (right, bottom, x, y) = self.form.saved.minimap_at.unwrap_or(MAP_START);
+            let (right, bottom, x, y) = if ipad { self.ipad_map_corner(window) } else { self.form.saved.minimap_at.unwrap_or(MAP_START) };
             let x = x.min(canvas_width - MAP_PANEL_W - MAP_EDGE).max(MAP_EDGE);
             let y = y.min(canvas_height - MAP_PANEL_H - MAP_EDGE).max(MAP_EDGE);
             let corner = canvas_origin + point(px(if right { canvas_width - x - MAP_PANEL_W } else { x }), px(if bottom { canvas_height - y - MAP_PANEL_H } else { y }));
@@ -9316,6 +9368,8 @@ impl Render for Workbench {
                 replay_bar: replay_bar.map(IntoElement::into_any_element),
                 shortcuts: self.shortcuts_shown.then(|| self.shortcuts_window(cx)),
                 transcript: transcript.into_any_element(),
+                minimap: minimap.map(IntoElement::into_any_element),
+                zoomed_in,
                 summary: summary_panel.map(IntoElement::into_any_element),
                 speakers: speakers_panel.map(IntoElement::into_any_element),
                 waiting,
@@ -9745,6 +9799,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 clip_images: HashMap::new(),
                 page_src: None,
                 zoom_test: zoom_test.then_some(ZoomTest { started: None, frames: vec![], last: None, base: 0.0, rebuilds: vec![], peak_rss: 0 }),
+                closed_at: None,
                 instant: start_board.is_some(),
             };
             let mut live = start_meeting.unwrap_or_default();

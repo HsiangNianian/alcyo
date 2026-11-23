@@ -292,7 +292,7 @@ const PICTOGRAMS: [(&str, &str); 43] = [
 ];
 
 /// The iPad's line icons, drawn for touch at 22 pt (crates/ui/src/ipad.rs), under `icons/ipad/`.
-const IPAD_ICONS: [(&str, &str); 18] = [
+const IPAD_ICONS: [(&str, &str); 21] = [
     ("icons/ipad/chevron-down.svg", include_str!("../icons/ipad/chevron-down.svg")),
     ("icons/ipad/chevron-left.svg", include_str!("../icons/ipad/chevron-left.svg")),
     ("icons/ipad/chevron-right.svg", include_str!("../icons/ipad/chevron-right.svg")),
@@ -311,6 +311,9 @@ const IPAD_ICONS: [(&str, &str); 18] = [
     ("icons/ipad/tidy.svg", include_str!("../icons/ipad/tidy.svg")),
     ("icons/ipad/transcript.svg", include_str!("../icons/ipad/transcript.svg")),
     ("icons/ipad/undo.svg", include_str!("../icons/ipad/undo.svg")),
+    ("icons/ipad/more.svg", include_str!("../icons/ipad/more.svg")),
+    ("icons/ipad/x.svg", include_str!("../icons/ipad/x.svg")),
+    ("icons/ipad/zoom.svg", include_str!("../icons/ipad/zoom.svg")),
 ];
 
 /// The icons the toolkit carries, the few more this window asks for, and our own pictograms over both.
