@@ -40,8 +40,10 @@ pub fn download(id: &str, cancel: &AtomicBool) -> Result<Vec<u8>> {
     if !ID.is_match(id) {
         bail!("Invalid arXiv ID: {id}");
     }
-    let agent = ureq::AgentBuilder::new().try_proxy_from_env(true).timeout_connect(Duration::from_secs(15)).timeout(Duration::from_secs(120)).user_agent("Alcyo (https://github.com/HsiangNianian/alcyo)").build();
-    let response = match agent.get(&format!("https://arxiv.org/pdf/{id}")).call() {
+    let url = format!("https://arxiv.org/pdf/{id}");
+    // Through the proxy chosen in Settings, like every other download.
+    let agent = alcyo_models::net::agent_for(&url, false, Duration::from_secs(15)).timeout(Duration::from_secs(120)).user_agent("Alcyo (https://github.com/HsiangNianian/alcyo)").build();
+    let response = match agent.get(&url).call() {
         Ok(response) => response,
         Err(ureq::Error::Status(code, _)) => bail!("arXiv returned {code}: the ID may be incorrect"),
         Err(e) => return Err(e).context("Can't connect to arXiv"),

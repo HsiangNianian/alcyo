@@ -90,6 +90,7 @@ search-index-paused = 搜索索引已暂停
 indexing-for-search = 正在建立搜索索引
 settings = 设置
 checking-what-was-already-downloaded = 正在检查已下载的部分…
+finding-the-fastest-source = 正在测速，选最快的下载源…
 to-read-the-text-in = 要读图里的字，本地模型需要看图组件。图片只在本机处理。
 one-download-and-then-images = 下载一次，之后都能用。
 read-the-image = 读取图片

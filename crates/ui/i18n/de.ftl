@@ -90,6 +90,7 @@ search-index-paused = Suchindex pausiert
 indexing-for-search = Suchindex wird erstellt
 settings = Einstellungen
 checking-what-was-already-downloaded = Bereits Heruntergeladenes wird geprüft…
+finding-the-fastest-source = Schnellste Quelle wird gesucht…
 to-read-the-text-in = Zum Lesen von Text in Bildern braucht das lokale Modell sein Bild-Add-on. Bilder bleiben auf diesem Gerät.
 one-download-and-then-images = Einmal herunterladen, danach funktionieren Bilder einfach.
 read-the-image = Bild lesen

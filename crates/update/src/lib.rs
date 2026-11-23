@@ -90,7 +90,8 @@ fn parse_manifest(text: &str, current: &str, platform: &str) -> Result<Option<Re
 /// is safe because the signature check does not depend on where a package came from.
 pub fn check() -> Result<Option<Release>> {
     let url = std::env::var("ALCYO_UPDATE_URL").unwrap_or_else(|_| MANIFEST_URL.to_string());
-    let agent = ureq::AgentBuilder::new().try_proxy_from_env(true).timeout(Duration::from_secs(30)).build();
+    // Through the proxy chosen in Settings, as the package itself is downloaded.
+    let agent = alcyo_models::net::agent_for(&url, false, Duration::from_secs(30)).timeout(Duration::from_secs(30)).build();
     let text = match agent.get(&url).call() {
         Ok(response) => response.into_string()?,
         // Nothing has been published yet, which is not a failure.
