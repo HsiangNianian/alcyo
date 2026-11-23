@@ -2355,6 +2355,9 @@ impl Workbench {
             }
             let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let written = std::fs::write(&path, text);
+            if written.is_ok() {
+                crate::platform::share_file(&path);
+            }
             let _ = this.update(cx, |this, cx| {
                 this.form.glossary_note = Some(match written {
                     Ok(()) => ta!("glossary-exported", count = glossary.terms.len(), file = file),
@@ -2488,6 +2491,10 @@ impl Workbench {
         if let Some(since) = self.listening_since {
             let second = since.elapsed().as_secs();
             changed |= std::mem::replace(&mut self.clock_second, second) != second;
+        }
+        // On the iPad, an external display coming or going, looked for about once a second.
+        if cfg!(target_os = "ios") && self.ipad_second_passed() {
+            self.watch_room_display(cx);
         }
         // On the iPad, the bars step back a while after the last touch.
         changed |= crate::platform::ipad_layout() && self.form.saved.fade_tools && self.ipad.fade_changed(self.pipeline.listening());
@@ -3312,6 +3319,9 @@ impl Workbench {
                 let result = match written {
                     Ok(text_left_out) => {
                         this.export_dir = path.parent().map(PathBuf::from);
+                        // On the iPad the file was written aside, and the share sheet takes it on: Save to Files,
+                        // AirDrop, Mail. Nothing happens here on a desktop.
+                        crate::platform::share_file(&path);
                         Exported::Saved { path, text_left_out }
                     }
                     Err(error) => {
@@ -10162,6 +10172,17 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     intro: onboarding::Intro::new(),
                 };
                 workbench.show_page_image();
+                // On the iPad: two fingers tapped undo and three redo, as in Notes; the Pencil's double tap and
+                // squeeze do what Settings says.
+                if crate::platform::ipad_layout() {
+                    let (taps, pencil) = (cx.entity().downgrade(), cx.entity().downgrade());
+                    crate::platform::on_multi_finger_tap(cx, move |fingers, cx| {
+                        let _ = taps.update(cx, |this, cx| this.step(fingers == 3, cx));
+                    });
+                    crate::platform::on_pencil_action(cx, move |action, cx| {
+                        let _ = pencil.update(cx, |this, cx| this.ipad_pencil_action(action, cx));
+                    });
+                }
                 if start_replaying {
                     workbench.start_replay(window, cx);
                 }

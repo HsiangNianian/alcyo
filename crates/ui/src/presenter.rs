@@ -69,9 +69,9 @@ pub(super) struct RoomDisplay {
 /// INTEGRATION POINT (lead): replace the body with `crate::platform::room_display(cx)` once the platform
 /// reports external displays. A desktop build pretends one is connected when started with
 /// `ALCYO_PRESENTER_DISPLAY=<name>`, so the presenter's screen can be worked on without one.
-pub(super) fn room_display(_cx: &App) -> Option<RoomDisplay> {
-    if cfg!(target_os = "ios") {
-        return None;
+pub(super) fn room_display(cx: &App) -> Option<RoomDisplay> {
+    if let Some(display) = crate::platform::room_display(cx).filter(|_| cfg!(target_os = "ios")) {
+        return Some(RoomDisplay { name: display.name, size: display.size });
     }
     std::env::var("ALCYO_PRESENTER_DISPLAY").ok().filter(|n| !n.is_empty()).map(|name| RoomDisplay { name, size: size(px(1920.), px(1080.)) })
 }
@@ -400,12 +400,12 @@ fn paint_still(window: &mut Window, bounds: Bounds<Pixels>, art: &mut PageArt, f
 impl Workbench {
     /// Show the presenter's screen on the iPad, and the room its picture on the external display if one is
     /// connected.
-    pub(super) fn enter_presenter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn enter_presenter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.presenter.on = true;
         self.presenter.menu = false;
         self.presenter.display = room_display(cx);
         if let Some(display) = self.presenter.display.clone() {
-            self.present_on_external(display, window, cx);
+            self.present_on_external(display, cx);
         }
         cx.notify();
     }
@@ -443,13 +443,21 @@ impl Workbench {
     ///
     /// INTEGRATION POINT (lead): call this from the platform's display-change callback, e.g.
     /// `crate::platform::on_room_display(cx, move |display, window, cx| workbench.update(cx, |w, cx| w.room_display_changed(display, window, cx)))`.
-    #[allow(dead_code, reason = "the lead connects it to the platform's display callback")]
-    pub(super) fn room_display_changed(&mut self, display: Option<RoomDisplay>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Look for a display coming or going; the pump asks about once a second. The iPad goes into presenter
+    /// mode when one is connected, and the room's window closes when it goes.
+    pub(super) fn watch_room_display(&mut self, cx: &mut Context<Self>) {
+        let display = room_display(cx).filter(|_| cfg!(target_os = "ios"));
+        if display.as_ref().map(|d| &d.name) != self.presenter.display.as_ref().map(|d| &d.name) {
+            self.room_display_changed(display, cx);
+        }
+    }
+
+    pub(super) fn room_display_changed(&mut self, display: Option<RoomDisplay>, cx: &mut Context<Self>) {
         self.presenter.display = display.clone();
         match display {
             Some(display) => {
                 self.presenter.on = true;
-                self.present_on_external(display, window, cx);
+                self.present_on_external(display, cx);
             }
             None => {
                 self.presenter.window_tried = false;
@@ -469,7 +477,7 @@ impl Workbench {
     /// fullscreen on that display (a UIWindow on the external UIScreen / UIWindowScene on iOS). On a desktop
     /// build started with `ALCYO_PRESENTER_WINDOW=1` it opens as an ordinary window, to see the room's view
     /// as a window's root.
-    fn present_on_external(&mut self, display: RoomDisplay, _window: &mut Window, cx: &mut Context<Self>) {
+    fn present_on_external(&mut self, display: RoomDisplay, cx: &mut Context<Self>) {
         if self.presenter.room_window.is_some() {
             return;
         }
@@ -485,6 +493,15 @@ impl Workbench {
             // Opened once the workbench is let go of: the new window draws the room straight away, which reads it.
             cx.defer(move |cx| {
                 let room = workbench.clone();
+                // On the iPad, a window on the external display's own scene; on a desktop, an ordinary one.
+                if let Some(external) = crate::platform::room_display(cx).filter(|_| cfg!(target_os = "ios")) {
+                    match crate::platform::open_room_window(cx, &external, move |_, cx| cx.new(|cx| RoomView::new(room, cx))) {
+                        Ok((handle, _)) => workbench.update(cx, |this, _| this.presenter.room_window = Some(handle)),
+                        Err(error) => eprintln!("the room's window: {error:#}"),
+                    }
+                    return;
+                }
+                let _ = &display;
                 match cx.open_window(options, move |_, cx| cx.new(|cx| RoomView::new(room, cx))) {
                     Ok(handle) => workbench.update(cx, |this, _| this.presenter.room_window = Some(handle.into())),
                     Err(error) => eprintln!("the room's window: {error:#}"),
@@ -798,7 +815,7 @@ impl Workbench {
         // Started in presenter mode with a display there: the room gets its window once this frame is done.
         if let Some(display) = self.presenter.display.clone().filter(|_| self.presenter.room_window.is_none() && !self.presenter.window_tried) {
             self.presenter.window_tried = true;
-            cx.defer_in(window, move |this, window, cx| this.present_on_external(display, window, cx));
+            cx.defer_in(window, move |this, _, cx| this.present_on_external(display, cx));
         }
         self.keep_art(cx);
         // What the room shows: a change starts a cross-fade.

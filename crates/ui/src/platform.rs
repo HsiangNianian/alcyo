@@ -32,12 +32,6 @@ pub fn ipad_layout() -> bool {
     *ON.get_or_init(|| std::env::var("ALCYO_IPAD_LAYOUT").is_ok_and(|v| v == "1"))
 }
 
-/// Whether the touch being handled comes from the Apple Pencil rather than a finger. A mouse counts as the
-/// Pencil: it is what draws on a desktop.
-pub fn touch_is_pencil() -> bool {
-    true
-}
-
 /// What the system draws over the window, for the iPad layout to keep clear of: the status bar, the home
 /// indicator and a rounded screen's corners. A desktop build laid out for the iPad gets an iPad's landscape
 /// insets (a 24 pt status bar, a 20 pt home indicator), so it lines up with the iPad's screen.
@@ -60,6 +54,15 @@ pub fn share_file(path: &std::path::Path) {
     }
     #[cfg(not(target_os = "ios"))]
     let _ = path;
+}
+
+/// How far from the left a bar along the top must start, at least `wanted`, to keep clear of iPadOS's window
+/// controls in a windowed scene when they are up there with it (`top` to `bottom` of the bar).
+pub fn clear_of_controls(window: &gpui_kit::Window, wanted: f32, top: f32, bottom: f32) -> f32 {
+    match window_controls(window) {
+        Some(r) if f32::from(r.origin.y) < bottom && f32::from(r.origin.y + r.size.height) > top && f32::from(r.origin.x) < wanted + 80.0 => wanted.max(f32::from(r.origin.x + r.size.width) + 8.0),
+        _ => wanted,
+    }
 }
 
 /// Where iPadOS draws a windowed scene's controls (the three dots, top left): a corner of the window to keep
@@ -129,9 +132,8 @@ pub fn on_pencil_action(cx: &mut gpui_kit::App, handler: impl FnMut(PencilAction
 /// Whether the touch being handled comes from the Apple Pencil rather than a finger. Read it in a touch or
 /// pointer handler, while the event is dispatched: it describes the touch being delivered.
 ///
-/// On the iPad it is the touch's own type. A desktop build has no Pencil and answers false, unless it was
-/// started with `ALCYO_PENCIL_MOUSE=1`, a development aid that takes the mouse for the Pencil.
-#[allow(dead_code)] // for the iPad canvas and presenter UI (#341), which use them next
+/// On the iPad it is the touch's own type. On a desktop the mouse is what draws, so it counts as the Pencil,
+/// unless started with `ALCYO_PENCIL_MOUSE=0`, a development aid that takes the mouse for a finger.
 pub fn touch_is_pencil() -> bool {
     #[cfg(target_os = "ios")]
     {
@@ -140,7 +142,7 @@ pub fn touch_is_pencil() -> bool {
     #[cfg(not(target_os = "ios"))]
     {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("ALCYO_PENCIL_MOUSE").is_ok_and(|v| v == "1"))
+        *ON.get_or_init(|| std::env::var("ALCYO_PENCIL_MOUSE").map_or(true, |v| v != "0"))
     }
 }
 

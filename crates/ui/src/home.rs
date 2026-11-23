@@ -650,7 +650,7 @@ impl Workbench {
         let header = div()
             .absolute()
             .top(px(top + 14.))
-            .left(px(SIDE))
+            .left(px(crate::platform::clear_of_controls(window, SIDE, top, top + 72.)))
             .right(px(SIDE))
             .h(px(44.))
             .flex()

@@ -119,6 +119,8 @@ pub(super) struct Chrome {
     pub(super) level: f32,
     /// The Pencil was handed the circle tool, as the iPad opens with it in hand.
     primed: bool,
+    /// When the screen last looked for an external display.
+    looked: Instant,
 }
 
 impl Chrome {
@@ -139,6 +141,7 @@ impl Chrome {
             faded: Rc::new(Cell::new(false)),
             level: 0.0,
             primed: false,
+            looked: Instant::now(),
         }
     }
 
@@ -181,6 +184,8 @@ pub(super) struct Frame {
     pub(super) mode: Mode,
     /// What the on-screen keyboard covers at the bottom.
     pub(super) keyboard: f32,
+    /// Where the bars along the top start from the left: past iPadOS's window controls in a windowed scene.
+    pub(super) top_left: f32,
 }
 
 impl Frame {
@@ -196,7 +201,11 @@ impl Frame {
             Mode::Compact { label: w >= 700.0, circle: w >= 500.0 }
         };
         let keyboard = if cfg!(target_os = "ios") { f32::from(window.insets().ime.bottom) } else { 0.0 };
-        Self { w, h, safe: crate::platform::safe_area(window), margin: if big { 24.0 } else { 20.0 }, big, mode, keyboard }
+        let safe = crate::platform::safe_area(window);
+        let margin = if big { 24.0 } else { 20.0 };
+        let top = f32::from(safe.top);
+        let top_left = crate::platform::clear_of_controls(window, margin, top, top + 10.0 + CARD_H + 10.0);
+        Self { w, h, safe, margin, big, mode, keyboard, top_left }
     }
 
     pub(super) fn top(&self) -> f32 {
@@ -445,6 +454,44 @@ impl Workbench {
     /// Whether only the Pencil marks the board, fingers panning and zooming.
     pub(super) fn ipad_pencil_only(&self) -> bool {
         self.form.saved.pencil_only
+    }
+
+    /// The Pencil was double-tapped or squeezed: undo, the eraser and back, the palette out and in, or nothing,
+    /// as Settings says for each.
+    pub(super) fn ipad_pencil_action(&mut self, action: crate::platform::PencilAction, cx: &mut Context<Self>) {
+        let choice = match action {
+            crate::platform::PencilAction::DoubleTap => self.form.saved.pencil_double_tap.clone(),
+            crate::platform::PencilAction::Squeeze => self.form.saved.pencil_squeeze.clone(),
+        };
+        match choice.as_str() {
+            "undo" => self.step(false, cx),
+            "eraser" => {
+                let mut ink = self.ink.borrow_mut();
+                let erasing = ink.marking && ink.mark_tool == ERASER;
+                ink.put_tools_down();
+                if erasing {
+                    ink.circling = true;
+                } else {
+                    ink.marking = true;
+                    ink.mark_tool = ERASER;
+                }
+            }
+            "tools" => {
+                self.ipad.tools_open = !self.ipad.tools_open;
+                self.ipad.upright_tools = !self.ipad.upright_tools;
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Whether a second has gone by since this last said so, for what is looked at now and then.
+    pub(super) fn ipad_second_passed(&mut self) -> bool {
+        if self.ipad.looked.elapsed() < Duration::from_secs(1) {
+            return false;
+        }
+        self.ipad.looked = Instant::now();
+        true
     }
 
     pub(super) fn ipad_sidebar_shown(&self) -> bool {
@@ -871,7 +918,7 @@ impl Workbench {
         glass(div(), false)
             .occlude()
             .absolute()
-            .left(px(f.margin))
+            .left(px(f.top_left))
             .top(px(f.top() + 10.0))
             .h(px(CARD_H))
             .flex()
@@ -1342,7 +1389,8 @@ impl Workbench {
             .items_center()
             .gap(px(4.))
             .pt(px(6.))
-            .px(px(8.))
+            .pl(px(8.0 + f.top_left - f.margin))
+            .pr(px(8.))
             .rounded_b(px(0.))
             .child(round_button("ipad-sidebar-toggle", "sidebar", false).on_click(cx.listener(|this, _, _, cx| {
                 this.ipad_toggle_sidebar();
