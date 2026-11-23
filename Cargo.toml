@@ -53,6 +53,6 @@ opt-level = "s"
 gpui-base = { git = "https://github.com/HsiangNianian/gpui-kit", rev = "968ab5695735d083646f9e0dd93b1095ce3aa865" }
 # gpui-pre-ios 0.3.11 (its crates.io source) with what the iPad needs on top: whether a touch is the Apple
 # Pencil, windows on an external display, and two-finger pinches as pinch events.
-gpui-pre-ios = { git = "https://github.com/HsiangNianian/gpui-pre-ios", rev = "63b3c909834dd954d3cbbf707e28ed4e42da8baf" }
+gpui-pre-ios = { git = "https://github.com/HsiangNianian/gpui-pre-ios", rev = "b2dd2f6c434f1459aef79ae6ca7bf338204efd78" }
 sherpa-onnx = { git = "https://github.com/HsiangNianian/sherpa-onnx", tag = "alcyo-2.0.1-4" }
 sherpa-onnx-sys = { git = "https://github.com/HsiangNianian/sherpa-onnx", tag = "alcyo-2.0.1-4" }
