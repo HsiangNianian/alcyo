@@ -42,3 +42,85 @@ pub fn safe_area(window: &gpui_kit::Window) -> gpui_kit::Edges<gpui_kit::Pixels>
         gpui_kit::Edges { top: gpui_kit::px(24.), bottom: gpui_kit::px(20.), left: gpui_kit::px(0.), right: gpui_kit::px(0.) }
     }
 }
+
+/// Whether the touch being handled comes from the Apple Pencil rather than a finger. Read it in a touch or
+/// pointer handler, while the event is dispatched: it describes the touch being delivered.
+///
+/// On the iPad it is the touch's own type. A desktop build has no Pencil and answers false, unless it was
+/// started with `ALCYO_PENCIL_MOUSE=1`, a development aid that takes the mouse for the Pencil.
+#[allow(dead_code)] // for the iPad canvas and presenter UI (#341), which use them next
+pub fn touch_is_pencil() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        gpui_ios::current_touch_is_pencil()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("ALCYO_PENCIL_MOUSE").is_ok_and(|v| v == "1"))
+    }
+}
+
+/// A second screen the room watches: on the iPad, a display on a cable or AirPlay.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub struct RoomDisplay {
+    pub id: gpui_kit::DisplayId,
+    /// What to call it; UIKit tells no more than that it is external.
+    pub name: String,
+    /// Its size in points.
+    pub size: gpui_kit::Size<gpui_kit::Pixels>,
+}
+
+/// The room's display, if one is connected. Its coming and going is reported by `cx.observe_displays`.
+///
+/// A desktop build has none, unless started with `ALCYO_ROOM_DISPLAY=1`, a development aid that offers an
+/// ordinary 1280×720 window in its place.
+#[allow(dead_code)]
+pub fn room_display(cx: &gpui_kit::App) -> Option<RoomDisplay> {
+    #[cfg(target_os = "ios")]
+    {
+        let _ = cx;
+        gpui_ios::external_display().map(|display| RoomDisplay {
+            id: display.id,
+            name: "External display".into(),
+            size: display.size,
+        })
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| std::env::var("ALCYO_ROOM_DISPLAY").is_ok_and(|v| v == "1")) {
+            return None;
+        }
+        Some(RoomDisplay {
+            id: cx.primary_display().map_or(gpui_kit::DisplayId::new(0), |display| display.id()),
+            name: "Room display (development)".into(),
+            size: gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(720.)),
+        })
+    }
+}
+
+/// Opens a window on the room's display showing the view `build` makes. On the iPad it fills the display,
+/// takes no input, and closes by itself when the display goes away.
+#[allow(dead_code)]
+pub fn open_room_window<V: gpui_kit::Render>(
+    cx: &mut gpui_kit::App,
+    display: &RoomDisplay,
+    build: impl FnOnce(&mut gpui_kit::Window, &mut gpui_kit::App) -> gpui_kit::Entity<V>,
+) -> anyhow::Result<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<V>)> {
+    #[cfg(target_os = "ios")]
+    let options = gpui_kit::WindowOptions { display_id: Some(display.id), ..Default::default() };
+    #[cfg(not(target_os = "ios"))]
+    let options = {
+        let id = cx.find_display(display.id).map(|found| found.id());
+        gpui_kit::WindowOptions {
+            display_id: id,
+            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(id, display.size, cx))),
+            titlebar: Some(gpui_kit::TitlebarOptions { title: Some(display.name.clone().into()), ..Default::default() }),
+            focus: false,
+            ..Default::default()
+        }
+    };
+    gpui_kit::open_window(options, cx, build)
+}

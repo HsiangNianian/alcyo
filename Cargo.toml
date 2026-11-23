@@ -51,5 +51,8 @@ opt-level = "s"
 # gpui-kit 0.9.0 with longbridge/gpui-kit#4082, which reports an input's length so the iPad shows its keyboard;
 # drop this once a release carries it.
 gpui-base = { git = "https://github.com/HsiangNianian/gpui-kit", rev = "968ab5695735d083646f9e0dd93b1095ce3aa865" }
+# gpui-pre-ios 0.3.11 (its crates.io source) with what the iPad needs on top: whether a touch is the Apple
+# Pencil, windows on an external display, and two-finger pinches as pinch events.
+gpui-pre-ios = { git = "https://github.com/HsiangNianian/gpui-pre-ios", rev = "63b3c909834dd954d3cbbf707e28ed4e42da8baf" }
 sherpa-onnx = { git = "https://github.com/HsiangNianian/sherpa-onnx", tag = "alcyo-2.0.1-4" }
 sherpa-onnx-sys = { git = "https://github.com/HsiangNianian/sherpa-onnx", tag = "alcyo-2.0.1-4" }
