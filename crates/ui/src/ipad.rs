@@ -891,6 +891,7 @@ impl Workbench {
                     }),
             )
             .child(round_button("ipad-share", "live", self.panel == Panel::Share || self.sharing.is_some()).on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Share, cx))))
+            .child(round_button("ipad-present", "airplay", false).on_click(cx.listener(|this, _, window, cx| this.enter_presenter(window, cx))))
             .child(round_button("ipad-export", "export", self.panel == Panel::Export).on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Export, cx))))
             .when(f.mode == Mode::Wide, |d| {
                 d.child(rule().mx(px(4.)))

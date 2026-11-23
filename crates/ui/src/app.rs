@@ -69,6 +69,9 @@ mod ipad_card;
 // The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
 #[path = "home.rs"]
 mod home;
+// Presenter mode on the iPad: the room's picture on an external display, with the iPad's controls around it.
+#[path = "presenter.rs"]
+mod presenter;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -1757,6 +1760,8 @@ struct Workbench {
     ipad: ipad::Chrome,
     /// What the iPad's meetings page keeps (home.rs).
     home: home::Home,
+    /// Presenter mode, on the iPad (presenter.rs).
+    presenter: presenter::Presenter,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -9380,6 +9385,9 @@ impl Render for Workbench {
                 waiting,
                 not_drawn,
             };
+            if self.presenter.on {
+                return self.presenter_screen(parts, window, cx);
+            }
             if self.panel == Panel::Library {
                 return self.home_screen(parts, window, cx);
             }
@@ -10116,6 +10124,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     close_refused: false,
                     ipad: ipad::Chrome::new(),
                     home: home::Home::new(),
+                    presenter: presenter::Presenter::new(),
                 };
                 workbench.show_page_image();
                 if start_replaying {

@@ -611,3 +611,15 @@ home-imported-pages = imported, { $n ->
 home-pin = Pin
 home-nothing-here = Nothing here yet.
 home-nothing-found = No meeting has that in its name or in what was said.
+# Presenter mode on the iPad: the room's picture on a projector, with the iPad's controls around it.
+presenter-no-display = No display connected
+presenter-speakers = { $n ->
+        [one] { $n } speaker
+       *[other] { $n } speakers
+    }
+presenter-captions = Captions
+presenter-board-only = Board only
+presenter-room-sees-this = The room sees this
+presenter-leave = Leave presenter
+presenter-meetings-and-settings = Meetings and settings
+presenter-follow-live = Follow live

@@ -292,7 +292,9 @@ const PICTOGRAMS: [(&str, &str); 43] = [
 ];
 
 /// The iPad's line icons, drawn for touch at 22 pt (crates/ui/src/ipad.rs), under `icons/ipad/`.
-const IPAD_ICONS: [(&str, &str); 21] = [
+const IPAD_ICONS: [(&str, &str); 23] = [
+    ("icons/ipad/airplay.svg", include_str!("../icons/ipad/airplay.svg")),
+    ("icons/ipad/cc.svg", include_str!("../icons/ipad/cc.svg")),
     ("icons/ipad/chevron-down.svg", include_str!("../icons/ipad/chevron-down.svg")),
     ("icons/ipad/chevron-left.svg", include_str!("../icons/ipad/chevron-left.svg")),
     ("icons/ipad/chevron-right.svg", include_str!("../icons/ipad/chevron-right.svg")),
@@ -303,6 +305,7 @@ const IPAD_ICONS: [(&str, &str); 21] = [
     ("icons/ipad/export.svg", include_str!("../icons/ipad/export.svg")),
     ("icons/ipad/live.svg", include_str!("../icons/ipad/live.svg")),
     ("icons/ipad/mark.svg", include_str!("../icons/ipad/mark.svg")),
+    ("icons/ipad/more.svg", include_str!("../icons/ipad/more.svg")),
     ("icons/ipad/plus.svg", include_str!("../icons/ipad/plus.svg")),
     ("icons/ipad/redo.svg", include_str!("../icons/ipad/redo.svg")),
     ("icons/ipad/replay.svg", include_str!("../icons/ipad/replay.svg")),
@@ -311,7 +314,6 @@ const IPAD_ICONS: [(&str, &str); 21] = [
     ("icons/ipad/tidy.svg", include_str!("../icons/ipad/tidy.svg")),
     ("icons/ipad/transcript.svg", include_str!("../icons/ipad/transcript.svg")),
     ("icons/ipad/undo.svg", include_str!("../icons/ipad/undo.svg")),
-    ("icons/ipad/more.svg", include_str!("../icons/ipad/more.svg")),
     ("icons/ipad/x.svg", include_str!("../icons/ipad/x.svg")),
     ("icons/ipad/zoom.svg", include_str!("../icons/ipad/zoom.svg")),
 ];
