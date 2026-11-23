@@ -236,8 +236,6 @@ jobs:
       - run: sh packaging/ios/package.sh
         env:
           UPLOAD: 1
-          # Rising across releases and their re-runs, as App Store Connect wants.
-          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
           IOS_CERT_P12: ${{ secrets.IOS_CERT_P12 }}
           IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
           IOS_PROFILE: ${{ secrets.IOS_PROFILE }}

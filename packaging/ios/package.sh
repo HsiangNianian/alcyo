@@ -26,8 +26,8 @@ done
 cargo build --release --target $target -p alcyo-ui
 
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-# Each upload needs a build number of its own, rising: the run's, or the time.
-build=${BUILD_NUMBER:-$(date +%Y%m%d%H%M)}
+# Each upload needs a build number of its own, rising whatever sent it: the time, in UTC.
+build=${BUILD_NUMBER:-$(date -u +%Y%m%d.%H%M)}
 name="alcyo-$version-ipados"
 out="target/package/$name"
 app="$out/Payload/Alcyo.app"

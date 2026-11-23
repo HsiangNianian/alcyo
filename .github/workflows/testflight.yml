@@ -1,0 +1,44 @@
+name: TestFlight
+
+# Send the iPad app, as built from the chosen branch, to TestFlight, to try on an iPad before a release:
+#   gh workflow run testflight.yml --ref <branch>
+# Releases send theirs from release.yml. Both number their builds by the time, so they never collide.
+on:
+  workflow_dispatch:
+
+jobs:
+  ipados:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$xcode" ] || sudo xcode-select -s "$xcode"
+          xcrun --sdk iphoneos --show-sdk-version
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - name: Cache voice models
+        uses: actions/cache@v4
+        with:
+          path: resources/voice
+          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+      - name: Cache the meeting search model
+        uses: actions/cache@v4
+        with:
+          path: resources/search
+          key: search-${{ hashFiles('crates/models/src/lib.rs') }}
+      - run: sh packaging/ios/package.sh
+        env:
+          UPLOAD: 1
+          IOS_CERT_P12: ${{ secrets.IOS_CERT_P12 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          IOS_PROFILE: ${{ secrets.IOS_PROFILE }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
