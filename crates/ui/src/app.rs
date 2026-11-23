@@ -64,6 +64,9 @@ use std::time::{Duration, Instant};
 // The iPad's screen, a child of this module so it reaches the workbench's state; kept beside this file.
 #[path = "ipad.rs"]
 mod ipad;
+// The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
+#[path = "home.rs"]
+mod home;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -1747,6 +1750,8 @@ struct Workbench {
     close_refused: bool,
     /// What the iPad's screen keeps for itself (ipad.rs).
     ipad: ipad::Chrome,
+    /// What the iPad's meetings page keeps (home.rs).
+    home: home::Home,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -9317,7 +9322,11 @@ impl Render for Workbench {
                 waiting,
                 not_drawn,
             };
-            return self.ipad_screen(parts, window, cx);
+            if self.panel == Panel::Library {
+                return self.home_screen(parts, window, cx);
+            }
+            let screen = self.ipad_screen(parts, window, cx);
+            return self.home_zoom_over(screen, window, cx);
         }
         let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
         let canvas_area = div()
@@ -10042,6 +10051,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     exit_when_done,
                     close_refused: false,
                     ipad: ipad::Chrome::new(),
+                    home: home::Home::new(),
                 };
                 workbench.show_page_image();
                 if start_replaying {

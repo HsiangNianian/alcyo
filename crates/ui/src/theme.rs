@@ -313,12 +313,23 @@ const IPAD_ICONS: [(&str, &str); 18] = [
     ("icons/ipad/undo.svg", include_str!("../icons/ipad/undo.svg")),
 ];
 
+/// The iPad's meetings page (crates/ui/src/home.rs): its line icons, and the kingfisher in its colours.
+const HOME_ICONS: [(&str, &str); 7] = [
+    ("icons/ipad/halcy.svg", include_str!("../icons/ipad/halcy.svg")),
+    ("icons/ipad/import.svg", include_str!("../icons/ipad/import.svg")),
+    ("icons/ipad/pen.svg", include_str!("../icons/ipad/pen.svg")),
+    ("icons/ipad/pin.svg", include_str!("../icons/ipad/pin.svg")),
+    ("icons/ipad/search.svg", include_str!("../icons/ipad/search.svg")),
+    ("icons/ipad/sliders.svg", include_str!("../icons/ipad/sliders.svg")),
+    ("icons/ipad/trash.svg", include_str!("../icons/ipad/trash.svg")),
+];
+
 /// The icons the toolkit carries, the few more this window asks for, and our own pictograms over both.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {
