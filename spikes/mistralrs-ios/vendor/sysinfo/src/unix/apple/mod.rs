@@ -44,13 +44,7 @@ cfg_if! {
         pub(crate) use self::component::{ComponentInner, ComponentsInner};
     }
 
-    // Alcyo spike: the route messages this reads are the Mac's in libc, so the iPad gets no network figures.
-    if #[cfg(all(feature = "network", target_os = "macos"))] {
-        pub mod network;
-
-        pub(crate) use self::network::{NetworkDataInner, NetworksInner};
-    } else if #[cfg(feature = "network")] {
-        #[path = "../../unknown/network.rs"]
+    if #[cfg(feature = "network")] {
         pub mod network;
 
         pub(crate) use self::network::{NetworkDataInner, NetworksInner};

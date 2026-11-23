@@ -2,8 +2,13 @@
 
 use libc::{
     self, c_char, c_int, c_uint, if_data64, if_msghdr2, sysctl, CTL_NET, IFNAMSIZ, NET_RT_IFLIST2,
-    PF_ROUTE, RTM_IFINFO2,
+    PF_ROUTE,
 };
+#[cfg(target_os = "macos")]
+use libc::RTM_IFINFO2;
+// Alcyo spike: libc declares it for the Mac only; it is the same Darwin route message on iOS (net/route.h).
+#[cfg(not(target_os = "macos"))]
+const RTM_IFINFO2: c_int = 0x12;
 
 use std::collections::{hash_map, HashMap};
 use std::mem::{size_of, MaybeUninit};
