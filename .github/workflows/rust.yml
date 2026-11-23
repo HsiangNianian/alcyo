@@ -12,6 +12,7 @@ on:
       - 'eval/summary-cases.json'
       - 'packaging/**'
       - 'scripts/build-apple-speech.sh'
+      - 'scripts/ios-check.sh'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'LICENSE'
@@ -44,6 +45,7 @@ jobs:
       core: ${{ steps.filter.outputs.core }}
       linux: ${{ steps.filter.outputs.linux }}
       macos: ${{ steps.filter.outputs.macos }}
+      ios: ${{ steps.filter.outputs.ios }}
       windows: ${{ steps.filter.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
@@ -85,6 +87,9 @@ jobs:
               - 'packaging/icons/**'
               - 'packaging/macos/**'
               - 'scripts/build-apple-speech.sh'
+            ios:
+              - *app
+              - 'scripts/ios-check.sh'
             windows:
               - *app
               - 'LICENSE'
@@ -215,6 +220,30 @@ jobs:
             target/package/*.dmg
             target/package/notarized/*.dmg
           retention-days: 14
+
+  # Which crates build for the iPad (#41). Nothing ships for it yet: the table in the run's summary shows what
+  # stands in the way, and MUST keeps the crates that build from breaking.
+  ios:
+    name: ipados check
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.ios == 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$xcode" ] || sudo xcode-select -s "$xcode"
+          xcrun --sdk iphoneos --show-sdk-version
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - run: sh scripts/ios-check.sh
+        env:
+          MUST: ''
 
   windows:
     name: windows package
