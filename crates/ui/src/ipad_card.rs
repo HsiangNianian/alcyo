@@ -36,8 +36,11 @@ impl Workbench {
         let left = matches!(self.ipad.corner, Corner::TopLeft | Corner::BottomLeft);
         let bottom = matches!(self.ipad.corner, Corner::BottomLeft | Corner::BottomRight);
         if !open {
-            let x = if left { f.margin } else { f.w - f.margin - PILL_W };
-            return (x, f.h - f.dock_bottom() - (DOCK_H + PILL_H) / 2.0, PILL_W, PILL_H);
+            // Narrower beside a dock that leaves it less room, never over it.
+            const DOCK_W: f32 = 610.0;
+            let w = PILL_W.min((f.w - DOCK_W) / 2.0 - f.margin - 12.0).max(PILL_H);
+            let x = if left { f.margin } else { f.w - f.margin - w };
+            return (x, f.h - f.dock_bottom() - (DOCK_H + PILL_H) / 2.0, w, PILL_H);
         }
         let w = f.card_w();
         // Beside the palette when it is on the card's side.
@@ -410,7 +413,28 @@ impl Workbench {
                     .text_color(rgb(pal().muted))
                     .child(div().text_color(rgb(accent)).child(icon("ipad/circle").size(px(16.))))
                     .child(div().text_color(rgb(pal().text)).font_weight(FontWeight::SEMIBOLD).child(ta!("ipad-circled", n = pointed.len())))
-                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(names.join(", "))),
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(names.join(", ")))
+                    // Put away: the circle goes, the circle tool stays in hand.
+                    .child(
+                        div()
+                            .id("ipad-circle-close")
+                            .flex_none()
+                            .size(px(32.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(soft(1.)))
+                            .child(icon("ipad/x").size(px(16.)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let mut ink = this.ink.borrow_mut();
+                                ink.clear_circles();
+                                ink.circling = true;
+                                drop(ink);
+                                cx.notify();
+                            })),
+                    ),
             )
             // What is being said now is the command; it types in as the words arrive.
             .child(

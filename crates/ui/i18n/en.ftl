@@ -623,3 +623,5 @@ presenter-room-sees-this = The room sees this
 presenter-leave = Leave presenter
 presenter-meetings-and-settings = Meetings and settings
 presenter-follow-live = Follow live
+# Meeting search on the iPad, where the meaning model cannot run yet.
+ipad-search-words = On iPad, search matches words for now

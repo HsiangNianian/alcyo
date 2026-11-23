@@ -555,7 +555,11 @@ impl Workbench {
         let typed = self.library_query.read(cx).value().to_string();
         self.search_typed(&typed);
         let query = typed.trim().to_lowercase();
-        let hits: HashSet<String> = self.search.as_ref().filter(|_| !query.is_empty()).map(|s| s.hits.iter().map(|h| h.meeting.clone()).collect()).unwrap_or_default();
+        let mut hits: HashSet<String> = self.search.as_ref().filter(|_| !query.is_empty()).map(|s| s.hits.iter().map(|h| h.meeting.clone()).collect()).unwrap_or_default();
+        // Where search by meaning cannot run (the iPad), the words themselves are looked for.
+        if self.search.is_none() && !query.is_empty() {
+            hits.extend(self.word_hits(&query));
+        }
         let pinned = |id: &str| self.pinned.iter().any(|p| p == id);
         let meta = |id: &str| self.home.thumbs.get(id).map(|t| t.meta.clone()).unwrap_or_default();
         let counts = [
@@ -642,6 +646,7 @@ impl Workbench {
         });
 
         // Header: the kingfisher and the page's name, then search, import, settings and a new meeting.
+        let narrow = f32::from(window.viewport_size().width) < 760.0;
         let header = div()
             .absolute()
             .top(px(top + 14.))
@@ -657,7 +662,7 @@ impl Workbench {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .text_size(px(34.))
+                    .text_size(px(if narrow { 28. } else { 34. }))
                     .child(gpui_kit::img("icons/ipad/halcy.svg").flex_none().w(px(30.)).h(px(24.)))
                     .child(div().font_weight(FontWeight::BOLD).whitespace_nowrap().child(t("meetings")))
                     .map(|brand| self.intro_brand(brand, window)),
@@ -669,7 +674,7 @@ impl Workbench {
                         .id("home-search")
                         .w(px(340.))
                         .flex_shrink(1.)
-                        .min_w(px(150.))
+                        .min_w(px(if narrow { 110. } else { 150. }))
                         .h(px(44.))
                         .flex()
                         .items_center()
@@ -697,8 +702,8 @@ impl Workbench {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .pl(px(14.))
-                        .pr(px(18.))
+                        .pl(px(if narrow { 11. } else { 14. }))
+                        .pr(px(if narrow { 11. } else { 18. }))
                         .rounded(px(13.))
                         .bg(rgb(p.button))
                         .text_color(rgb(p.on_button))
@@ -708,7 +713,8 @@ impl Workbench {
                         .cursor_pointer()
                         .hover(|d| d.bg(rgb(p.button_hover)))
                         .child(icon("ipad/plus").size(px(22.)))
-                        .child(t("new-meeting"))
+                        // A narrow window keeps the plus alone.
+                        .when(!narrow, |d| d.child(t("new-meeting")))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.home.menu = None;
                             this.new_meeting(cx);

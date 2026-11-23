@@ -568,3 +568,4 @@ presenter-room-sees-this = 会场看到的画面
 presenter-leave = 退出演示
 presenter-meetings-and-settings = 会议与设置
 presenter-follow-live = 跟随最新
+ipad-search-words = 在 iPad 上暂时按字词搜索

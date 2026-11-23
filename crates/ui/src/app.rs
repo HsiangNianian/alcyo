@@ -686,6 +686,11 @@ impl Ink {
         } else if self.cropping {
             self.crop = Some((start, start));
         } else if self.circling {
+            // One circle at a time on the iPad, with its card; a new one replaces it.
+            if crate::platform::ipad_layout() {
+                self.loops.clear();
+                self.pointed.clear();
+            }
             self.drawing = Some(vec![start]);
         } else {
             return false;
@@ -3485,6 +3490,11 @@ impl Workbench {
 
     /// Start meeting search if it is on and its model is here, and bring every meeting's index up to date.
     fn start_search(&mut self) {
+        // The meaning model runs as a program of its own, which the iPad does not allow; there meetings are
+        // searched for their words instead (ipad.rs).
+        if !crate::platform::LOCAL_MODELS {
+            return;
+        }
         let (Some(store), Some(data)) = (&self.store, self.models.parent()) else { return };
         if self.search.is_some() || !self.form.saved.meeting_search {
             return;
@@ -3583,6 +3593,9 @@ impl Workbench {
     fn search_status(&self) -> Option<(String, bool)> {
         if !self.form.saved.meeting_search {
             return None;
+        }
+        if !crate::platform::LOCAL_MODELS {
+            return Some((t("ipad-search-words").to_string(), false));
         }
         let model = alcyo_models::embedding();
         if let Some(download) = self.download.as_ref().filter(|d| d.id == model.id) {
@@ -4406,6 +4419,13 @@ impl Workbench {
             return true;
         }
         let mut b = self.ink.borrow_mut();
+        // On the iPad a tap on the board with the circle in hand and nothing circled puts the circle down.
+        if crate::platform::ipad_layout() && b.drawing.as_ref().is_some_and(|d| d.len() < 3) && b.loops.is_empty() {
+            b.clear_circles();
+            drop(b);
+            cx.notify();
+            return true;
+        }
         if b.drawing.is_some() {
             b.close_loop();
             drop(b);
@@ -6726,10 +6746,18 @@ impl Render for Workbench {
                 // A press on a clip card takes hold of the card rather than the board.
                 let at = b.on_board(e.position);
                 let card = b.clips.iter().find(|(r, _)| f64::from(at[0]) >= r.x && f64::from(at[0]) <= r.x + r.w && f64::from(at[1]) >= r.y && f64::from(at[1]) <= r.y + r.h).map(|(r, _)| r.id.clone());
-                // On the iPad a double tap with a finger on the board fits it again.
+                // On the iPad a double tap with a finger on the board fits it, or, fitted, shows it at actual
+                // size around the tap.
                 if on_ipad && e.click_count >= 2 && card.is_none() {
-                    drop(b);
-                    this.fit_board(cx);
+                    let (k, fit) = (b.shown().k, b.fit().k);
+                    if (k - fit).abs() / fit < 0.05 && fit < 0.95 {
+                        b.zoom_at(e.position, 1.0 / k);
+                        drop(b);
+                        cx.notify();
+                    } else {
+                        drop(b);
+                        this.fit_board(cx);
+                    }
                     return;
                 }
                 // A double click on a document's card opens it.
@@ -6811,8 +6839,8 @@ impl Render for Workbench {
             }))
             .child(
                 canvas(
-                    |_, _, _| (),
-                    move |bounds: Bounds<Pixels>, (), window: &mut Window, _: &mut App| {
+                    |bounds: Bounds<Pixels>, window: &mut Window, _: &mut App| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
+                    move |bounds: Bounds<Pixels>, hitbox: gpui_kit::Hitbox, window: &mut Window, _: &mut App| {
                         // A finger dragging the board moves it, unless a tool is in hand: then, claimed as it
                         // starts, the drag draws the tool's stroke, as the mouse does. Only the iPad sends these.
                         window.on_mouse_event(move |e: &gpui_kit::TouchDragEvent, phase, window, cx| {
@@ -6824,7 +6852,8 @@ impl Render for Workbench {
                                     let mut b = touch_ink.borrow_mut();
                                     // A finger pans unless fingers may mark; the Pencil always draws the tool in hand.
                                     let may_draw = !pencil_only || crate::platform::touch_is_pencil();
-                                    if may_draw && bounds.contains(&e.start_position) && b.tool_down(e.start_position) {
+                                    // Only a drag that starts on the board itself, not on what floats over it.
+                                    if may_draw && bounds.contains(&e.start_position) && hitbox.is_hovered_at(e.start_position, window) && b.tool_down(e.start_position) {
                                         b.tool_drag(e.position);
                                         window.prevent_default();
                                         window.refresh();
@@ -9140,9 +9169,9 @@ impl Render for Workbench {
         };
         // On the iPad the map comes out only while zoomed in, under the meeting's card.
         let zoomed_in = { let ink = self.ink.borrow(); ink.shown().k > ink.fit().k * 1.08 };
-        let map_wanted = if ipad { zoomed_in } else { map_on };
+        let map_wanted = if ipad { zoomed_in && map_on } else { map_on };
         if ipad {
-            self.ink.borrow_mut().set_map(zoomed_in);
+            self.ink.borrow_mut().set_map(map_wanted);
         }
         let minimap = (map_wanted && has_ink && !blank && canvas_width >= ZOOM_TOOLS_FROM).then(|| {
             let (shown, press, moved, lift, lift_out) = (self.ink.clone(), self.ink.clone(), self.ink.clone(), self.ink.clone(), self.ink.clone());

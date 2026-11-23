@@ -53,6 +53,7 @@ pub(super) enum Grab {
     Card,
     Sheet,
     Palette,
+    Map,
 }
 
 /// A drag under way: where it started and where it is, and the last few moments of it, for the velocity
@@ -102,6 +103,10 @@ pub(super) struct Chrome {
     /// Where the transcript card is, and a drag under way.
     pub(super) corner: Corner,
     pub(super) drag: Option<Drag>,
+    /// The last word search where search by meaning cannot run, and the meetings it found.
+    word_search: (String, Vec<String>),
+    /// The corner the board's map sits in while zoomed in.
+    map_corner: Corner,
     /// The transcript sheet's height when upright or narrow.
     pub(super) sheet: f32,
     /// Only the Pencil marks; fingers pan and zoom.
@@ -129,6 +134,8 @@ impl Chrome {
             corner: Corner::TopRight,
             drag: None,
             sheet: DETENTS[1],
+            map_corner: Corner::TopLeft,
+            word_search: (String::new(), vec![]),
             pencil_only: true,
             newest_for: None,
             touched: Rc::new(Cell::new(Instant::now())),
@@ -375,10 +382,67 @@ impl Workbench {
         }
     }
 
-    /// Where the board's map goes on the iPad: under the meeting's card.
-    pub(super) fn ipad_map_corner(&self, window: &Window) -> (bool, bool, f32, f32) {
-        let f = Frame::of(window);
-        (false, false, f.margin, f.top() + 10.0 + CARD_H + 16.0)
+    /// The meetings whose transcript, boards or summary hold `query`, for search where search by meaning
+    /// cannot run: read once for each query, case left aside.
+    pub(super) fn word_hits(&mut self, query: &str) -> Vec<String> {
+        if self.ipad.word_search.0 == query {
+            return self.ipad.word_search.1.clone();
+        }
+        let Some(store) = self.store.as_ref() else { return vec![] };
+        let hits: Vec<String> = self
+            .library
+            .iter()
+            .filter(|m| {
+                store.load(&m.id).ok().flatten().is_some_and(|loaded| serde_json::Value::Object(loaded.raw).to_string().to_lowercase().contains(query))
+            })
+            .map(|m| m.id.clone())
+            .collect();
+        self.ipad.word_search = (query.to_string(), hits.clone());
+        hits
+    }
+
+    /// Where the board's map goes on the iPad: at the corner of the frame the iPad springs to its corner.
+    pub(super) fn ipad_map_corner(&self, _window: &Window) -> (bool, bool, f32, f32) {
+        (false, false, 0.0, 0.0)
+    }
+
+    /// The map's place at its corner: clear of the bars at the top and the dock at the bottom.
+    fn ipad_map_rect(&self, f: &Frame, corner: Corner) -> (f32, f32) {
+        let (w, h) = (MAP_PANEL_W, MAP_PANEL_H);
+        let left = f.margin + if self.ipad.tools_right || f.mode != Mode::Wide { 0.0 } else { PALETTE_W + 12.0 };
+        let right = f.w - f.margin - w - if self.ipad.tools_right && f.mode == Mode::Wide { PALETTE_W + 12.0 } else { 0.0 };
+        let top = f.top() + 10.0 + CARD_H + 16.0;
+        let bottom = f.h - f.dock_bottom() - DOCK_H - 16.0 - h;
+        match corner {
+            Corner::TopLeft => (left, top),
+            Corner::TopRight => (right, top),
+            Corner::BottomLeft => (left, bottom),
+            Corner::BottomRight => (right, bottom),
+        }
+    }
+
+    /// The board's map, while zoomed in, in a frame that springs to its corner and is dragged by its grip.
+    fn ipad_map(&self, f: &Frame, map: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        let dragging = self.ipad.drag.as_ref().filter(|d| d.grab == Grab::Map && d.moved);
+        let (x, y) = match dragging {
+            Some(drag) => (drag.start.0 + drag.delta().0, drag.start.1 + drag.delta().1),
+            None => self.ipad_map_rect(f, self.ipad.map_corner),
+        };
+        let snap = dragging.is_some();
+        // The map draws itself 4 pt in from the corner it is given.
+        let frame = div()
+            .relative()
+            .w(px(MAP_PANEL_W + 8.0))
+            .h(px(MAP_PANEL_H + 8.0))
+            .child(map)
+            .child(div().absolute().top_0().left_0().right_0().h(px(MAP_GRIP + 4.0)).child(self.ipad_drag_area(Grab::Map, cx)));
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .child(div().child(arrive("ipad-map-in", frame, 0., -8., 0.)).with_spring("ipad-map-y", spring(MOVE, y - 4.0, snap), |d, v| d.relative().top(px(v))))
+            .with_spring("ipad-map-x", spring(MOVE, x - 4.0, snap), |d, v| d.relative().left(px(v)))
+            .into_any_element()
     }
 
     /// Whether only the Pencil marks the board, fingers panning and zooming.
@@ -407,6 +471,7 @@ impl Workbench {
             }
             Grab::Sheet => (self.ipad.sheet, 0.0),
             Grab::Palette => (if self.ipad.tools_right { f.w - f.margin - PALETTE_W } else { f.margin }, 0.0),
+            Grab::Map => self.ipad_map_rect(&f, self.ipad.map_corner),
         };
         self.ipad.drag = Some(Drag { grab, from: at, start, now: at, moved: false, trail: VecDeque::from([(Instant::now(), at)]) });
     }
@@ -459,6 +524,16 @@ impl Workbench {
             }
             Grab::Palette if drag.moved => {
                 self.ipad.tools_right = drag.start.0 + dx + vx * 0.2 + PALETTE_W / 2.0 > f.w / 2.0;
+            }
+            Grab::Map if drag.moved => {
+                let cx_ = drag.start.0 + dx + vx * 0.2 + MAP_PANEL_W / 2.0;
+                let cy_ = drag.start.1 + dy + vy * 0.2 + MAP_PANEL_H / 2.0;
+                self.ipad.map_corner = match (cx_ > f.w / 2.0, cy_ > f.h / 2.0) {
+                    (false, false) => Corner::TopLeft,
+                    (true, false) => Corner::TopRight,
+                    (false, true) => Corner::BottomLeft,
+                    (true, true) => Corner::BottomRight,
+                };
             }
             Grab::Palette if f.mode == Mode::Upright => self.ipad.upright_tools = false,
             Grab::Palette => self.ipad.tools_open = !self.ipad.tools_open,
@@ -667,7 +742,7 @@ impl Workbench {
             .child(div().absolute().size_full().child(ground))
             .when_some(welcome, |d, welcome| d.child(div().absolute().top_0().bottom_0().left(px(left_room)).right(px(right_room)).child(welcome)))
             .when_some(tray, |d, tray| d.child(tray))
-            .when_some(minimap.filter(|_| !page_open), |d, map| d.child(div().absolute().size_full().child(map)))
+            .when_some(minimap.filter(|_| !page_open).map(|map| self.ipad_map(&f, map, cx)), |d, map| d.child(map))
             .child(div().absolute().top(px(offers_top)).left(px(left_room)).right(px(right_room)).flex().justify_center().child(offers))
             .when_some(notices, |d, notices| d.child(div().absolute().top(px(notices_top)).left(px(left_room)).right(px(right_room)).child(notices)))
             .when_some(compact_bars, |d, bars| d.child(fade("ipad-fade-compact", bars)))
@@ -690,6 +765,7 @@ impl Workbench {
     /// While zoomed in, the status pill gives way to how far, and how to come back.
     fn ipad_zoom_chip(&self, f: &Frame, cx: &mut Context<Self>) -> gpui_kit::Div {
         let k = self.ink.borrow().shown().k;
+        let map_on = !self.form.saved.minimap_hidden;
         div().absolute().top(px(f.top() + 20.0)).left_0().right_0().flex().justify_center().child(arrive(
             "ipad-zoom-chip-in",
             glass(div(), false)
@@ -707,7 +783,25 @@ impl Workbench {
                 .cursor_pointer()
                 .child(icon("ipad/zoom").size(px(14.)))
                 .child(ta!("ipad-zoom-fit", percent = (k * 100.0).round() as i64))
-                .on_click(cx.listener(|this, _, _, cx| this.fit_board(cx))),
+                .on_click(cx.listener(|this, _, _, cx| this.fit_board(cx)))
+                // The map comes and goes from here, while zoomed in.
+                .child(
+                    div()
+                        .id("ipad-map-toggle")
+                        .ml(px(4.))
+                        .mr(px(-8.))
+                        .size(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .when(map_on, |d| d.bg(soft(1.5)).text_color(rgb(pal().text)))
+                        .child(icon("map").size(px(13.)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_map(cx);
+                        })),
+                ),
             0.,
             -8.,
             0.,
@@ -736,6 +830,7 @@ impl Workbench {
             Panel::Settings => Some(t("settings")),
             _ => None,
         };
+        let page_open = page_name.is_some();
         let started = self.live.created_at().and_then(|ms| {
             use chrono::TimeZone;
             let at = chrono::Local.timestamp_millis_opt(ms as i64).single()?;
@@ -786,13 +881,14 @@ impl Workbench {
             .items_center()
             .gap(px(4.))
             .pl(px(4.))
-            .pr(px(14.))
+            // Over a page, which has its own title, only the way to the list stays.
+            .pr(px(if page_open { 4. } else { 14. }))
             .rounded_full()
             .child(round_button("ipad-sidebar-toggle", "sidebar", false).on_click(cx.listener(|this, _, _, cx| {
                 this.ipad_toggle_sidebar();
                 cx.notify();
             })))
-            .child(title)
+            .when(!page_open, |d| d.child(title))
     }
 
     /// How the board stands, in a pill at the top: the model drawing, and the lines it could not draw, which
