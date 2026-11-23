@@ -527,6 +527,7 @@ impl Workbench {
                     }),
             )
             .child(round_button("ipad-share", "live", self.panel == Panel::Share || self.sharing.is_some()).on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Share, cx))))
+            .child(round_button("ipad-present", "airplay", false).on_click(cx.listener(|this, _, window, cx| this.enter_presenter(window, cx))))
             .child(round_button("ipad-export", "export", self.panel == Panel::Export).on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Export, cx))))
             .child(rule().mx(px(4.)))
             .child(round_button("ipad-transcript", "transcript", false).when(self.side_shown(), |d| d.bg(soft(1.2))).on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx))))

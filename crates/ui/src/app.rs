@@ -64,6 +64,9 @@ use std::time::{Duration, Instant};
 // The iPad's screen, a child of this module so it reaches the workbench's state; kept beside this file.
 #[path = "ipad.rs"]
 mod ipad;
+// Presenter mode on the iPad: the room's picture on an external display, with the iPad's controls around it.
+#[path = "presenter.rs"]
+mod presenter;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -1747,6 +1750,8 @@ struct Workbench {
     close_refused: bool,
     /// What the iPad's screen keeps for itself (ipad.rs).
     ipad: ipad::Chrome,
+    /// Presenter mode, on the iPad (presenter.rs).
+    presenter: presenter::Presenter,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -9317,6 +9322,9 @@ impl Render for Workbench {
                 waiting,
                 not_drawn,
             };
+            if self.presenter.on {
+                return self.presenter_screen(parts, window, cx);
+            }
             return self.ipad_screen(parts, window, cx);
         }
         let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
@@ -10042,6 +10050,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     exit_when_done,
                     close_refused: false,
                     ipad: ipad::Chrome::new(),
+                    presenter: presenter::Presenter::new(),
                 };
                 workbench.show_page_image();
                 if start_replaying {

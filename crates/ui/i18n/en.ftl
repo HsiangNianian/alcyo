@@ -578,3 +578,15 @@ ipad-put-tools-away = Put the tools away
 ipad-show-tools = Show the tools
 ipad-collapse-transcript = Collapse the transcript
 ipad-show-transcript = Show the transcript
+# Presenter mode on the iPad: the room's picture on a projector, with the iPad's controls around it.
+presenter-no-display = No display connected
+presenter-speakers = { $n ->
+        [one] { $n } speaker
+       *[other] { $n } speakers
+    }
+presenter-captions = Captions
+presenter-board-only = Board only
+presenter-room-sees-this = The room sees this
+presenter-leave = Leave presenter
+presenter-meetings-and-settings = Meetings and settings
+presenter-follow-live = Follow live
