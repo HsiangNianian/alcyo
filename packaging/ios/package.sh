@@ -57,6 +57,26 @@ xcrun actool "$icons/Assets.xcassets" --compile "$app" --platform iphoneos --min
 /usr/libexec/PlistBuddy -c "Merge $icons/partial.plist" "$app/Info.plist"
 rm -rf "$icons"
 
+# What Xcode writes into every app it builds, and App Store Connect will not take one without: which SDK,
+# which Xcode, on which system.
+sdk_version=$(xcrun --sdk iphoneos --show-sdk-version)
+sdk_build=$(xcrun --sdk iphoneos --show-sdk-build-version)
+xcode_version=$(xcodebuild -version | awk '/^Xcode/ { print $2 }')
+xcode_build=$(xcodebuild -version | awk '/^Build version/ { print $3 }')
+# 26.6 is written 2660, 26 is 2600.
+xcode_number=$(printf '%s' "$xcode_version" | awk -F. '{ printf "%d%d%d", $1, $2, $3 }')
+plist() { /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$app/Info.plist"; }
+plist DTPlatformName iphoneos
+plist DTPlatformVersion "$sdk_version"
+plist DTPlatformBuild "$sdk_build"
+plist DTSDKName "iphoneos$sdk_version"
+plist DTSDKBuild "$sdk_build"
+plist DTXcode "$xcode_number"
+plist DTXcodeBuild "$xcode_build"
+plist DTCompiler com.apple.compilers.llvm.clang.1_0
+plist BuildMachineOSBuild "$(sw_vers -buildVersion)"
+echo "built with Xcode $xcode_version ($xcode_build), iOS SDK $sdk_version ($sdk_build)"
+
 # Not "resources": the file system takes it for "Resources", which makes the app an old-style bundle to
 # codesign, with every file beside it taken for code.
 lib="$app/assets"
