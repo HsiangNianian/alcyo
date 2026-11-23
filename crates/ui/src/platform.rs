@@ -43,6 +43,52 @@ pub fn safe_area(window: &gpui_kit::Window) -> gpui_kit::Edges<gpui_kit::Pixels>
     }
 }
 
+/// Hands a file the app has just written to the share sheet (Save to Files, AirDrop, Mail…). The iPad has no
+/// save dialog: `cx.prompt_for_new_path` answers there with a temporary path, and once the file is written
+/// there this offers it. A desktop build saved it where the person chose, so it does nothing.
+#[allow(dead_code)]
+pub fn share_file(path: &std::path::Path) {
+    #[cfg(target_os = "ios")]
+    if let Err(error) = gpui_ios::share_file(path) {
+        eprintln!("could not share {}: {error:#}", path.display());
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = path;
+}
+
+/// Where iPadOS draws a windowed scene's controls (the three dots, top left): a corner of the window to keep
+/// clear of, besides the safe area. `None` in full screen, before iPadOS 26, and on the desktop.
+#[allow(dead_code)]
+pub fn window_controls(window: &gpui_kit::Window) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
+    let _ = window;
+    #[cfg(target_os = "ios")]
+    {
+        gpui_ios::window_controls_rect()
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        None
+    }
+}
+
+/// Calls `handler` with the number of fingers (2 or 3) when the iPad sees a two- or three-finger tap, for undo
+/// and redo. The tap's touches are cancelled, so it is not also a click. A desktop build never calls it.
+#[allow(dead_code)]
+pub fn on_multi_finger_tap(cx: &mut gpui_kit::App, handler: impl FnMut(u8, &mut gpui_kit::App) + 'static) {
+    #[cfg(target_os = "ios")]
+    {
+        let cx = cx.to_async();
+        let handler = std::rc::Rc::new(std::cell::RefCell::new(handler));
+        // UIKit calls back from its own run loop; handle the tap once that has unwound.
+        gpui_ios::on_multi_finger_tap(move |fingers| {
+            let handler = handler.clone();
+            cx.spawn(async move |cx| cx.update(|cx| (handler.borrow_mut())(fingers, cx))).detach();
+        });
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = (cx, handler);
+}
+
 /// Whether the touch being handled comes from the Apple Pencil rather than a finger. Read it in a touch or
 /// pointer handler, while the event is dispatched: it describes the touch being delivered.
 ///
