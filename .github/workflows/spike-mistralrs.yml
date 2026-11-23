@@ -1,0 +1,45 @@
+name: Spike mistral.rs
+
+# Whether mistral.rs builds for the Mac and the iPad with Metal (#41): spikes/mistralrs-ios, on spike branches only.
+on:
+  push:
+    branches: ['spike/**']
+    paths:
+      - 'spikes/mistralrs-ios/**'
+      - '.github/workflows/spike-mistralrs.yml'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, aarch64-apple-ios]
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: spikes/mistralrs-ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$xcode" ] || sudo xcode-select -s "$xcode"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/mistralrs-ios
+          key: ${{ matrix.target }}
+      - name: Build with Metal
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+        run: cargo build --release --features metal --target ${{ matrix.target }} 2>&1 | tail -80
+      - name: Size
+        run: ls -lh target/${{ matrix.target }}/release/mistralrs-ios-spike
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'aarch64-apple-darwin'
+        with:
+          name: mistralrs-ios-spike-macos
+          path: spikes/mistralrs-ios/target/aarch64-apple-darwin/release/mistralrs-ios-spike
+          retention-days: 7

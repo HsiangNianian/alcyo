@@ -1,0 +1,16 @@
+[package]
+name = "mistralrs-ios-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Not part of Alcyo's workspace: a check of whether mistral.rs builds for, and runs on, the iPad (#41).
+[workspace]
+
+[dependencies]
+anyhow = "1"
+mistralrs = { version = "0.8.1", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[features]
+metal = ["mistralrs/metal"]
