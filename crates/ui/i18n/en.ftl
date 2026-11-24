@@ -737,3 +737,4 @@ home-word-search = Words in what was said · { $n ->
         [one] { $n } meeting
        *[other] { $n } meetings
     }
+ipad-glossary-empty = No names yet. Add one above, or import a list.

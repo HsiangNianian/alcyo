@@ -532,7 +532,7 @@ impl Workbench {
             let answer = answer.await;
             let _ = this.update(cx, |this, cx| {
                 this.sheet.testing = false;
-                this.sheet.test = Some(answer);
+                this.sheet.test = Some(answer.map_err(|error| ta!("could-not-connect", error = error)));
                 cx.notify();
             });
         })
@@ -554,7 +554,7 @@ impl Workbench {
                 .child(icon("ipad/check").size(px(15.)))
                 .child(ta!("connected-in-ms", ms = *ms as u64))
                 .into_any_element(),
-            (Some(Err(error)), _) => div().text_color(rgb(p.danger)).line_height(gpui_kit::relative(1.35)).child(ta!("could-not-connect", error = error.clone())).into_any_element(),
+            (Some(Err(error)), _) => div().text_color(rgb(p.danger)).line_height(gpui_kit::relative(1.35)).child(error.clone()).into_any_element(),
             (None, false) => div().text_color(rgb(p.faint)).child(t("ipad-test-hint")).into_any_element(),
         };
         row()
@@ -1458,7 +1458,7 @@ impl Workbench {
         // The names: a tap changes one, the bin deletes it.
         let count = glossary.terms.len();
         let rows: Vec<AnyElement> = if glossary.is_empty() {
-            vec![row().child(div().text_color(rgb(p.faint)).child(t("no-names-yet-add-one"))).into_any_element()]
+            vec![row().child(div().text_color(rgb(p.faint)).child(t("ipad-glossary-empty"))).into_any_element()]
         } else {
             glossary
                 .terms

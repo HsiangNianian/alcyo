@@ -1112,6 +1112,7 @@ impl Workbench {
             .border_t_1()
             .border_color(rgb(p.line))
             .child(nav("drawer-settings", "ipad/sliders", t("settings"), self.panel == Panel::Settings, Some(format!("v{}", alcyo_update::VERSION))).on_click(cx.listener(|this, _, _, cx| {
+                this.ipad.sidebar = None;
                 this.panel = Panel::Settings;
                 cx.notify();
             })));

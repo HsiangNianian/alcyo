@@ -671,3 +671,4 @@ ipad-search-by-words = 搜索说过的话
 ipad-search-by-words-hint = 在会议页的搜索框里，按转写、白板和摘要中的字词查找会议。
 ipad-search-meaning-later = 按语义搜索（能找到换了说法的内容）需要单独运行一个模型服务，而 iPadOS 不允许应用启动它，所以 iPad 上暂不支持。
 home-word-search = 按字词搜索 · { $n } 个会议
+ipad-glossary-empty = 还没有名称。在上面添加，或导入一份列表。
