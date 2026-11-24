@@ -11,7 +11,7 @@
 //! own way (`platform::ipad_layout` chooses). A child of `app`, so it reaches the workbench's state directly.
 
 use super::*;
-use alcyo_board::graph::{is_pen, PENS};
+use alcyo_board::graph::PENS;
 use gpui_kit::{AnyElement, BoxShadow, Edges, FontWeight, SpringConfig, SpringPlayback};
 use std::collections::VecDeque;
 
@@ -25,11 +25,17 @@ const PALETTE_W: f32 = 56.0;
 pub(super) const DOCK_H: f32 = 60.0;
 /// The meeting's card at the top left.
 pub(super) const CARD_H: f32 = 52.0;
+/// The meetings list's width, past the left margin it shares with the meeting's card.
+const SIDEBAR_PANEL_W: f32 = 296.0;
 /// The puck the palette folds into, and the same in portrait.
 const PUCK: f32 = 44.0;
 const PUCK_PORTRAIT: f32 = 52.0;
-/// The height of the palette's column: padding, grip, four tools, a rule, three inks and a little room.
-const PALETTE_H: f32 = 12.0 + 12.0 + 4.0 * TARGET + 13.0 + 3.0 * 36.0 + 4.0 + 9.0 * 4.0;
+/// The height of the palette's column: padding, grip, three tools (four with crop, on an imported page), a
+/// rule, three inks and a little room.
+fn palette_h(crop: bool) -> f32 {
+    let tools = if crop { 4.0 } else { 3.0 };
+    12.0 + 12.0 + tools * TARGET + 13.0 + 3.0 * 36.0 + 4.0 + (tools + 5.0) * 4.0
+}
 /// How far a drag must go before it moves anything, so a tap stays a tap.
 const DRAG_SLOP: f32 = 6.0;
 
@@ -692,9 +698,45 @@ impl Workbench {
 
         // Every touch anywhere counts, before any element hears of it, so the bars come back at once.
         let (touched, faded) = (self.ipad.touched.clone(), self.ipad.faded.clone());
+        let this = cx.entity().downgrade();
         let watch = canvas(
             |_, _, _| (),
             move |_, (), window: &mut Window, _| {
+                // A drag ends with the press that began it, wherever that is let go. What began it may be gone by
+                // then (the card folded into its pill under the finger), and a drag left behind would carry the
+                // card off with the next press anywhere: a press far from where it began is not part of it.
+                let (begun, ended, lifted) = (this.clone(), this.clone(), this.clone());
+                window.on_mouse_event(move |e: &MouseDownEvent, phase, _, cx| {
+                    if phase == gpui_kit::DispatchPhase::Capture {
+                        let _ = begun.update(cx, |w, _| {
+                            let far = |d: &Drag| {
+                                let off = e.position - d.from;
+                                f32::from(off.x).hypot(f32::from(off.y)) > DRAG_SLOP * 4.0
+                            };
+                            if w.ipad.drag.as_ref().is_some_and(far) {
+                                w.ipad.drag = None;
+                            }
+                        });
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
+                    if phase == gpui_kit::DispatchPhase::Capture {
+                        let _ = ended.update(cx, |w, cx| {
+                            if w.ipad.drag.is_some() {
+                                w.ipad_drag_end(window, cx);
+                            }
+                        });
+                    }
+                });
+                window.on_mouse_event(move |e: &gpui_kit::TouchDragEvent, phase, window, cx| {
+                    if phase == gpui_kit::DispatchPhase::Capture && matches!(e.phase, gpui_kit::TouchPhase::Ended | gpui_kit::TouchPhase::Cancelled) {
+                        let _ = lifted.update(cx, |w, cx| {
+                            if w.ipad.drag.is_some() {
+                                w.ipad_drag_end(window, cx);
+                            }
+                        });
+                    }
+                });
                 let note = |touched: &Rc<Cell<Instant>>, faded: &Rc<Cell<bool>>, window: &mut Window| {
                     touched.set(Instant::now());
                     if faded.get() {
@@ -731,7 +773,8 @@ impl Workbench {
         .size_full();
 
         let compact = matches!(f.mode, Mode::Compact { .. });
-        let meeting_card = (!compact || page_open).then(|| self.ipad_meeting_card(&f, cx));
+        // The meetings list, out, has the card's place at its head.
+        let meeting_card = ((!compact || page_open) && self.ipad.sidebar.is_none()).then(|| self.ipad_meeting_card(&f, cx));
         let status = (!page_open && !replaying && !compact).then(|| if zoomed_in { Some(self.ipad_zoom_chip(&f, cx)) } else { self.ipad_status(&f, waiting, &not_drawn, cx) }).flatten();
         let status_shown = status.is_some();
         let actions = (!page_open && !compact).then(|| self.ipad_actions(&f, cx));
@@ -740,26 +783,7 @@ impl Workbench {
         let dock = (!page_open).then(|| self.ipad_dock(&f, replay_bar, fading, window, cx));
         let compact_bars = (compact && !page_open).then(|| self.ipad_compact_nav(&f, cx));
         let circle_card = (!page_open && !replaying).then(|| self.ipad_circle_card(&f, cx)).flatten();
-        let sidebar = self.ipad.sidebar.is_some().then(|| {
-            let top = f.top() + 10.0 + CARD_H + 10.0;
-            div()
-                .absolute()
-                .size_full()
-                // A tap beside the list puts it away.
-                .child(div().id("ipad-sidebar-veil").absolute().size_full().on_click(cx.listener(|this, _, _, cx| {
-                    this.ipad.sidebar = None;
-                    cx.notify();
-                })))
-                .child(
-                    div().absolute().left(px(f.margin)).top(px(top)).bottom(px(f.dock_bottom())).child(arrive(
-                        "ipad-sidebar-in",
-                        glass(div(), true).id("ipad-sidebar").occlude().h_full().w(px(SIDEBAR_W)).rounded(px(22.)).overflow_hidden().child(self.sidebar(listening, cx).size_full()),
-                        -24.,
-                        0.,
-                        0.,
-                    )),
-                )
-        });
+        let sidebar = self.ipad.sidebar.is_some().then(|| self.ipad_sidebar(&f, listening, cx));
         // Under the status pill: the way back to the newest ink, and a board the talk moved to.
         let offers_top = f.top() + 20.0 + if status_shown { 32.0 + 10.0 } else { 0.0 } + if compact { 50.0 } else { 0.0 };
         // The notices place themselves 12 pt down, or under the offers when there are some.
@@ -783,11 +807,12 @@ impl Workbench {
             .text_color(rgb(pal().text))
             .child(watch)
             .child(board)
-            .child(div().absolute().size_full().child(ground))
+            .child(div().absolute().inset_0().child(ground))
             .when_some(welcome, |d, welcome| d.child(div().absolute().top_0().bottom_0().left(px(left_room)).right(px(right_room)).child(welcome)))
             .when_some(tray, |d, tray| d.child(tray))
             .when_some(minimap.filter(|_| !page_open).map(|map| self.ipad_map(&f, map, cx)), |d, map| d.child(map))
-            .child(div().absolute().top(px(offers_top)).left(px(left_room)).right(px(right_room)).flex().justify_center().child(offers))
+            // Centred on the screen under the status pill, as that is, wherever the transcript card is.
+            .child(div().absolute().top(px(offers_top)).left_0().right_0().flex().justify_center().child(offers))
             .when_some(notices, |d, notices| d.child(div().absolute().top(px(notices_top)).left(px(left_room)).right(px(right_room)).child(notices)))
             .when_some(compact_bars, |d, bars| d.child(fade("ipad-fade-compact", bars)))
             .when_some(palette, |d, palette| d.child(fade("ipad-fade-palette", div().absolute().inset_0().child(palette))))
@@ -797,13 +822,74 @@ impl Workbench {
             .when_some(status, |d, status| d.child(fade("ipad-fade-status", status)))
             .when_some(actions, |d, actions| d.child(fade("ipad-fade-actions", actions)))
             // Meetings and Settings lie over the board and under the meeting's card, which leads back.
-            .when_some(page, |d, page| d.child(div().absolute().size_full().pt(px(f.top() + 10.0 + CARD_H)).bg(rgb(pal().paper)).child(div().relative().size_full().child(page))))
+            .when_some(page, |d, page| d.child(div().absolute().inset_0().pt(px(f.top() + 10.0 + CARD_H)).bg(rgb(pal().paper)).child(div().relative().size_full().child(page))))
             .when_some(sidebar, |d, sidebar| d.child(sidebar))
             .when_some(meeting_card, |d, card| d.child(fade("ipad-fade-meeting", card)))
             .when_some(preparing, |d, page| d.child(page))
             .when_some(dialog, |d, dialog| d.child(dialog))
             .when_some(shortcuts, |d, window| d.child(window))
             .into_any_element()
+    }
+
+    /// The meetings list, as iPadOS's own sidebars: the whole height of the screen along its left edge, sliding
+    /// in from it over a dimmed board. Its head is where the meeting's card was, the button that brought it out
+    /// in the same place to put it away.
+    fn ipad_sidebar(&self, f: &Frame, listening: bool, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let w = f.top_left + SIDEBAR_PANEL_W;
+        let dark = theme::is_dark();
+        let close = cx.listener(|this, _, _, cx| {
+            this.ipad.sidebar = None;
+            cx.notify();
+        });
+        let head = div()
+            .flex_none()
+            .mt(px(f.top() + 10.0))
+            .h(px(CARD_H))
+            .pl(px(f.top_left + 4.0))
+            .pr(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(round_button("ipad-sidebar-close", "sidebar", false).on_click(close))
+            .child(div().flex_1().min_w_0().pl_1().text_title().font_weight(FontWeight::SEMIBOLD).child(t("meetings")));
+        let list = self.sidebar(listening, cx).w_full().flex_1().min_h_0().bg(gpui_kit::transparent_black()).border_r(px(0.));
+        let panel = div()
+            .id("ipad-sidebar")
+            .occlude()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(w))
+            .flex()
+            .flex_col()
+            .pb(px(f32::from(f.safe.bottom)))
+            .bg(rgb(pal().chrome))
+            .border_r_1()
+            .border_color(rgb(pal().line))
+            .shadow(vec![BoxShadow { color: alpha(0, if dark { 0.5 } else { 0.12 }), offset: point(px(0.), px(0.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }])
+            .child(head)
+            .child(div().flex_1().min_h_0().flex().flex_col().pl(px((f.top_left - 8.0).max(0.0))).child(list))
+            .with_animation("ipad-sidebar-in", gpui_kit::Animation::new(Duration::from_millis(320)).with_easing(|t: f32| 1. - (1. - t).powi(4)), move |d, t| d.left(px(-w * (1. - t))));
+        // Pinned to the screen's corner: left to its static place it would start below the board, which is in
+        // the flow before it, and so it did on the iPad, half way down.
+        div()
+            .absolute()
+            .inset_0()
+            // The board dims under it, and a tap on it puts the list away.
+            .child(
+                div()
+                    .id("ipad-sidebar-veil")
+                    .absolute()
+                    .inset_0()
+                    .bg(alpha(0, if dark { 0.4 } else { 0.22 }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.ipad.sidebar = None;
+                        cx.notify();
+                    }))
+                    .with_animation("ipad-sidebar-veil-in", gpui_kit::Animation::new(Duration::from_millis(240)), |d, t| d.opacity(t)),
+            )
+            .child(panel)
     }
 
     /// While zoomed in, the status pill gives way to how far, and how to come back.
@@ -1053,28 +1139,27 @@ impl Workbench {
         let upright = f.mode == Mode::Upright;
         let open = if upright { self.ipad.upright_tools } else { self.ipad.tools_open };
         let puck = if upright { PUCK_PORTRAIT } else { PUCK };
-        let (w, h) = if open { (PALETTE_W, PALETTE_H) } else { (puck, puck) };
+        let (w, h) = if open { (PALETTE_W, palette_h(on_page)) } else { (puck, puck) };
         let pen = self.ipad.pen;
         let (name, on) = match () {
             _ if cropping => ("crop", true),
             _ if erasing => ("eraser", true),
-            _ if marking && !is_pen(mark_tool) => ("mark", true),
             _ if marking => ("mark", true),
             _ => ("circle", circling),
         };
         let grip_drag = open.then(|| self.ipad_drag_area(Grab::Palette, cx));
-        // Taking up a tool puts the others down; tapping the one in hand puts it down too.
-        let tool = |id: &'static str, name: &'static str, on: bool, enabled: bool, take: fn(&mut Ink)| {
-            round_button(id, name, on).when(!enabled, |d| d.opacity(0.35)).when(enabled, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| {
-                    let mut ink = this.ink.borrow_mut();
-                    ink.put_tools_down();
-                    if !on {
-                        take(&mut ink);
-                    }
-                    cx.notify();
-                }))
-            })
+        // Taking up a tool puts the others down; tapping the one in hand puts it down too. Each says what it
+        // is under a pointer.
+        let tool = |id: &'static str, name: &'static str, tip: &'static str, on: bool, take: fn(&mut Ink, &'static str)| {
+            round_button(id, name, on).tooltip(move |window, cx| Tooltip::new(tip).build(window, cx)).on_click(cx.listener(move |this, _, _, cx| {
+                let pen = this.ipad.pen;
+                let mut ink = this.ink.borrow_mut();
+                ink.put_tools_down();
+                if !on {
+                    take(&mut ink, pen);
+                }
+                cx.notify();
+            }))
         };
         let content: AnyElement = if open {
             let divider = div().flex_none().w(px(24.)).h(px(1.)).my(px(6.)).bg(soft(2.3));
@@ -1093,20 +1178,26 @@ impl Workbench {
             let rise = if upright { 10. } else { -10. };
             let mut items: Vec<AnyElement> = vec![
                 grip.into_any_element(),
-                tool("ipad-circle", "circle", circling, true, |ink| ink.circling = true).into_any_element(),
-                tool("ipad-mark", "mark", marking && !erasing && !is_pen(mark_tool), true, |ink| {
+                tool("ipad-circle", "circle", t("circle"), circling, |ink, _| ink.circling = true).into_any_element(),
+                // Marking draws in the pen chosen below: black, red or blue.
+                tool("ipad-mark", "mark", t("mark"), marking && !erasing, |ink, pen| {
                     ink.marking = true;
-                    ink.mark_tool = "yellow";
+                    ink.mark_tool = pen;
                 })
                 .into_any_element(),
-                tool("ipad-crop", "crop", cropping, on_page, |ink| ink.cropping = true).into_any_element(),
-                tool("ipad-eraser", "eraser", erasing, true, |ink| {
+            ];
+            // Cropping cuts a piece out of an imported page, so it is offered only on one.
+            if on_page {
+                items.push(tool("ipad-crop", "crop", t("cut-a-part-of-the"), cropping, |ink, _| ink.cropping = true).into_any_element());
+            }
+            items.extend([
+                tool("ipad-eraser", "eraser", t("ipad-pencil-eraser"), erasing, |ink, _| {
                     ink.marking = true;
                     ink.mark_tool = ERASER;
                 })
                 .into_any_element(),
                 divider.into_any_element(),
-            ];
+            ]);
             // The pens: black, red and blue. Choosing one takes it up.
             items.extend(PENS.into_iter().map(|name| {
                 let (color, _, _) = annotation_look(name);

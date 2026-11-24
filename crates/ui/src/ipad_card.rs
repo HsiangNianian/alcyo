@@ -249,12 +249,14 @@ impl Workbench {
             );
         let side_panel = if self.panel.beside_board() { self.panel } else { Panel::Transcript };
         let typing = (side_panel == Panel::Transcript && self.editable()).then(|| div().flex_none().p(px(12.)).child(self.ipad_typing(false, cx)));
+        // As tall as the card is open at its corner, shorter at the bottom, so the box to type in is never cut off.
+        let (_, _, _, open_h) = self.ipad_card_rect(f, true);
         let card = div()
             .absolute()
             .top_0()
             .left_0()
             .w(px(f.card_w()))
-            .h(px(f.card_h()))
+            .h(px(open_h))
             .flex()
             .flex_col()
             .child(header)

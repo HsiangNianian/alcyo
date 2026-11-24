@@ -343,6 +343,7 @@ ipad-model-intro = 板书模型读转写内容并画出板书。语音识别已�
 ipad-remote-card = DeepSeek 或任何兼容 OpenAI 的接口。速度快；转写内容会发给服务方。
 ipad-on-this-ipad = 在这台 iPad 上
 ipad-local-card = 在 iPad 的芯片上运行。私密、可离线；需要 3 GB 空间。
+ipad-local-coming = 即将推出：在 iPad 的芯片上运行，私密、可离线。在此之前，板书使用远程模型绘制。
 ipad-connected = 已连接 · { $ms } 毫秒
 ipad-checking = 正在检查…
 ipad-not-connected = 未连接
