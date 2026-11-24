@@ -54,11 +54,16 @@ pub(super) struct Sheet {
     awake: bool,
     /// A new API key is being typed, in place of the saved one's ends.
     typing_key: bool,
+    /// The menu that is out, by its id.
+    pub(super) menu: Option<&'static str>,
+    /// What Test connection last found with the settings as typed, and whether it is trying now.
+    test: Option<Result<u128, String>>,
+    testing: bool,
 }
 
 impl Sheet {
     pub(super) fn new() -> Self {
-        Self { open: false, sinking: None, under_library: false, drag: None, glossary: false, probe: None, probing: None, awake: false, typing_key: false }
+        Self { open: false, sinking: None, under_library: false, drag: None, glossary: false, probe: None, probing: None, awake: false, typing_key: false, menu: None, test: None, testing: false }
     }
 }
 
@@ -245,24 +250,76 @@ fn segmented(id: &'static str, w: f32, parts: Vec<(String, bool, Box<dyn Fn(&mut
         }))
 }
 
-/// A choice shown as its value and a chevron, which opens the choices as a menu.
-fn menu_row<T: Clone + PartialEq + 'static>(id: &'static str, shown: String, choices: Vec<(T, String)>, chosen: T, choose: fn(&mut Workbench, T, &mut Window, &mut Context<Workbench>), cx: &mut Context<Workbench>) -> impl IntoElement {
-    let workbench = cx.entity().downgrade();
-    Button::new(id)
-        .ghost()
-        .px(px(6.))
-        .mx(px(-6.))
-        .child(div().text_size(px(15.)).text_color(rgb(pal().muted)).whitespace_nowrap().child(shown))
-        .dropdown_menu(move |menu, _, _| {
-            choices.iter().cloned().fold(menu.min_w(px(200.)).max_h(px(420.)).scrollable(true), |menu, (value, text)| {
-                let workbench = workbench.clone();
-                let on = value == chosen;
-                menu.item(PopupMenuItem::new(text).checked(on).on_click(move |_, window, cx| {
-                    let value = value.clone();
-                    let _ = workbench.update(cx, |this, cx| choose(this, value, window, cx));
-                }))
-            })
-        })
+/// A choice shown as its value and a chevron, as iPadOS shows one: the whole of it, past the setting's name, opens
+/// the choices in a menu of its own (#341), a rounded card floating under it on a soft shadow, with rows a finger
+/// can hit and a check by the one chosen. `open` is whether this menu is the one out.
+fn menu_row<T: Clone + PartialEq + 'static>(id: &'static str, open: bool, shown: String, choices: Vec<(T, String)>, chosen: T, choose: fn(&mut Workbench, T, &mut Window, &mut Context<Workbench>), cx: &mut Context<Workbench>) -> impl IntoElement {
+    let p = pal();
+    let dark = theme::is_dark();
+    let trigger = div()
+        .id(id)
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .h(px(44.))
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap(px(6.))
+        .cursor_pointer()
+        .text_size(px(15.))
+        .text_color(rgb(if open { p.accent } else { p.muted }))
+        .active(|d| d.opacity(0.6))
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(shown))
+        .child(div().flex_none().child(icon("ipad/chevron-down").size(px(15.))))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.sheet.menu = if open { None } else { Some(id) };
+            cx.notify();
+        }));
+    if !open {
+        return trigger;
+    }
+    let rows = choices.into_iter().enumerate().map(|(i, (value, text))| {
+        let on = value == chosen;
+        div()
+            .id(name(id, i))
+            .min_h(px(44.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(14.))
+            .text_size(px(15.))
+            .text_color(rgb(p.text))
+            .cursor_pointer()
+            .when(i > 0, |d| d.border_t_1().border_color(rgb(p.line)))
+            .hover(|d| d.bg(fill(0.7)))
+            .active(|d| d.bg(fill(1.4)))
+            .child(div().flex_none().w(px(18.)).text_color(rgb(p.accent)).when(on, |d| d.child(icon("ipad/check").size(px(16.)))))
+            .child(div().flex_1().min_w_0().when(on, |d| d.font_weight(FontWeight::SEMIBOLD)).child(text))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.sheet.menu = None;
+                choose(this, value.clone(), window, cx);
+                cx.notify();
+            }))
+    });
+    let card = div()
+        .id(name(id, "menu"))
+        .occlude()
+        .mt(px(6.))
+        .w(px(260.))
+        .max_h(px(420.))
+        .overflow_y_scroll()
+        .rounded(px(14.))
+        .bg(rgb(if dark { 0x2c_2c_2e } else { p.surface }))
+        .shadow(vec![shade(if dark { 0.55 } else { 0.18 }, 12., 40.), ring(if dark { tint(0xff_ff_ff, 0.1) } else { tint(0, 0.08) }, 0.5)])
+        .py(px(4.))
+        .children(rows)
+        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+            this.sheet.menu = None;
+            cx.notify();
+        }))
+        .with_animation(name(id, "menu-in"), gpui_kit::Animation::new(Duration::from_millis(180)).with_easing(|t: f32| 1. - (1. - t).powi(3)), |d, t| d.opacity(t).mt(px(6. - 6. * (1. - t))));
+    trigger.child(div().absolute().top_full().right_0().child(gpui_kit::deferred(gpui_kit::anchored().anchor(gpui_kit::Anchor::TopRight).snap_to_window_with_margin(px(12.)).child(card)).with_priority(1)))
 }
 
 /// The kingfisher, in its colours, `w` wide: the app's mark.
@@ -354,6 +411,7 @@ impl Workbench {
             self.sheet.drag = None;
             self.sheet.glossary = false;
             self.sheet.typing_key = false;
+            self.sheet.menu = None;
         }
         self.sheet.open = open;
         if self.sheet.sinking.is_some_and(|at| at.elapsed() >= SINK_FOR) {
@@ -452,6 +510,62 @@ impl Workbench {
             });
         })
         .detach();
+    }
+
+    /// Try the remote model with the settings as typed, saved or not: one short request to the address, with the
+    /// key, for the model, so a wrong address, key or model name each shows here before anything is drawn with it.
+    fn test_remote(&mut self, cx: &mut Context<Self>) {
+        let settings = self.form_settings(cx);
+        if !settings.is_complete() {
+            self.sheet.test = Some(Err(t("fill-in-the-address-model").to_string()));
+            cx.notify();
+            return;
+        }
+        let provider = Provider::Remote { base_url: settings.base_url, key: settings.api_key, model: settings.model };
+        self.sheet.testing = true;
+        self.sheet.test = None;
+        let answer = cx.background_executor().spawn(async move {
+            let hello = Utterance { speaker: None, text: "Hello".into(), pointing: vec![] };
+            propose(&provider, &Graph::default(), &[], &hello, Guidance::default(), None).map(|r| r.ms).map_err(|e| format!("{e:#}"))
+        });
+        cx.spawn(async move |this, cx| {
+            let answer = answer.await;
+            let _ = this.update(cx, |this, cx| {
+                this.sheet.testing = false;
+                this.sheet.test = Some(answer);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The remote group's last row: Test connection, and what it found, said in full where it can be read.
+    fn remote_test_row(&self, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let p = pal();
+        let status: AnyElement = match (&self.sheet.test, self.sheet.testing) {
+            (_, true) => div().text_color(rgb(p.faint)).child(t("ipad-checking")).with_animation("ipad-testing", motion::pulse(), |d, v| d.opacity(v)).into_any_element(),
+            (Some(Ok(ms)), _) => div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(if theme::is_dark() { 0x30_d1_58 } else { 0x24_8a_3d }))
+                .child(icon("ipad/check").size(px(15.)))
+                .child(ta!("connected-in-ms", ms = *ms as u64))
+                .into_any_element(),
+            (Some(Err(error)), _) => div().text_color(rgb(p.danger)).line_height(gpui_kit::relative(1.35)).child(ta!("could-not-connect", error = error.clone())).into_any_element(),
+            (None, false) => div().text_color(rgb(p.faint)).child(t("ipad-test-hint")).into_any_element(),
+        };
+        row()
+            .min_h(px(56.))
+            .py(px(8.))
+            .child(div().flex_1().min_w_0().text_size(px(13.)).child(status))
+            .child(
+                pill_button("ipad-test-remote", t("ipad-test-connection"), true, None)
+                    .when(self.sheet.testing, |d| d.opacity(0.5).cursor_default())
+                    .when(!self.sheet.testing, |d| d.on_click(cx.listener(|this, _, _, cx| this.test_remote(cx)))),
+            )
     }
 
     /// The sheet, the scrim under it, and the meeting stepping back behind both.
@@ -644,6 +758,7 @@ impl Workbench {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings_tab = tab;
                     this.sheet.glossary = false;
+                    this.sheet.menu = None;
                     cx.notify();
                 }))
         }));
@@ -741,7 +856,7 @@ impl Workbench {
             );
         let header = self.grip(header, cx);
         let content: Vec<AnyElement> = match tab {
-            _ if glossary => self.glossary_card(cx),
+            _ if glossary => self.sheet_glossary(cx),
             SettingsTab::Model => self.sheet_model(cx),
             SettingsTab::Speech => self.sheet_speech(cx),
             SettingsTab::General => self.sheet_general(cx),
@@ -763,7 +878,6 @@ impl Workbench {
                     .pt(px(20.))
                     .px(px(28.))
                     .pb(px(24.))
-                    .when(glossary, |d| d.gap(px(8.)).text_size(px(13.)))
                     .children(content)
                     .with_spring(name("ipad-sheet-in", &page), SpringAnimation::new(motion::SETTLE).to(true).from(false), |d, v| {
                         let v = v.0.clamp(0., 1.);
@@ -879,10 +993,12 @@ impl Workbench {
         providers.push((String::new(), t("ipad-other-provider").to_string()));
         let provider_row = row().child(key(t("ipad-provider"), 96.)).child(menu_row(
             "ipad-provider-menu",
+            self.sheet.menu == Some("ipad-provider-menu"),
             provider.clone().unwrap_or_else(|| t("ipad-other-provider").to_string()),
             providers,
             provider.unwrap_or_default(),
             |this, choice, window, cx| {
+                this.sheet.test = None;
                 if let Some((_, base, model)) = REMOTE_PRESETS.iter().find(|(name, ..)| *name == choice) {
                     this.form.base_url.update(cx, |s, cx| s.set_value(*base, window, cx));
                     this.form.model.update(cx, |s, cx| s.set_value(*model, window, cx));
@@ -896,9 +1012,7 @@ impl Workbench {
                 cx.notify();
             },
             cx,
-        ))
-        .child(div().flex_1())
-        .child(chevron("chevron-right"));
+        ));
         // The field's own inset taken back, so its text lines up with the values above and below it.
         let field = |input: &Entity<InputState>| div().flex_1().min_w_0().ml(px(-10.)).font_family(theme::MONO).text_size(px(13.5)).text_color(rgb(p.muted)).child(Input::new(input).appearance(false));
         let key_empty = self.form.key.read(cx).value().is_empty();
@@ -936,6 +1050,7 @@ impl Workbench {
                     row().child(key(t("ipad-endpoint"), 96.)).child(field(&self.form.base_url)).into_any_element(),
                     row().child(key(t("model"), 96.)).child(field(&self.form.model)).into_any_element(),
                     key_row.into_any_element(),
+                    self.remote_test_row(cx).into_any_element(),
                 ]))
                 .into_any_element(),
         );
@@ -1053,9 +1168,7 @@ impl Workbench {
         let devices = group(vec![
             row()
                 .child(key(t("language"), 120.))
-                .child(menu_row("ipad-speech-language", shown, languages, language, |this, code: String, _, cx| this.choose_speech(this.form.saved.system_speech, Some(&code), cx), cx))
-                .child(div().flex_1())
-                .child(chevron("chevron-down"))
+                .child(menu_row("ipad-speech-language", self.sheet.menu == Some("ipad-speech-language"), shown, languages, language, |this, code: String, _, cx| this.choose_speech(this.form.saved.system_speech, Some(&code), cx), cx))
                 .into_any_element(),
             row().child(key(t("microphone-2"), 120.)).child(div().flex_1().text_color(rgb(p.muted)).child(t("ipad-microphone-name"))).child(meter).into_any_element(),
         ]);
@@ -1132,9 +1245,7 @@ impl Workbench {
             row().min_h(px(58.)).child(key(t("appearance"), 150.)).child(div().flex_1()).child(appearance).into_any_element(),
             row()
                 .child(key(t("language"), 150.))
-                .child(menu_row("ipad-interface-language", shown, languages, chosen, |this, code: String, window, cx| this.choose_language(&code, window, cx), cx))
-                .child(div().flex_1())
-                .child(chevron("chevron-right"))
+                .child(menu_row("ipad-interface-language", self.sheet.menu == Some("ipad-interface-language"), shown, languages, chosen, |this, code: String, window, cx| this.choose_language(&code, window, cx), cx))
                 .into_any_element(),
         ]);
         let listening = group(vec![
@@ -1154,10 +1265,11 @@ impl Workbench {
             }, cx)
             .into_any_element(),
         ]);
+        let menu_out = self.sheet.menu;
         let pencil_menu = |id: &'static str, chosen: String, set: fn(&mut Workbench, String, &mut Window, &mut Context<Workbench>), cx: &mut Context<Workbench>| {
             let actions = pencil_actions();
             let shown = actions.iter().find(|(a, _)| *a == chosen).map(|(_, said)| said.clone()).unwrap_or_default();
-            menu_row(id, shown, actions, chosen, set, cx)
+            menu_row(id, menu_out == Some(id), shown, actions, chosen, set, cx)
         };
         let pencil = group(vec![
             setting("ipad-pencil-only", t("ipad-pencil-only"), t("ipad-pencil-only-hint"), saved.pencil_only, |this, cx| {
@@ -1167,21 +1279,17 @@ impl Workbench {
             .into_any_element(),
             row()
                 .child(key(t("ipad-double-tap"), 190.))
-                .child(div().flex_1())
                 .child(pencil_menu("ipad-double-tap-menu", saved.pencil_double_tap.clone(), |this, action, _, cx| {
                     this.form.saved.pencil_double_tap = action;
                     saving(this, cx);
                 }, cx))
-                .child(chevron("chevron-down"))
                 .into_any_element(),
             row()
                 .child(key(t("ipad-squeeze"), 190.))
-                .child(div().flex_1())
                 .child(pencil_menu("ipad-squeeze-menu", saved.pencil_squeeze.clone(), |this, action, _, cx| {
                     this.form.saved.pencil_squeeze = action;
                     saving(this, cx);
                 }, cx))
-                .child(chevron("chevron-down"))
                 .into_any_element(),
         ]);
         vec![
@@ -1257,6 +1365,143 @@ impl Workbench {
                     .into_any_element(),
             );
         }
+        out
+    }
+
+    /// The glossary's own page over Speech, in the sheet's grouped rows: the fields that add a name (or change
+    /// the one tapped) at the top, then the names, each to tap to change or to delete; or all of it as text, for
+    /// pasting many at once. Import and export, which go through Files and the share sheet, at the head.
+    fn sheet_glossary(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let p = pal();
+        let glossary = self.glossary();
+        let as_text = self.form.glossary_as_text;
+        let editing = self.form.glossary_editing;
+        type Pick = Box<dyn Fn(&mut Workbench, &mut Window, &mut Context<Workbench>)>;
+        let view = segmented(
+            "ipad-glossary-view",
+            170.,
+            vec![
+                (t("list").to_string(), !as_text, Box::new(|this: &mut Workbench, _: &mut Window, cx: &mut Context<Workbench>| {
+                    this.form.glossary_as_text = false;
+                    cx.notify();
+                }) as Pick),
+                (t("text").to_string(), as_text, Box::new(|this: &mut Workbench, window: &mut Window, cx: &mut Context<Workbench>| {
+                    this.cancel_glossary_edit(window, cx);
+                    this.form.glossary_as_text = true;
+                    cx.notify();
+                }) as Pick),
+            ],
+            cx,
+        );
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(view)
+            .child(div().flex_1())
+            .child(pill_button("ipad-glossary-import", t("import"), false, Some("import")).on_click(cx.listener(|this, _, window, cx| this.import_glossary(window, cx))))
+            .child(
+                pill_button("ipad-glossary-export", t("export"), false, Some("export"))
+                    .when(glossary.is_empty(), |d| d.opacity(0.4).cursor_default())
+                    .when(!glossary.is_empty(), |d| d.on_click(cx.listener(|this, _, window, cx| this.export_glossary(window, cx)))),
+            );
+        let mut out = vec![
+            div().text_size(px(14.)).line_height(gpui_kit::relative(1.5)).text_color(rgb(p.muted)).child(t("names-as-they-should-be-2")).into_any_element(),
+            head.into_any_element(),
+        ];
+        if let Some(note) = self.form.glossary_note.clone() {
+            out.push(div().mt(px(-8.)).px(px(4.)).text_size(px(12.5)).text_color(rgb(p.faint)).child(note).into_any_element());
+        }
+        if as_text {
+            out.push(
+                group(vec![div().h(px(280.)).p(px(12.)).text_size(px(14.)).child(Textarea::new(&self.form.glossary)).into_any_element()]).into_any_element(),
+            );
+            out.push(div().mt(px(-8.)).px(px(4.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(p.faint)).child(t("one-name-a-line-ways")).into_any_element());
+            return out;
+        }
+        // Adding, or changing the name tapped below.
+        let field = |input: &Entity<InputState>| div().flex_1().min_w_0().ml(px(-10.)).text_size(px(15.)).child(Input::new(input).appearance(false));
+        let submit = pill_button("ipad-glossary-submit", if editing.is_some() { t("save") } else { t("add") }, true, editing.is_none().then_some("plus"))
+            .on_click(cx.listener(|this, _, window, cx| this.submit_glossary_term(window, cx)));
+        let actions = row()
+            .min_h(px(54.))
+            .justify_end()
+            .when(editing.is_some(), |d| d.child(pill_button("ipad-glossary-cancel", t("cancel"), false, None).on_click(cx.listener(|this, _, window, cx| this.cancel_glossary_edit(window, cx)))))
+            .child(submit);
+        out.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(label(if editing.is_some() { t("ipad-glossary-change") } else { t("ipad-glossary-add") }, None))
+                .child(group(vec![
+                    row().child(key(t("ipad-glossary-name"), 120.)).child(field(&self.form.glossary_name)).into_any_element(),
+                    row().child(key(t("ipad-glossary-heard"), 120.)).child(field(&self.form.glossary_heard)).into_any_element(),
+                    actions.into_any_element(),
+                ]))
+                .into_any_element(),
+        );
+        // The names: a tap changes one, the bin deletes it.
+        let count = glossary.terms.len();
+        let rows: Vec<AnyElement> = if glossary.is_empty() {
+            vec![row().child(div().text_color(rgb(p.faint)).child(t("no-names-yet-add-one"))).into_any_element()]
+        } else {
+            glossary
+                .terms
+                .iter()
+                .enumerate()
+                .map(|(i, term)| {
+                    let chosen = editing == Some(i);
+                    row()
+                        .id(name("ipad-glossary-term", i))
+                        .min_h(px(54.))
+                        .pr(px(4.))
+                        .cursor_pointer()
+                        .when(chosen, |d| d.bg(accent_soft()))
+                        .active(|d| d.bg(fill(1.)))
+                        .on_click(cx.listener(move |this, _, window, cx| this.edit_glossary_term(i, window, cx)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .py(px(8.))
+                                .child(div().font_weight(FontWeight::MEDIUM).text_color(rgb(if chosen { p.accent } else { p.text })).overflow_hidden().whitespace_nowrap().text_ellipsis().child(term.text.clone()))
+                                .when(!term.heard.is_empty(), |d| d.child(div().text_size(px(12.5)).text_color(rgb(p.faint)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(term.heard.join(" · ")))),
+                        )
+                        .child(
+                            div()
+                                .id(name("ipad-glossary-remove", i))
+                                .flex_none()
+                                .size(px(44.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .text_color(rgb(p.danger))
+                                .cursor_pointer()
+                                .active(|d| d.bg(fill(1.)))
+                                .child(icon("ipad/trash").size(px(18.)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_glossary_term(i, window, cx);
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect()
+        };
+        out.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(label(t("ipad-glossary"), (count > 0).then(|| div().child(count.to_string()).into_any_element())))
+                .child(group(rows))
+                .into_any_element(),
+        );
         out
     }
 

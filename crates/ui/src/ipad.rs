@@ -831,6 +831,72 @@ impl Workbench {
             .into_any_element()
     }
 
+    /// Export, Share or Import on the iPad: a rounded card floating over the whole screen, status bar and all,
+    /// on a scrim a tap puts away. It is pinned to the screen's corner, never to where the flow before it ends,
+    /// so the transcript card being out cannot push it down.
+    pub(super) fn ipad_dialog(&self, title: &str, body: gpui_kit::Stateful<gpui_kit::Div>, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let p = pal();
+        let dark = theme::is_dark();
+        let close = |this: &mut Self, cx: &mut Context<Self>| {
+            this.panel = Panel::Transcript;
+            cx.notify();
+        };
+        let shade = |a: f32, y: f32, blur: f32| BoxShadow { color: alpha(0, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(0.), inset: false };
+        let hairline = BoxShadow { color: if dark { alpha(0xff_ff_ff, 0.1) } else { alpha(0, 0.08) }, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false };
+        let card = div()
+            .id("dialog")
+            .occlude()
+            .w(px(560.))
+            .max_w_full()
+            .max_h(gpui_kit::relative(0.86))
+            .flex()
+            .flex_col()
+            .rounded(px(26.))
+            .overflow_hidden()
+            .bg(rgb(p.surface))
+            .shadow(vec![shade(if dark { 0.6 } else { 0.26 }, 24., 70.), hairline])
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(64.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pl(px(24.))
+                    .pr(px(14.))
+                    .child(div().text_size(px(19.)).font_weight(FontWeight::BOLD).text_color(rgb(p.text)).child(title.to_string()))
+                    .child(
+                        div()
+                            .id("close-dialog")
+                            .size(px(TARGET))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(div().size(px(30.)).flex().items_center().justify_center().rounded_full().bg(soft(1.3)).text_color(rgb(p.muted)).child(icon("x").size(px(13.))))
+                            .active(|d| d.opacity(0.6))
+                            .on_click(cx.listener(move |this, _, _, cx| close(this, cx))),
+                    ),
+            )
+            .child(body.px(px(24.)).pb(px(24.)).pt(px(4.)).text_size(px(14.5)))
+            .with_animation("ipad-dialog-in", gpui_kit::Animation::new(Duration::from_millis(260)).with_easing(|t: f32| 1. - (1. - t).powi(3)), |d, t| d.opacity(t).mt(px(18. * (1. - t))));
+        div()
+            .id("dialog-veil")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .p(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(alpha(0x0a_0a_0a, if dark { 0.5 } else { 0.3 }))
+            .on_click(cx.listener(move |this, _, _, cx| close(this, cx)))
+            .child(card)
+    }
+
     /// The meetings list, as iPadOS's own sidebars: the whole height of the screen along its left edge, sliding
     /// in from it over a dimmed board. Its head is where the meeting's card was, the button that brought it out
     /// in the same place to put it away.

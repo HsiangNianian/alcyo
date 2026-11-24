@@ -1836,6 +1836,39 @@ fn shader_dir(models: &std::path::Path) -> PathBuf {
 /// from the moment it starts, so what is there says nothing about whether it finished.
 const SHADERS_READY: &str = "ready";
 
+/// What a finished start is noted under. The desktop's driver keeps its shaders across versions, so one start
+/// anywhere counts. The iPad's model runs inside the app, whose graphics code comes with each version, so it
+/// counts for that model and version.
+fn shaders_key(models: &std::path::Path) -> String {
+    if !cfg!(target_os = "ios") {
+        return String::new();
+    }
+    let model = alcyo_models::current(models).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    format!("{} {model}", alcyo_update::VERSION)
+}
+
+/// Whether the local model has started all the way here before, so its next start is not its first.
+fn shaders_ready(models: &std::path::Path) -> bool {
+    let key = shaders_key(models);
+    std::fs::read_to_string(shader_dir(models).join(SHADERS_READY)).is_ok_and(|noted| key.is_empty() || noted.lines().any(|l| l == key))
+}
+
+/// Note that the local model started all the way. The folder is made here too: on the iPad no server program
+/// makes it first (the model runs inside the app), so the note was never kept there and every start, after the
+/// app came back from the background or opened another meeting, looked like the first.
+fn note_shaders_ready(models: &std::path::Path) {
+    let dir = shader_dir(models);
+    let key = shaders_key(models);
+    let noted = std::fs::read_to_string(dir.join(SHADERS_READY)).unwrap_or_default();
+    if noted.lines().any(|l| l == key) && !key.is_empty() {
+        return;
+    }
+    let kept = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(SHADERS_READY), if key.is_empty() { noted } else { format!("{noted}{key}\n") }));
+    if let Err(e) = kept {
+        eprintln!("could not note the model as ready in {}: {e}", dir.display());
+    }
+}
+
 fn dir_size(dir: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries
@@ -1861,7 +1894,10 @@ struct Preparing {
 
 impl Preparing {
     fn showing(&self) -> bool {
-        !self.dismissed && (self.first_time || self.started.elapsed() > PREPARING_PAGE_AFTER)
+        // On the iPad a later start, as after the background, is only said in the status pill: the page over
+        // everything is for the first, which takes long enough to need explaining.
+        let slow = !crate::platform::ipad_layout() && self.started.elapsed() > PREPARING_PAGE_AFTER;
+        !self.dismissed && (self.first_time || slow)
     }
 
     /// How far along, from 0 to 1. Compiling reports nothing, so until tokens are counted this is an
@@ -2554,7 +2590,7 @@ impl Workbench {
             match event {
                 Event::Agent(Update::Loading) => {
                     self.status = ModelStatus::Loading;
-                    self.preparing = Some(Preparing { started: Instant::now(), first_time: !shader_dir(&self.models).join(SHADERS_READY).exists(), done: 0, total: 0, dismissed: false });
+                    self.preparing = Some(Preparing { started: Instant::now(), first_time: !shaders_ready(&self.models), done: 0, total: 0, dismissed: false });
                 }
                 Event::Agent(Update::Preparing { done, total }) => {
                     if let Some(preparing) = &mut self.preparing {
@@ -2563,7 +2599,7 @@ impl Workbench {
                 }
                 Event::Agent(Update::Ready) => {
                     if self.preparing.take().is_some() {
-                        let _ = std::fs::write(shader_dir(&self.models).join(SHADERS_READY), "");
+                        note_shaders_ready(&self.models);
                     }
                     self.status = ModelStatus::Quiet;
                     self.needs_model = false;
@@ -6382,6 +6418,48 @@ impl Workbench {
                 .child(div().pt(px(2.)).font_family(theme::MONO).text_small().text_color(rgb(pal().faint)).whitespace_nowrap().child(format!(".{} ↓", kind.extension())))
         });
         let result = self.exported.as_ref().map(|result| match result {
+            // The iPad wrote the file aside and handed it to the share sheet: where it was written means nothing
+            // there, and no folder can be shown. The sheet can be had again.
+            Exported::Saved { path, text_left_out } if crate::platform::ipad_layout() => {
+                let shared = path.clone();
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .pt_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_small().font_weight(gpui_kit::FontWeight::MEDIUM).child(t("ipad-export-ready")))
+                            .child(div().text_small().text_color(rgb(pal().faint)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                            .when(*text_left_out, |d| d.child(div().text_small().text_color(rgb(pal().warning)).child(t("no-usable-font-was-found")))),
+                    )
+                    .child(
+                        div()
+                            .id("share-export")
+                            .flex_none()
+                            .h(px(38.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(16.))
+                            .rounded_full()
+                            .bg(rgb(pal().button))
+                            .text_color(rgb(pal().on_button))
+                            .text_small()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .active(|d| d.opacity(0.8))
+                            .child(icon("ipad/export").size(px(15.)))
+                            .child(t("ipad-share-again"))
+                            .on_click(move |_, _, _| crate::platform::share_file(&shared)),
+                    )
+            }
             Exported::Saved { path, text_left_out } => {
                 let shown = path.clone();
                 div()
@@ -9031,12 +9109,19 @@ impl Render for Workbench {
         let speakers_panel = (self.panel == Panel::Speakers).then(|| self.speakers_panel(editable, cx));
         // A dialog for what is done in one go, over a dimmed window; clicking outside closes it.
         let dialog = |title: &'static str, body: gpui_kit::Stateful<gpui_kit::Div>, cx: &mut Context<Self>| {
+            // On the iPad a floating card over the whole screen, wherever the transcript card or anything else is.
+            if ipad {
+                return self.ipad_dialog(title, body, cx);
+            }
             let mut veil: Hsla = rgb(pal().strong).into();
             veil.a = 0.18;
             div()
                 .id("dialog-veil")
                 .occlude()
                 .absolute()
+                // Pinned to the corner: left to its static place it starts below whatever is in the flow before it.
+                .top_0()
+                .left_0()
                 .size_full()
                 .flex()
                 .items_center()
@@ -9138,7 +9223,7 @@ impl Render for Workbench {
             let (title, detail) = if p.first_time {
                 (
                     t("getting-ready-for-the-first"),
-                    t("the-model-is-compiling-for"),
+                    if cfg!(target_os = "ios") { t("ipad-model-compiling") } else { t("the-model-is-compiling-for") },
                 )
             } else {
                 (t("getting-the-model-ready"), t("this-is-taking-longer-than"))
