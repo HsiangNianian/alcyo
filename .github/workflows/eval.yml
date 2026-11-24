@@ -115,7 +115,9 @@ jobs:
     # Not on a schedule, which is for hearing; on a push or pull request, only when it concerns the board.
     if: ${{ !cancelled() && github.event_name != 'schedule' && inputs.meeting_asr != true && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.board == 'true') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The dev set on the runner's CPU takes 31–41 minutes since the 44-line phone meeting joined it (#306), so 45
+    # cut slower runners off mid-case; 60 leaves room without letting a stuck run hang on.
+    timeout-minutes: 60
     # Reading earlier runs' reports for the trend needs to list and download this repository's artifacts.
     permissions:
       contents: read
