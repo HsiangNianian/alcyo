@@ -1,0 +1,23 @@
+[package]
+name = "alcyo-llama"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# llama.cpp's server built into the app, for the iPad, where no other program may be started.
+links = "llama-server-embedded"
+
+[features]
+# Link the server on a Mac too, from the same release as the iPad's, to try it there (examples/smoke.rs). The
+# iPad always links it; any other build links it only when ALCYO_LLAMA_LIB_DIR names a build of its own.
+mac = []
+
+[dependencies]
+anyhow.workspace = true
+
+[build-dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+ureq = { version = "2", features = ["json"] }
+serde_json.workspace = true

@@ -350,9 +350,9 @@ impl Workbench {
     /// 2: who draws the board, remote with a key or this iPad with a download.
     fn intro_model(&mut self, cx: &mut Context<Self>) -> gpui_kit::Div {
         let p = pal();
-        // Until llama.cpp runs inside the app the iPad draws with a remote model only (platform.rs): the local
-        // choice is shown as coming, and nothing is downloaded for it.
-        let local_possible = crate::platform::LOCAL_MODELS;
+        // The local model runs inside the app on an iPad with memory enough for it (platform::local_models); on one
+        // without, the choice is shown but cannot be made, and nothing is downloaded for it.
+        let local_possible = crate::platform::local_models();
         let remote = self.intro.remote || !local_possible;
         let local = alcyo_models::catalog().into_iter().find(|m| m.id == LOCAL_MODEL);
         let card = |id: &'static str, glyph: &str, title: String, text: String, on: bool| {
@@ -434,7 +434,7 @@ impl Workbench {
                     cx.notify();
                 }))
             } else {
-                card("ob-local", "chip", t("ipad-on-this-ipad").to_string(), t("ipad-local-coming").to_string(), false).cursor_default().opacity(0.55)
+                card("ob-local", "chip", ta!("ob-2-local", model = model.label), ta!("ob-2-local-hint", size = gigabytes(model.size)), false).cursor_default().opacity(0.55)
             }
         });
         div()
@@ -458,7 +458,7 @@ impl Workbench {
 
     /// Keep what was chosen for the board: the remote model with its key, or this iPad's, downloading.
     fn intro_choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.intro.remote || !crate::platform::LOCAL_MODELS {
+        if self.intro.remote || !crate::platform::local_models() {
             let key = self.intro.key.as_ref().map(|k| k.read(cx).value().trim().to_string()).unwrap_or_default();
             if !key.is_empty() {
                 // DeepSeek, filled in as Settings' own choice of it is.

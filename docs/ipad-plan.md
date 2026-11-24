@@ -12,7 +12,7 @@ claim below is marked as checked in the source, or as a question for a real devi
 | Styled components | `gpui-component` is the same on every platform | Source only |
 | Speech recognition | `sherpa-onnx`'s build script has an iOS path | Source only |
 | Microphone | `cpal` mentions iOS | Source only; it may need an audio session set up |
-| Local model | **Blocked**: see below | iPadOS doesn't let an app start another process |
+| Local model | llama.cpp's server runs inside the app (option B below) | Started, asked and stopped on a CI Mac; not run on an iPad |
 
 ## The local model
 
@@ -35,6 +35,33 @@ progress, asking and stopping.
 equivalent. It would also mean a second model format and re-running every evaluation, while Linux would still need
 llama.cpp. Compare it on a real device once the engine interface exists, and add it as another engine if it is clearly
 faster or lighter. Today's first line takes about 0.5 s on an RTX 3060 Laptop, so reliable output matters more right now.
+
+**Done: B.** A mistral.rs spike (branch `spike/mistralrs-ios`) refused the default model on a CI Mac, so the iPad runs
+llama.cpp's own server inside the app:
+
+- **Library.** Our fork, HsiangNianian/llama.cpp, tag `alcyo-b11954-2` (branch `alcyo/b11954`, upstream b11954 as the
+  desktop uses), adds `llama_server_main(argc, argv)`, which installs no signal handlers and never exits the process, and
+  `llama_server_shutdown()`, which may be called from any thread at any time and also cancels a model still loading.
+  `scripts/build-llama-embedded.sh` builds it as static libraries with Metal and its shaders built in, once per tag;
+  the archives sit on the fork's release, and `.cargo/llama-embedded.sha256` pins them as sherpa-onnx's are.
+- **In the app.** `crates/llama` links them and runs the server on a thread with a 16 MiB stack; dropping it stops it.
+  `alcyo-agent` starts it with the desktop's arguments on the same port and talks to it over the same HTTP, so only
+  `start_llama` differs. The desktop still starts a child process.
+- **Memory.** 6144 tokens of context as on the desktop, keys and values at 8 bits (`-ctk q8_0 -ctv q8_0 -fa on`, about
+  0.45 GB less for Qwen3-4B), `--cache-ram 256`, `--fit on`. Before starting, the model's size plus 1.25 GB is compared
+  with `os_proc_available_memory()`, and if it does not fit the app says so rather than being ended by iPadOS. The
+  option is offered on iPads with 8 GB or more. The app asks for `com.apple.developer.kernel.increased-memory-limit`,
+  which its provisioning profile has to grant.
+- **Models** are downloaded as on the desktop, into Application Support, kept out of backups.
+- **Life of the app.** In the background, where iPadOS allows no work on the graphics, the model stops, and lines
+  that need it wait until the app is back, when it starts again. A line being drawn as it stops fails with an
+  error rather than crashing. On a memory warning an idle model stops, and the app says why. On termination
+  nothing waits for it. The app has no background audio mode, so listening stops in the background as well.
+- **Switching.** Another board model chosen in Settings is used after a restart. Alcyo asks whether to restart now
+  or later, and Settings shows "Restart to use …" until then. Restarting stops the old model and waits for it.
+  If it didn't stop, or iPadOS hasn't given its memory back, the new choice waits for the next launch. Changes to
+  a remote model's settings still apply at once. The desktop switches at once, and on both, leaving the local
+  model stops its server straight away.
 
 ## What to measure on a real device
 

@@ -1,8 +1,8 @@
 //! What differs on the iPad, kept in one place.
 //!
 //! The desktop takes its platform from gpui-kit; the iPad brings Zed's UIKit and Metal one itself. iOS
-//! lets an app start no other program, so the board model's server (llama-server) cannot run there:
-//! the iPad draws with a remote model until llama.cpp runs inside the app.
+//! lets an app start no other program, so the board model's server (llama-server) runs inside the app there
+//! (crates/llama), and other servers, as meeting search's, do not run.
 
 /// The application, on the platform this build is for.
 pub fn application() -> gpui_kit::Application {
@@ -16,8 +16,23 @@ pub fn application() -> gpui_kit::Application {
     }
 }
 
-/// Whether a board model can run on this device, which needs a program of its own.
-pub const LOCAL_MODELS: bool = !cfg!(target_os = "ios");
+/// Whether the app may start programs of its own, as the meeting search model's server is: not on the iPad.
+pub const OWN_PROGRAMS: bool = !cfg!(target_os = "ios");
+
+/// Whether a board model can run on this device. Always on a desktop, where it is a program of its own. On the iPad
+/// it runs inside the app (alcyo-llama), on one with memory enough for the 4B model: 8 GB, as an iPad Air with M2
+/// has. iPadOS lets an app use only part of it, so starting the model checks again what is left.
+pub fn local_models() -> bool {
+    #[cfg(target_os = "ios")]
+    {
+        const ENOUGH: u64 = 7 << 30;
+        alcyo_llama::BUILT_IN && alcyo_llama::physical_memory().is_some_and(|bytes| bytes >= ENOUGH)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        true
+    }
+}
 
 /// Whether the window is laid out for the iPad: the board over the whole screen, with everything else
 /// floating over it (crates/ui/src/ipad.rs), rather than the desktop's title bar, dock and side panel.

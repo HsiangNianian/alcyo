@@ -504,7 +504,56 @@ impl Workbench {
             .child(behind)
             .child(sheet)
             .child(self.sheet_pull(cx))
+            .when(open && self.switch.asking, |d| d.child(self.restart_dialog(w, h, cx)))
             .into_any_element()
+    }
+
+    /// Over Settings, when another board model was chosen on the iPad: it is used after a restart, now or at the next
+    /// launch. Put away by either answer, or a tap beside it, which is "later".
+    fn restart_dialog(&self, w: f32, h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = pal();
+        let dark = theme::is_dark();
+        let card_w = 340.0_f32.min(w - 48.0);
+        let later = |this: &mut Self, cx: &mut Context<Self>| {
+            this.switch.asking = false;
+            cx.notify();
+        };
+        let card = div()
+            .id("ipad-restart-dialog")
+            .occlude()
+            .w(px(card_w))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(22.))
+            .rounded(px(22.))
+            .bg(rgb(p.surface))
+            .shadow(vec![shade(if dark { 0.6 } else { 0.28 }, 20., 60.), ring(if dark { tint(0xff_ff_ff, 0.1) } else { tint(0, 0.08) }, 0.5)])
+            .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.text)).child(t("ipad-restart-title")))
+            .child(div().text_size(px(13.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(p.muted)).child(t("ipad-restart-body")))
+            .child(
+                div()
+                    .pt(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(pill_button("ipad-restart-now", t("ipad-restart-now"), true, None).h(px(40.)).justify_center().on_click(cx.listener(|this, _, _, cx| this.restart_board_model(cx))))
+                    .child(pill_button("ipad-restart-later", t("ipad-restart-later"), false, None).h(px(40.)).justify_center().on_click(cx.listener(move |this, _, _, cx| later(this, cx)))),
+            )
+            .with_spring("ipad-restart-in", SpringAnimation::new(motion::SETTLE).to(true).from(false), |d, v| d.opacity(v.0.clamp(0., 1.)));
+        div()
+            .id("ipad-restart-scrim")
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(px(w))
+            .h(px(h))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(tint(0x0a_0a_0a, if dark { 0.35 } else { 0.2 }))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| later(this, cx)))
+            .child(card)
     }
 
     /// Pulled down by its top or its tabs, the sheet follows the finger, and goes once it is far enough. The
@@ -728,8 +777,8 @@ impl Workbench {
     fn sheet_model(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         self.probe_remote(cx);
         let p = pal();
-        // The iPad draws with a remote model only, until llama.cpp runs inside the app (platform.rs).
-        let local_possible = crate::platform::LOCAL_MODELS;
+        // Only where the model can run: on the iPad, one with memory enough for it (platform::local_models).
+        let local_possible = crate::platform::local_models();
         let remote = self.form.remote || !local_possible;
         let option = |id: &'static str, glyph: &str, title: &str, text: &str, on: bool| {
             div()
@@ -772,13 +821,22 @@ impl Workbench {
                     cx.notify();
                 }))
             } else {
-                // Not yet: shown, so it is known to be coming, but it cannot be chosen.
-                option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-coming"), false).cursor_default().opacity(0.55)
+                // Shown, but this iPad has too little memory for the model.
+                option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-card"), false).cursor_default().opacity(0.55)
             });
         let mut out = vec![
             div().text_size(px(14.)).line_height(gpui_kit::relative(1.5)).text_color(rgb(p.muted)).child(t("ipad-model-intro")).into_any_element(),
             options.into_any_element(),
         ];
+        // Another model chosen, waiting for a restart: the one in use draws until then.
+        if let Some(model) = self.switch.pending.clone() {
+            let right: AnyElement = if self.switch.restarting {
+                div().flex_none().text_size(px(13.5)).text_color(rgb(p.faint)).child(t("ipad-restarting")).with_animation("ipad-restarting", motion::pulse(), |d, v| d.opacity(v)).into_any_element()
+            } else {
+                pill_button("ipad-restart-pending", t("ipad-restart-now"), true, None).on_click(cx.listener(|this, _, _, cx| this.restart_board_model(cx))).into_any_element()
+            };
+            out.push(group(vec![row().child(div().flex_1().min_w_0().text_color(rgb(p.text)).child(ta!("ipad-restart-to-use", model = model))).child(right).into_any_element()]).into_any_element());
+        }
 
         // Remote: the provider and its address, model and key, and whether it answers.
         let saved = &self.form.saved;
@@ -882,7 +940,7 @@ impl Workbench {
                 .into_any_element(),
         );
 
-        // On this iPad: the models that fit it, each to download or to use. Not before they can run here.
+        // On this iPad: the models that fit it, each to download or to use. Not where they cannot run.
         if !local_possible {
             if let Some(note) = self.form.note.clone().filter(|_| self.sheet.probing.is_none()) {
                 out.push(div().px(px(4.)).mt(px(-8.)).text_size(px(12.5)).text_color(rgb(p.faint)).child(note).into_any_element());

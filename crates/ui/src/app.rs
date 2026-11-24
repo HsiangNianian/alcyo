@@ -18,7 +18,7 @@ use crate::ta;
 use crate::theme::{self, icon, pal, Type as _};
 use crate::motion;
 use crate::quiet::Quiet;
-use gpui_kit::{AnimationExt as _, SpringAnimation};
+use gpui_kit::{AnimationExt as _, AppLifecyclePhase, SpringAnimation};
 use crate::pipeline::{Event, Pipeline, Script, Speech};
 use crate::resources;
 use crate::shortcuts::{Action, Group, Keys, Shortcuts, ACTIONS, FIXED};
@@ -1787,6 +1787,44 @@ struct Workbench {
     presenter: presenter::Presenter,
     sheet: sheet::Sheet,
     intro: onboarding::Intro,
+    /// On the iPad, a board model chosen in Settings waits for a restart (`apply_backend`).
+    switch: ModelSwitch,
+}
+
+/// What draws the board, as far as switching it goes: a remote model, whose settings apply at once whichever it is,
+/// a local model's file, or none.
+#[derive(Clone, Debug, PartialEq)]
+enum Engine {
+    Remote,
+    Local(PathBuf),
+    None,
+}
+
+fn engine_of(backend: &Backend) -> Engine {
+    match backend {
+        Backend::Ready(_) => Engine::Remote,
+        Backend::ManagedLocal(local) => Engine::Local(local.model.clone()),
+        Backend::NoModel => Engine::None,
+    }
+}
+
+/// Whether going from the board model in use to the one chosen waits for a restart, on the iPad: between two that
+/// hold a model, local or remote, but not from none to the first, nor from one remote model's settings to another's.
+fn waits_for_restart(active: &Engine, chosen: &Engine) -> bool {
+    active != chosen && *active != Engine::None && *chosen != Engine::None
+}
+
+/// The iPad's board model in use, and one chosen to take over after a restart.
+#[derive(Default)]
+pub(crate) struct ModelSwitch {
+    /// What the settings in use chose, once applied.
+    active: Option<Engine>,
+    /// What to call the model chosen but waiting for a restart.
+    pub(crate) pending: Option<String>,
+    /// The dialog asking to restart now or later is up.
+    pub(crate) asking: bool,
+    /// A restart is under way: the old model stopping.
+    pub(crate) restarting: bool,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -1840,7 +1878,7 @@ fn backend_from(settings: &Settings, local_only: bool, binaries: &std::path::Pat
     if settings.enabled && settings.is_complete() && !local_only {
         return Backend::Ready(Provider::Remote { base_url: settings.base_url.clone(), key: settings.api_key.clone(), model: settings.model.clone() });
     }
-    if !crate::platform::LOCAL_MODELS {
+    if !crate::platform::local_models() {
         return Backend::NoModel;
     }
     match alcyo_models::current(models) {
@@ -3524,7 +3562,7 @@ impl Workbench {
     fn start_search(&mut self) {
         // The meaning model runs as a program of its own, which the iPad does not allow; there meetings are
         // searched for their words instead (ipad.rs).
-        if !crate::platform::LOCAL_MODELS {
+        if !crate::platform::OWN_PROGRAMS {
             return;
         }
         let (Some(store), Some(data)) = (&self.store, self.models.parent()) else { return };
@@ -3626,7 +3664,7 @@ impl Workbench {
         if !self.form.saved.meeting_search {
             return None;
         }
-        if !crate::platform::LOCAL_MODELS {
+        if !crate::platform::OWN_PROGRAMS {
             return Some((t("ipad-search-words").to_string(), false));
         }
         let model = alcyo_models::embedding();
@@ -3847,12 +3885,71 @@ impl Workbench {
 
     fn apply_backend(&mut self) {
         if !self.forced_backend {
+            // On the iPad another board model waits for a restart, which the person is asked for (sheet.rs): the
+            // model in use keeps drawing meanwhile, and the new one is used from the next launch either way.
+            let chosen = engine_of(&backend_from(&self.form.saved, false, &self.binaries, &self.models));
+            if cfg!(target_os = "ios") {
+                if self.switch.active.as_ref().is_some_and(|active| waits_for_restart(active, &chosen)) {
+                    let name = self.engine_name(&chosen);
+                    self.switch.asking |= self.switch.pending.as_ref() != Some(&name);
+                    self.switch.pending = Some(name);
+                    return;
+                }
+            }
+            self.switch = ModelSwitch { active: Some(chosen), ..ModelSwitch::default() };
             let backend = backend_from(&self.form.saved, self.live.local_only(), &self.binaries, &self.models);
             // The agent says Ready only when it starts, so a remote model saved later would leave the
             // workbench waiting for a model it already has.
             self.needs_model = matches!(backend, Backend::NoModel);
             self.session().set_backend(backend);
         }
+    }
+
+    /// What to call a board model in "Restart to use …".
+    fn engine_name(&self, engine: &Engine) -> String {
+        match engine {
+            Engine::Local(path) => alcyo_models::catalog().into_iter().find(|m| path.ends_with(&m.file)).map_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), |m| m.label.to_string()),
+            Engine::Remote if !self.form.saved.model.trim().is_empty() => self.form.saved.model.trim().to_string(),
+            Engine::Remote => t("remote").to_string(),
+            Engine::None => String::new(),
+        }
+    }
+
+    /// "Restart now", on the iPad: the model in use stops and gives its memory back, and then the one chosen takes
+    /// over, starting as at launch when a line needs it. If the old one would not stop, or iPadOS has not given back
+    /// memory enough, the choice stays waiting for the next launch and the person is told how to get there.
+    pub(crate) fn restart_board_model(&mut self, cx: &mut Context<Self>) {
+        if self.switch.restarting || self.forced_backend {
+            return;
+        }
+        self.switch.asking = false;
+        self.switch.restarting = true;
+        let backend = backend_from(&self.form.saved, self.live.local_only(), &self.binaries, &self.models);
+        let chosen = engine_of(&backend_from(&self.form.saved, false, &self.binaries, &self.models));
+        let switcher = self.session().switcher();
+        let to = backend.clone();
+        let done = cx.background_executor().spawn(async move { switcher.switch(to).map_err(|e| format!("{e:#}")) });
+        cx.spawn(async move |this, cx| {
+            let done = done.await;
+            let _ = this.update(cx, |this, cx| {
+                this.switch.restarting = false;
+                match done {
+                    Ok(()) => {
+                        this.switch = ModelSwitch { active: Some(chosen), ..ModelSwitch::default() };
+                        this.needs_model = matches!(backend, Backend::NoModel);
+                        // The new model loads as at launch: the next line shows it loading.
+                        this.notice = None;
+                    }
+                    Err(error) => {
+                        eprintln!("restarting the board model: {error}");
+                        this.notice = Some(t("ipad-restart-failed").to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Put a meeting on screen. Anything still in flight for the previous one is discarded.
@@ -5181,7 +5278,7 @@ impl Workbench {
             model: value(&self.form.model),
             // An empty field keeps the saved key, which is never shown again.
             api_key: if key.is_empty() { self.form.saved.api_key.clone() } else { key },
-            enabled: self.form.remote || !crate::platform::LOCAL_MODELS,
+            enabled: self.form.remote || !crate::platform::local_models(),
             diarize: self.form.saved.diarize,
             turn_pages: self.form.saved.turn_pages,
             glossary: self.form.saved.glossary.clone(),
@@ -8445,7 +8542,7 @@ impl Render for Workbench {
                             .child(button("test-settings", t("test")).on_click(cx.listener(|this, _, _, cx| this.test_settings(cx)))),
                     );
                 // Where no board model can run on the device (the iPad), the remote one is the only choice.
-                let local = crate::platform::LOCAL_MODELS;
+                let local = crate::platform::local_models();
                 let remote_shown = self.form.remote || !local;
                 div()
                     .flex()
@@ -10205,6 +10302,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     presenter: presenter::Presenter::new(),
                     sheet: sheet::Sheet::new(),
                     intro: onboarding::Intro::new(),
+                    switch: ModelSwitch::default(),
                 };
                 workbench.show_page_image();
                 // On the iPad: two fingers tapped undo and three redo, as in Notes; the Pencil's double tap and
@@ -10217,6 +10315,31 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     crate::platform::on_pencil_action(cx, move |action, cx| {
                         let _ = pencil.update(cx, |this, cx| this.ipad_pencil_action(action, cx));
                     });
+                }
+                // On the iPad the local model runs inside the app: it stops in the background, where iPadOS allows
+                // no work on the graphics, and starts again when a line next needs it; on a memory warning it stops
+                // if idle. The desktop's model is a program of its own and is left alone.
+                if cfg!(target_os = "ios") {
+                    let lifecycle = cx.entity().downgrade();
+                    cx.on_app_lifecycle(move |phase, cx| {
+                        let _ = lifecycle.update(cx, |this, _| match phase {
+                            AppLifecyclePhase::Background | AppLifecyclePhase::Disconnected => this.session().pause_local(),
+                            AppLifecyclePhase::Foreground | AppLifecyclePhase::Active => this.session().resume_local(),
+                            AppLifecyclePhase::Inactive => {}
+                        });
+                    })
+                    .detach();
+                    let memory = cx.entity().downgrade();
+                    cx.on_memory_warning(move |cx| {
+                        let _ = memory.update(cx, |this, _| this.session().shed_local(t("ipad-model-unloaded-memory").to_string()));
+                    })
+                    .detach();
+                    #[cfg(target_os = "ios")]
+                    cx.on_app_quit(|_, _| {
+                        alcyo_llama::quitting();
+                        async {}
+                    })
+                    .detach();
                 }
                 if start_replaying {
                     workbench.start_replay(window, cx);
@@ -10315,6 +10438,23 @@ fn page_ranges(spec: &str) -> Option<Vec<(u32, u32)>> {
 /// The number a page had in its document, or 1 for a lone image.
 fn page_number(graph: &Graph) -> u32 {
     graph.extra.get("underlay").and_then(|u| u.get("no")).and_then(serde_json::Value::as_u64).map_or(1, |n| n as u32)
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_switch_between_two_models_waits_for_a_restart() {
+        let local = |f: &str| Engine::Local(PathBuf::from(f));
+        assert!(waits_for_restart(&local("a"), &local("b")), "local to local");
+        assert!(waits_for_restart(&local("a"), &Engine::Remote), "local to remote");
+        assert!(waits_for_restart(&Engine::Remote, &local("a")), "remote to local");
+        assert!(!waits_for_restart(&Engine::Remote, &Engine::Remote), "a remote model's settings apply at once");
+        assert!(!waits_for_restart(&local("a"), &local("a")));
+        assert!(!waits_for_restart(&Engine::None, &local("a")), "the first model is used at once");
+        assert!(!waits_for_restart(&local("a"), &Engine::None));
+    }
 }
 
 #[cfg(test)]

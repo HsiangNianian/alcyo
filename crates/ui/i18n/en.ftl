@@ -347,7 +347,14 @@ ipad-model-intro = The board model listens to the transcript and draws. Speech r
 ipad-remote-card = DeepSeek or any OpenAI-compatible API. Fast; the transcript is sent to the provider.
 ipad-on-this-ipad = On this iPad
 ipad-local-card = Runs on the iPad's chip. Private and offline; needs 3 GB free.
-ipad-local-coming = Coming soon: runs on the iPad's chip, private and offline. Until then the board draws with a remote model.
+ipad-model-unloaded-memory = The local model was stopped because the iPad is low on memory. It starts again with the next line.
+ipad-restart-title = Restart the board model to switch
+ipad-restart-body = Alcyo applies the new model after a restart.
+ipad-restart-now = Restart now
+ipad-restart-later = I'll restart later
+ipad-restart-to-use = Restart to use { $model }
+ipad-restarting = Restarting…
+ipad-restart-failed = Couldn't free the old model's memory. Swipe Alcyo away in the app switcher and open it again.
 # Over the remote model's fields, once it answered: how long it took.
 ipad-connected = Connected · { $ms } ms
 ipad-checking = Checking…
