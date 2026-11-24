@@ -53,6 +53,15 @@ llama.cpp's own server inside the app:
   option is offered on iPads with 8 GB or more. The app asks for `com.apple.developer.kernel.increased-memory-limit`,
   which its provisioning profile has to grant.
 - **Models** are downloaded as on the desktop, into Application Support, kept out of backups.
+- **Life of the app.** In the background, where iPadOS allows no work on the graphics, the model stops, and lines
+  that need it wait until the app is back, when it starts again. A line being drawn as it stops fails with an
+  error rather than crashing. On a memory warning an idle model stops, and the app says why. On termination
+  nothing waits for it. The app has no background audio mode, so listening stops in the background as well.
+- **Switching.** Another board model chosen in Settings is used after a restart. Alcyo asks whether to restart now
+  or later, and Settings shows "Restart to use …" until then. Restarting stops the old model and waits for it.
+  If it didn't stop, or iPadOS hasn't given its memory back, the new choice waits for the next launch. Changes to
+  a remote model's settings still apply at once. The desktop switches at once, and on both, leaving the local
+  model stops its server straight away.
 
 ## What to measure on a real device
 
