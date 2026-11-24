@@ -28,7 +28,8 @@ fi
 case "$platform" in
   ios-arm64)
     # The app's own deployment target (packaging/ios/package.sh).
-    system="-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0"
+    # Executables, which are not built, would otherwise be app bundles that need a place to be installed.
+    system="-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_SYSTEM_PROCESSOR=arm64 -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_MACOSX_BUNDLE=OFF"
     ;;
   macos-arm64)
     system="-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
