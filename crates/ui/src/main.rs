@@ -6,6 +6,8 @@
 //!             [--synthetic <chars>] [--zoom-test] [--zoom <k>]
 //!             [--panel library|summary|export|import|speakers|settings] [--replay]
 //!   alcyo bench <root> <stroke|merged:N|raster> <speed> <targets,..> [marks]
+//! With ALCYO_IPAD_LAYOUT=1 a desktop build lays its window out as the iPad does, to work on that screen
+//! without an iPad (platform::ipad_layout).
 
 // No console window behind the app on Windows; the command-line flags attach to the one they were run from.
 #![cfg_attr(windows, windows_subsystem = "windows")]

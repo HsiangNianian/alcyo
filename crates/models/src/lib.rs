@@ -170,7 +170,7 @@ fn part_of(path: &Path) -> PathBuf {
 
 /// Bytes free on the disk holding `dir`.
 #[cfg(windows)]
-fn free_space(dir: &Path) -> Result<u64> {
+pub fn free_space(dir: &Path) -> Result<u64> {
     use std::os::windows::ffi::OsStrExt;
     let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
     let mut free = 0_u64;
@@ -184,7 +184,7 @@ fn free_space(dir: &Path) -> Result<u64> {
 
 /// Bytes free on the disk holding `dir`.
 #[cfg(unix)]
-fn free_space(dir: &Path) -> Result<u64> {
+pub fn free_space(dir: &Path) -> Result<u64> {
     let path = CString::new(dir.as_os_str().as_bytes())?;
     // SAFETY: `path` is a valid C string and `stat` is written by the call before being read.
     unsafe {

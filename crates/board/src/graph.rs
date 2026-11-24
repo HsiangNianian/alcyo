@@ -239,6 +239,8 @@ impl Graph {
         for a in self.annotations().iter().filter(|a| touches(a)) {
             let said = match a.tool.as_str() {
                 "pen" => "手写红笔",
+                "pen-black" => "手写黑笔",
+                "pen-blue" => "手写蓝笔",
                 "green" => "手动绿色高亮",
                 "pink" => "手动粉色高亮",
                 _ => "手动黄色高亮",
@@ -902,8 +904,17 @@ pub struct Annotation {
     pub points: Vec<[f64; 2]>,
 }
 
-/// The highlighters and the pen a hand annotation is drawn with.
-pub const ANNOTATION_TOOLS: [&str; 4] = ["yellow", "green", "pink", "pen"];
+/// The highlighters and the pens a hand annotation is drawn with. "pen" is the red pen, named before there
+/// were others, so meetings drawn then still read; black and blue came later.
+pub const ANNOTATION_TOOLS: [&str; 6] = ["yellow", "green", "pink", "pen", "pen-black", "pen-blue"];
+
+/// The pens, in the order a palette shows them: black, red, blue.
+pub const PENS: [&str; 3] = ["pen-black", "pen", "pen-blue"];
+
+/// Whether a hand annotation tool is a pen, drawn over the ink, rather than a highlighter under it.
+pub fn is_pen(tool: &str) -> bool {
+    tool == "pen" || tool.starts_with("pen-")
+}
 
 pub const CLIP_MAX_W: f64 = 360.0;
 pub const CLIP_MAX_H: f64 = 300.0;
@@ -1148,6 +1159,31 @@ pub fn grammar(g: &Graph, max_ops: usize, english: bool) -> String {
         rules.push("c ::= \"C \" ref (\" \" quote)?".into());
     }
     rules.join("\n")
+}
+
+#[cfg(test)]
+mod pen_tests {
+    use super::*;
+
+    #[test]
+    fn black_and_blue_pens_round_trip_beside_the_old_red_pen_and_highlighters() {
+        // A board saved before there were black and blue pens: its red pen and highlighter read as they were.
+        let old: Graph = serde_json::from_value(serde_json::json!({
+            "nodes": [], "edges": [], "groups": [], "nextNode": 1, "nextGroup": 1,
+            "annotations": [{ "tool": "pen", "points": [[1.0, 2.0], [3.0, 4.0]] }, { "tool": "yellow", "points": [[0.1, 0.5], [0.9, 0.5]] }]
+        }))
+        .unwrap();
+        let tools = |g: &Graph| g.annotations().iter().map(|a| a.tool.clone()).collect::<Vec<_>>();
+        assert_eq!(tools(&old), ["pen", "yellow"]);
+        let mut g = old.clone();
+        for pen in ["pen-black", "pen-blue"] {
+            g.annotate(Annotation { tool: pen.into(), on: None, points: vec![[10.0, 10.0], [40.0, 12.0]] });
+        }
+        let again: Graph = serde_json::from_value(serde_json::to_value(&g).unwrap()).unwrap();
+        assert_eq!(tools(&again), ["pen", "yellow", "pen-black", "pen-blue"]);
+        assert_eq!(again.annotations()[0], old.annotations()[0], "the old red line is untouched");
+        assert!(ANNOTATION_TOOLS.iter().all(|t| PENS.contains(t) || ["yellow", "green", "pink"].contains(t)));
+    }
 }
 
 #[cfg(test)]

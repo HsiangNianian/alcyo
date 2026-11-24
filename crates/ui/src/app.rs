@@ -4,7 +4,7 @@ use alcyo_board::glyphs::{Glyphs, HanziSource, Pt};
 use alcyo_board::board_layout::{target_at, Bounds as BoardBounds, Rect, StableLayout};
 use alcyo_board::check::check;
 use alcyo_board::compose::{annotation_look, compose, ink_boxes, InkBox, Owner, Style};
-use alcyo_board::graph::{parse_ops, Annotation, Clip, Graph, Kind, Op, Ref, Utterance, ANNOTATION_TOOLS};
+use alcyo_board::graph::{parse_ops, Annotation, Clip, Graph, Kind, Op, Ref, Utterance};
 use alcyo_agent::sound::Glossary;
 use alcyo_board::follow;
 use alcyo_board::sugiyama::first_diagram;
@@ -60,6 +60,23 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+// The iPad's screen, a child of this module so it reaches the workbench's state; kept beside this file.
+#[path = "ipad.rs"]
+mod ipad;
+#[path = "ipad_card.rs"]
+mod ipad_card;
+// The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
+#[path = "home.rs"]
+mod home;
+// Presenter mode on the iPad: the room's picture on an external display, with the iPad's controls around it.
+#[path = "presenter.rs"]
+mod presenter;
+// The iPad's Settings sheet and first run, laid over its screen; beside this file too.
+#[path = "sheet.rs"]
+mod sheet;
+#[path = "onboarding.rs"]
+mod onboarding;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -451,6 +468,8 @@ struct Ink {
     page_src: Option<String>,
     zoom_test: Option<ZoomTest>,
     instant: bool,
+    /// When the last circle closed, for the iPad's circle to settle and what it caught to tint in.
+    closed_at: Option<Instant>,
 }
 
 /// A scripted zoom sweep that reports what zooming costs.
@@ -672,6 +691,11 @@ impl Ink {
         } else if self.cropping {
             self.crop = Some((start, start));
         } else if self.circling {
+            // One circle at a time on the iPad, with its card; a new one replaces it.
+            if crate::platform::ipad_layout() {
+                self.loops.clear();
+                self.pointed.clear();
+            }
             self.drawing = Some(vec![start]);
         } else {
             return false;
@@ -710,6 +734,7 @@ impl Ink {
         let over = self.pointed.len().saturating_sub(alcyo_board::graph::MAX_POINTED);
         self.pointed.drain(..over);
         self.loops.push(shape);
+        self.closed_at = Some(Instant::now());
     }
 
     fn stop_cropping(&mut self) {
@@ -755,8 +780,9 @@ impl Ink {
         let x = (t.x as f32 - v.x) * v.k;
         let below = (t.y as f32 + t.h as f32 - v.y) * v.k + 8.0;
         let above = (t.y as f32 - v.y) * v.k - TOOLBAR_H - 8.0;
-        // The tool bar floats over the lower edge, and the marks never go under it.
-        let floor = h - TOOLS_H - TOOLS_GAP;
+        // The tool bar floats over the lower edge, and the marks never go under it: what the board keeps clear
+        // at the bottom, short of its margin.
+        let floor = h - (self.insets[3] - BOARD_MARGIN).max(TOOLS_H + TOOLS_GAP);
         let y = if below + TOOLBAR_H > floor { above } else { below };
         // Imported text also offers how much to mark, which makes the bar wider.
         let has_text = self.graph.as_ref().and_then(|g| g.nodes.iter().find(|n| &n.id == id)).is_some_and(|n| !n.rows().is_empty());
@@ -1740,6 +1766,14 @@ struct Workbench {
     exit_when_done: bool,
     /// A failed save blocked closing once; the next attempt closes anyway.
     close_refused: bool,
+    /// What the iPad's screen keeps for itself (ipad.rs), its Settings sheet (sheet.rs) and first run (onboarding.rs).
+    ipad: ipad::Chrome,
+    /// What the iPad's meetings page keeps (home.rs).
+    home: home::Home,
+    /// Presenter mode, on the iPad (presenter.rs).
+    presenter: presenter::Presenter,
+    sheet: sheet::Sheet,
+    intro: onboarding::Intro,
 }
 
 /// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
@@ -1843,6 +1877,8 @@ fn erased(mark: &[[f64; 2]], rub: &[[f32; 2]], reach: f64) -> bool {
 fn mark_tool_name(tool: &str) -> &'static str {
     match tool {
         "pen" => t("red-pen"),
+        "pen-black" => t("black-pen"),
+        "pen-blue" => t("blue-pen"),
         "green" => t("green-highlighter"),
         "pink" => t("pink-highlighter"),
         _ => t("yellow-highlighter"),
@@ -2319,6 +2355,9 @@ impl Workbench {
             }
             let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let written = std::fs::write(&path, text);
+            if written.is_ok() {
+                crate::platform::share_file(&path);
+            }
             let _ = this.update(cx, |this, cx| {
                 this.form.glossary_note = Some(match written {
                     Ok(()) => ta!("glossary-exported", count = glossary.terms.len(), file = file),
@@ -2453,6 +2492,12 @@ impl Workbench {
             let second = since.elapsed().as_secs();
             changed |= std::mem::replace(&mut self.clock_second, second) != second;
         }
+        // On the iPad, an external display coming or going, looked for about once a second.
+        if cfg!(target_os = "ios") && self.ipad_second_passed() {
+            self.watch_room_display(cx);
+        }
+        // On the iPad, the bars step back a while after the last touch.
+        changed |= crate::platform::ipad_layout() && self.form.saved.fade_tools && self.ipad.fade_changed(self.pipeline.listening());
         while let Ok(event) = self.pipeline.events.try_recv() {
             changed = true;
             match event {
@@ -3274,6 +3319,9 @@ impl Workbench {
                 let result = match written {
                     Ok(text_left_out) => {
                         this.export_dir = path.parent().map(PathBuf::from);
+                        // On the iPad the file was written aside, and the share sheet takes it on: Save to Files,
+                        // AirDrop, Mail. Nothing happens here on a desktop.
+                        crate::platform::share_file(&path);
                         Exported::Saved { path, text_left_out }
                     }
                     Err(error) => {
@@ -3459,6 +3507,11 @@ impl Workbench {
 
     /// Start meeting search if it is on and its model is here, and bring every meeting's index up to date.
     fn start_search(&mut self) {
+        // The meaning model runs as a program of its own, which the iPad does not allow; there meetings are
+        // searched for their words instead (ipad.rs).
+        if !crate::platform::LOCAL_MODELS {
+            return;
+        }
         let (Some(store), Some(data)) = (&self.store, self.models.parent()) else { return };
         if self.search.is_some() || !self.form.saved.meeting_search {
             return;
@@ -3557,6 +3610,9 @@ impl Workbench {
     fn search_status(&self) -> Option<(String, bool)> {
         if !self.form.saved.meeting_search {
             return None;
+        }
+        if !crate::platform::LOCAL_MODELS {
+            return Some((t("ipad-search-words").to_string(), false));
         }
         let model = alcyo_models::embedding();
         if let Some(download) = self.download.as_ref().filter(|d| d.id == model.id) {
@@ -3963,6 +4019,11 @@ impl Workbench {
             cx.notify();
             return;
         }
+        self.show_new_board(cx);
+    }
+
+    /// Show the board just made from what was taken off this one, to the model and on screen.
+    fn show_new_board(&mut self, cx: &mut Context<Self>) {
         self.page_hint = None;
         self.page_quiet = QUIET_AFTER_TURNING;
         let history: Vec<Utterance> = self.live.history.iter().filter_map(|h| serde_json::from_value(h.clone()).ok()).collect();
@@ -4375,6 +4436,13 @@ impl Workbench {
             return true;
         }
         let mut b = self.ink.borrow_mut();
+        // On the iPad a tap on the board with the circle in hand and nothing circled puts the circle down.
+        if crate::platform::ipad_layout() && b.drawing.as_ref().is_some_and(|d| d.len() < 3) && b.loops.is_empty() {
+            b.clear_circles();
+            drop(b);
+            cx.notify();
+            return true;
+        }
         if b.drawing.is_some() {
             b.close_loop();
             drop(b);
@@ -4405,6 +4473,8 @@ impl Workbench {
                 Some((w, h)) if f64::from(line[0][0]) <= w && f64::from(line[0][1]) <= h && line[0][0] >= 0.0 && line[0][1] >= 0.0 => {
                     Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() }
                 }
+                // On the iPad the Pencil marks the board itself too, where the lines stay as they were drawn.
+                _ if crate::platform::ipad_layout() => Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() },
                 _ => {
                     self.notice = Some(t("marks-go-on-an-imported").to_string());
                     return;
@@ -4920,12 +4990,18 @@ impl Workbench {
 
     /// Whether the sidebar is out. A narrow window keeps it away until it is asked for.
     fn sidebar_shown(&self, window: &Window) -> bool {
+        // On the iPad the list floats over the board, and is put away again once used.
+        if crate::platform::ipad_layout() {
+            return self.ipad_sidebar_shown();
+        }
         if f32::from(window.viewport_size().width) >= SIDEBAR_FROM { !self.form.saved.sidebar_hidden } else { self.sidebar_narrow }
     }
 
     /// Put the sidebar away or bring it back. In a window with room for it, the choice is remembered.
     fn toggle_sidebar(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if f32::from(window.viewport_size().width) >= SIDEBAR_FROM {
+        if crate::platform::ipad_layout() {
+            self.ipad_toggle_sidebar();
+        } else if f32::from(window.viewport_size().width) >= SIDEBAR_FROM {
             self.form.saved.sidebar_hidden = !self.form.saved.sidebar_hidden;
             if let Err(e) = self.form.saved.save() {
                 self.form.note = Some(format!("{e:#}"));
@@ -5115,6 +5191,7 @@ impl Workbench {
             proxy_password: self.form.saved.proxy_password.clone(),
             keep_audio: self.form.saved.keep_audio,
             reduce_motion: self.form.saved.reduce_motion,
+            ..self.form.saved.clone()
         }
     }
 
@@ -6397,9 +6474,14 @@ impl Workbench {
 
 /// A speaker's letter in their color, which follows the order people first spoke in.
 fn speaker_badge(speakers: &[String], name: &str) -> Tag {
-    const COLORS: [(u32, u32); 6] = [(0xfc_d7_ea, 0xa6_1e_4d), (0xd6_e6_ff, 0x1c_4f_9c), (0xd4_f5_e7, 0x1f_7a_45), (0xfd_e8_c8, 0x9f_4f_0b), (0xe5_dc_ff, 0x5b_3c_c4), (0xe2_e8_f0, 0x47_55_69)];
-    let (background, ink) = COLORS[speakers.iter().position(|s| s == name).unwrap_or(0) % COLORS.len()];
+    let (background, ink) = speaker_colors(speakers, name);
     Tag::custom(rgb(background).into(), rgb(ink).into(), rgb(background).into()).xsmall().rounded(px(10.)).child(initial(name))
+}
+
+/// A speaker's colours, a fill and an ink, which follow the order people first spoke in.
+fn speaker_colors(speakers: &[String], name: &str) -> (u32, u32) {
+    const COLORS: [(u32, u32); 6] = [(0xfc_d7_ea, 0xa6_1e_4d), (0xd6_e6_ff, 0x1c_4f_9c), (0xd4_f5_e7, 0x1f_7a_45), (0xfd_e8_c8, 0x9f_4f_0b), (0xe5_dc_ff, 0x5b_3c_c4), (0xe2_e8_f0, 0x47_55_69)];
+    COLORS[speakers.iter().position(|s| s == name).unwrap_or(0) % COLORS.len()]
 }
 
 /// A speaker's badge on a transcript line: in outline while the line waits for the board, filled once it is on it.
@@ -6637,6 +6719,9 @@ impl Render for Workbench {
         let moved = self.ink.clone();
         let release = self.ink.clone();
         let listening = self.pipeline.listening();
+        let on_ipad = crate::platform::ipad_layout();
+        let pencil_only = on_ipad && self.ipad_pencil_only();
+        let pinch = self.ink.clone();
         let mut board = div()
             .id("board")
             .absolute()
@@ -6645,20 +6730,54 @@ impl Render for Workbench {
             .bg(rgb(pal().paper))
             .on_drop(cx.listener(|this, card: &TrayCard, window, cx| this.bring(&card.id, window.mouse_position(), cx)))
             .on_scroll(cx.listener(move |_, e: &ScrollEvent, window, cx| {
+                // On the iPad a finger pans the board; two pinch it.
+                if on_ipad && e.source == gpui_kit::ScrollSource::Touch {
+                    let d = e.delta.pixel_delta(window.line_height());
+                    let mut b = wheel.borrow_mut();
+                    let v = b.shown();
+                    b.view = Some(View { x: v.x - f32::from(d.x) / v.k, y: v.y - f32::from(d.y) / v.k, k: v.k });
+                    b.reading = true;
+                    b.glide = None;
+                    b.touched = Instant::now();
+                    cx.notify();
+                    return;
+                }
                 let dy = f32::from(e.delta.pixel_delta(window.line_height()).y);
                 // Same response as the current app's wheel: exponential in the scrolled distance.
                 wheel.borrow_mut().zoom_at(e.position, (dy * 0.0015).exp());
                 cx.notify();
             }))
+            .when(on_ipad, |d| {
+                d.on_pinch(cx.listener(move |_, e: &gpui_kit::PinchEvent, _, cx| {
+                    pinch.borrow_mut().zoom_at(e.position, (1.0 + e.delta).max(0.2));
+                    cx.notify();
+                }))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                 window.focus(&this.focus, cx);
                 let mut b = press.borrow_mut();
-                if b.tool_down(e.position) {
+                // On the iPad only the Pencil draws with the tool in hand, unless fingers may mark too.
+                let may_draw = !pencil_only || crate::platform::touch_is_pencil();
+                if may_draw && b.tool_down(e.position) {
                     return;
                 }
                 // A press on a clip card takes hold of the card rather than the board.
                 let at = b.on_board(e.position);
                 let card = b.clips.iter().find(|(r, _)| f64::from(at[0]) >= r.x && f64::from(at[0]) <= r.x + r.w && f64::from(at[1]) >= r.y && f64::from(at[1]) <= r.y + r.h).map(|(r, _)| r.id.clone());
+                // On the iPad a double tap with a finger on the board fits it, or, fitted, shows it at actual
+                // size around the tap.
+                if on_ipad && e.click_count >= 2 && card.is_none() {
+                    let (k, fit) = (b.shown().k, b.fit().k);
+                    if (k - fit).abs() / fit < 0.05 && fit < 0.95 {
+                        b.zoom_at(e.position, 1.0 / k);
+                        drop(b);
+                        cx.notify();
+                    } else {
+                        drop(b);
+                        this.fit_board(cx);
+                    }
+                    return;
+                }
                 // A double click on a document's card opens it.
                 if e.click_count >= 2 {
                     let doc = card.as_ref().and_then(|id| b.graph.as_ref()?.nodes.iter().find(|n| &n.id == id)?.opens().map(str::to_string));
@@ -6738,8 +6857,8 @@ impl Render for Workbench {
             }))
             .child(
                 canvas(
-                    |_, _, _| (),
-                    move |bounds: Bounds<Pixels>, (), window: &mut Window, _: &mut App| {
+                    |bounds: Bounds<Pixels>, window: &mut Window, _: &mut App| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
+                    move |bounds: Bounds<Pixels>, hitbox: gpui_kit::Hitbox, window: &mut Window, _: &mut App| {
                         // A finger dragging the board moves it, unless a tool is in hand: then, claimed as it
                         // starts, the drag draws the tool's stroke, as the mouse does. Only the iPad sends these.
                         window.on_mouse_event(move |e: &gpui_kit::TouchDragEvent, phase, window, cx| {
@@ -6749,7 +6868,10 @@ impl Render for Workbench {
                             match e.phase {
                                 gpui_kit::TouchPhase::Started => {
                                     let mut b = touch_ink.borrow_mut();
-                                    if bounds.contains(&e.start_position) && b.tool_down(e.start_position) {
+                                    // A finger pans unless fingers may mark; the Pencil always draws the tool in hand.
+                                    let may_draw = !pencil_only || crate::platform::touch_is_pencil();
+                                    // Only a drag that starts on the board itself, not on what floats over it.
+                                    if may_draw && bounds.contains(&e.start_position) && hitbox.is_hovered_at(e.start_position, window) && b.tool_down(e.start_position) {
                                         b.tool_drag(e.position);
                                         window.prevent_default();
                                         window.refresh();
@@ -6905,8 +7027,13 @@ impl Render for Workbench {
                                     });
                                 }
                             }
+                            // On the iPad: what the circles caught, tinted in the accent one after another, and the circles
+                            // themselves dashed, the last closing with a short settle.
+                            if on_ipad {
+                                ipad::paint_circles(&b, origin, v.k, window);
+                            }
                             // The circles, in the accent's ink: an aid for pointing, never part of the board.
-                            for shape in b.loops.iter().chain(b.drawing.iter()) {
+                            for shape in b.loops.iter().chain(b.drawing.iter()).filter(|_| !on_ipad) {
                                 let mut pb = PathBuilder::stroke(px(2.5));
                                 let at = |p: &[f32; 2]| origin + point(px(p[0] * v.k), px(p[1] * v.k));
                                 if let Some(first) = shape.first() {
@@ -7110,7 +7237,10 @@ impl Render for Workbench {
         let side_shown = self.side_shown();
         let sidebar_shown = self.sidebar_shown(window);
         // The tool bar floats over the lower edge and the offers over the upper corner: the board is fitted between them.
-        self.ink.borrow_mut().set_insets([BOARD_MARGIN, BOARD_MARGIN + 16.0, BOARD_MARGIN, BOARD_MARGIN + TOOLS_H + TOOLS_GAP]);
+        // On the iPad the board fills the screen, and what floats over it is set out in ipad.rs.
+        let ipad = crate::platform::ipad_layout();
+        let insets = if ipad { self.ipad_insets(window) } else { [BOARD_MARGIN, BOARD_MARGIN + 16.0, BOARD_MARGIN, BOARD_MARGIN + TOOLS_H + TOOLS_GAP] };
+        self.ink.borrow_mut().set_insets(insets);
         let recording = self.pipeline.listening();
         let recorded = self.recorded();
         // Whether what was said has reached the board: the question to answer at a glance.
@@ -7119,7 +7249,14 @@ impl Render for Workbench {
         let not_drawn: Vec<usize> = spoken_lines().filter(|(_, l)| l["failed"].as_bool().unwrap_or(false)).map(|(i, _)| i).collect();
         let mono = |text: String| div().font_family(theme::MONO).text_small().whitespace_nowrap().child(text);
         // What floats over the board: a surface with an edge and a little shadow under it.
-        let float = || div().occlude().flex().items_center().bg(rgb(pal().raised)).border_1().border_color(rgb(pal().raised_line)).rounded(px(3.)).shadow(theme::shadow(theme::Lift::Float));
+        // On the iPad, the same glass as the rest of what floats there.
+        let float = || {
+            if ipad {
+                ipad::glass(div().occlude().flex().items_center().rounded(px(16.)), false)
+            } else {
+                div().occlude().flex().items_center().bg(rgb(pal().raised)).border_1().border_color(rgb(pal().raised_line)).rounded(px(3.)).shadow(theme::shadow(theme::Lift::Float))
+            }
+        };
         // A word on how things stand, with a dot in the colour of how much it matters.
         // While something is under way (the model starting, the board being drawn) its dot pulses.
         let chip = |text: String, tone: u32, busy: bool| {
@@ -7327,7 +7464,7 @@ impl Render for Workbench {
         let keycap = |text: String| div().flex().items_center().h(px(18.)).px(px(5.)).border_1().rounded(px(2.)).font_family(theme::MONO).text_meta().child(text);
         // The colours of the marker, in a small bar of their own just above the tools while marking.
         let swatches = (editable && marking).then(|| {
-            float().id("mark-colours").h(px(32.)).px(px(theme::space::S)).gap(px(4.)).children(ANNOTATION_TOOLS.iter().map(|&tool| {
+            float().id("mark-colours").h(px(32.)).px(px(theme::space::S)).gap(px(4.)).children(["yellow", "green", "pink", "pen"].iter().map(|&tool| {
                 let (color, alpha, _) = annotation_look(tool);
                 let mut fill: Hsla = rgb(pal().ink(color)).into();
                 fill.a = if tool == "pen" { 1.0 } else { (alpha * 1.6).min(1.0) };
@@ -7662,8 +7799,8 @@ impl Render for Workbench {
             .track_scroll(&self.transcript_scroll)
             .flex_1()
             .overflow_y_scroll()
-            .p_4()
-            .gap_4()
+            // A little larger on the iPad, read at arm's length.
+            .map(|d| if ipad { d.px(px(18.)).pt(px(6.)).pb(px(12.)).gap(px(16.)) } else { d.p_4().gap_4() })
             .flex()
             .flex_col()
             .when(shown_lines == 0 && self.draft.is_none(), |d| {
@@ -7715,9 +7852,9 @@ impl Render for Workbench {
                                 .gap_2()
                                 .mb_1()
                                 .cursor_pointer()
-                                .child(line_badge(&speakers, &name, drawn))
+                                .child(if ipad { ipad::who(&speakers, &name, 24., drawn).into_any_element() } else { line_badge(&speakers, &name, drawn).into_any_element() })
                                 // A speaker known only by a letter is named as one, rather than the letter twice.
-                                .child(div().text_ui().font_weight(gpui_kit::FontWeight::MEDIUM).child(if name.chars().count() == 1 { ta!("speaker-letter", name = name.clone()) } else { name.clone() }))
+                                .child(div().text_ui().font_weight(if ipad { gpui_kit::FontWeight::SEMIBOLD } else { gpui_kit::FontWeight::MEDIUM }).child(if name.chars().count() == 1 { ta!("speaker-letter", name = name.clone()) } else { name.clone() }))
                                 .map(|d| match (writing, said_at) {
                                     (true, _) => d.child(div().font_family(theme::MONO).text_meta().text_color(rgb(pal().danger)).child(t("now"))),
                                     (false, Some(ms)) => d.child(div().font_family(theme::MONO).text_meta().text_color(rgb(pal().faint)).child(local_time(ms).rsplit(' ').next().unwrap_or_default().to_string())),
@@ -7731,7 +7868,7 @@ impl Render for Workbench {
                     })
                     // Grey while it is being written out, then settling to ink once it is all there.
                     .child({
-                        let line = div().id(("line-text", i)).text_body().line_height(gpui_kit::relative(1.5)).when(speaker.is_some(), |d| d.pl(px(28.))).when(manual, |d| d.text_color(rgb(pal().faint))).child(text).when_some(line_timing(l), |d, tip| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)));
+                        let line = div().id(("line-text", i)).text_body().when(ipad, |d| d.text_size(px(15.))).line_height(gpui_kit::relative(1.5)).when(speaker.is_some(), |d| d.pl(px(if ipad { 32. } else { 28. }))).when(manual, |d| d.text_color(rgb(pal().faint))).child(text).when_some(line_timing(l), |d, tip| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)));
                         if writing {
                             line.text_color(rgb(pal().faint)).into_any_element()
                         } else if !manual && self.typed.contains(&i) {
@@ -7754,7 +7891,7 @@ impl Render for Workbench {
             }))
             // What is being said now: faint, unnamed until its sentence arrives with a speaker, and never saved.
             .when_some(self.draft.as_ref().filter(|_| self.replay.is_none()).map(|d| d.text.clone()), |d, text| {
-                d.child(div().id("draft-line").pl(px(28.)).text_body().line_height(gpui_kit::relative(1.5)).text_color(rgb(pal().faint)).child(format!("{text}▍")))
+                d.child(div().id("draft-line").pl(px(if ipad { 32. } else { 28. })).text_body().when(ipad, |d| d.text_size(px(15.))).line_height(gpui_kit::relative(1.5)).text_color(rgb(pal().faint)).child(format!("{text}▍")))
             });
         // Building every meeting's search index takes a while, so the board and the library say so until it is done.
         let building = self.search.as_ref().and_then(|s| s.building.map(|total| (s.indexing.unwrap_or((0, total)), s.held)));
@@ -8780,88 +8917,6 @@ impl Render for Workbench {
         let share_panel = (self.panel == Panel::Share).then(|| self.share_panel(cx));
         let import_panel = (self.panel == Panel::Import).then(|| self.import_panel(cx));
         let speakers_panel = (self.panel == Panel::Speakers).then(|| self.speakers_panel(editable, cx));
-        let side = div()
-            .id("side")
-            .occlude()
-            .w(px(SIDE_W))
-            .flex_none()
-            .h_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .bg(rgb(pal().surface))
-            .border_l_1()
-            .border_color(rgb(pal().line))
-            // What is kept beside the board, a tab each.
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .pl_3()
-                    .pr_1()
-                    .h(px(40.))
-                    .flex_none()
-                    .border_b_1()
-                    .border_color(rgb(pal().line))
-                    // Named in words: three icons side by side said less than three short names.
-                    .children([(Panel::Transcript, "tab-transcript", t("transcript-2"), 0), (Panel::Summary, "tab-summary", t("summary-2"), 0), (Panel::Speakers, "tab-speakers", t("speakers"), speakers.len())].map(|(panel, id, label, count)| {
-                        let on = side_panel == panel;
-                        div()
-                            .id(id)
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(theme::space::S))
-                            .border_b_2()
-                            .border_color(rgb(if on { pal().text } else { pal().surface }))
-                            .cursor_pointer()
-                            .text_ui()
-                            .px_1()
-                            .map(|d| if on { d.text_color(rgb(pal().text)).font_weight(gpui_kit::FontWeight::MEDIUM) } else { d.text_color(rgb(pal().muted)).hover(|d| d.text_color(rgb(pal().text))) })
-                            .child(label)
-                            .when(count > 0, |d| d.child(div().font_family(theme::MONO).text_meta().text_color(rgb(pal().faint)).child(count.to_string())))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.panel = panel;
-                                this.transcript_open = true;
-                                cx.notify();
-                            }))
-                    })),
-            )
-            .when(side_panel == Panel::Transcript, |d| {
-                d.child(transcript).when(editable, |d| {
-                    d.child(
-                        div()
-                            .p_3()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .flex_none()
-                            .border_t_1()
-                            .border_color(rgb(pal().line))
-                            .when_some(self.speaker.clone(), |d, name| {
-                                let picked = name.clone();
-                                d.child(
-                                    div()
-                                        .id("next-speaker")
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .cursor_pointer()
-                                        .text_small()
-                                        .text_color(rgb(pal().muted))
-                                        .child(speaker_badge(&speakers, &name))
-                                        .child(ta!("typing-as", name = format!("{name}")))
-                                        .on_click(cx.listener(move |this, _, window, cx| this.choose_speaker(picked.clone(), window, cx))),
-                                )
-                            })
-                            // Enter is shown as the key it is, beside the hint, rather than spelled out in it.
-                            .child(Input::new(&self.input).suffix(div().flex().items_center().h(px(18.)).px(px(5.)).border_1().border_color(rgb(pal().line)).rounded(px(2.)).font_family(theme::MONO).text_meta().text_color(rgb(pal().faint)).child("Enter"))),
-                    )
-                })
-            })
-            .when_some(summary_panel, |d, panel| d.child(panel))
-            .when_some(speakers_panel, |d, panel| d.child(panel));
         // A dialog for what is done in one go, over a dimmed window; clicking outside closes it.
         let dialog = |title: &'static str, body: gpui_kit::Stateful<gpui_kit::Div>, cx: &mut Context<Self>| {
             let mut veil: Hsla = rgb(pal().strong).into();
@@ -9130,10 +9185,16 @@ impl Render for Workbench {
             let ink = self.ink.borrow();
             (ink.extent.x1 > ink.extent.x0, f32::from(ink.canvas.size.height), ink.canvas.origin)
         };
-        let minimap = (map_on && has_ink && !blank && canvas_width >= ZOOM_TOOLS_FROM).then(|| {
+        // On the iPad the map comes out only while zoomed in, under the meeting's card.
+        let zoomed_in = { let ink = self.ink.borrow(); ink.shown().k > ink.fit().k * 1.08 };
+        let map_wanted = if ipad { zoomed_in && map_on } else { map_on };
+        if ipad {
+            self.ink.borrow_mut().set_map(map_wanted);
+        }
+        let minimap = (map_wanted && has_ink && !blank && canvas_width >= ZOOM_TOOLS_FROM).then(|| {
             let (shown, press, moved, lift, lift_out) = (self.ink.clone(), self.ink.clone(), self.ink.clone(), self.ink.clone(), self.ink.clone());
             // Where it was dragged to, or the top right corner; kept on the board if the window has shrunk since.
-            let (right, bottom, x, y) = self.form.saved.minimap_at.unwrap_or(MAP_START);
+            let (right, bottom, x, y) = if ipad { self.ipad_map_corner(window) } else { self.form.saved.minimap_at.unwrap_or(MAP_START) };
             let x = x.min(canvas_width - MAP_PANEL_W - MAP_EDGE).max(MAP_EDGE);
             let y = y.min(canvas_height - MAP_PANEL_H - MAP_EDGE).max(MAP_EDGE);
             let corner = canvas_origin + point(px(if right { canvas_width - x - MAP_PANEL_W } else { x }), px(if bottom { canvas_height - y - MAP_PANEL_H } else { y }));
@@ -9338,13 +9399,45 @@ impl Render for Workbench {
             // Kept to the board: the part of each card tucked past its edge is not drawn over the sidebar.
             div().absolute().top_0().bottom_0().left_0().w(px(TRAY_CARD_W + 24.0)).overflow_hidden().child(cards)
         });
-        let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
         // The halftone ground shows where there is nothing to read yet: an empty board, with its middle kept
         // clear for the welcome, and the Meetings page.
         if blank || matches!(self.panel, Panel::Library | Panel::Settings) {
             // On the Meetings page the ground keeps to the margins, so no row of text lies on dots.
             crate::ground::want(&self.ground, Some(if matches!(self.panel, Panel::Library | Panel::Settings) { (0.34, 4.) } else { (0.3, 0.3) }), cx);
         }
+        // The iPad lays the same parts out its own way: the board over the whole screen, the rest floating on it.
+        if ipad {
+            // Settings is a sheet over the meeting there (sheet.rs), not a page in its place.
+            let page = match self.panel {
+                Panel::Library => overlay.take(),
+                _ => None,
+            };
+            let parts = ipad::Parts {
+                board: board.into_any_element(),
+                ground: div().size_full().child(ground_layer(&self.ground)).with_spring("ground-board", SpringAnimation::new(motion::SETTLE).to(blank), |d, v| d.opacity(v.0.clamp(0., 1.))).into_any_element(),
+                welcome: welcome.map(IntoElement::into_any_element),
+                tray: tray.map(IntoElement::into_any_element),
+                offers: offers.into_any_element(),
+                notices: notices.map(IntoElement::into_any_element),
+                page,
+                dialog: overlay.take_if(|_| in_dialog),
+                preparing: preparing_page.map(IntoElement::into_any_element),
+                replay_bar: replay_bar.map(IntoElement::into_any_element),
+                shortcuts: self.shortcuts_shown.then(|| self.shortcuts_window(cx)),
+                transcript: transcript.into_any_element(),
+                minimap: minimap.map(IntoElement::into_any_element),
+                zoomed_in,
+                summary: summary_panel.map(IntoElement::into_any_element),
+                speakers: speakers_panel.map(IntoElement::into_any_element),
+                waiting,
+                not_drawn,
+            };
+            if self.presenter.on {
+                return self.presenter_screen(parts, window, cx);
+            }
+            return self.ipad_layers(parts, window, cx);
+        }
+        let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
         let canvas_area = div()
             .relative()
             .flex_1()
@@ -9401,6 +9494,88 @@ impl Render for Workbench {
                         .child(side(true).when_some(page_tools.filter(|_| dock.pages), |d, tools| d.child(tools))),
                 )
             });
+        let side = div()
+            .id("side")
+            .occlude()
+            .w(px(SIDE_W))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(rgb(pal().surface))
+            .border_l_1()
+            .border_color(rgb(pal().line))
+            // What is kept beside the board, a tab each.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .pl_3()
+                    .pr_1()
+                    .h(px(40.))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(rgb(pal().line))
+                    // Named in words: three icons side by side said less than three short names.
+                    .children([(Panel::Transcript, "tab-transcript", t("transcript-2"), 0), (Panel::Summary, "tab-summary", t("summary-2"), 0), (Panel::Speakers, "tab-speakers", t("speakers"), speakers.len())].map(|(panel, id, label, count)| {
+                        let on = side_panel == panel;
+                        div()
+                            .id(id)
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .gap(px(theme::space::S))
+                            .border_b_2()
+                            .border_color(rgb(if on { pal().text } else { pal().surface }))
+                            .cursor_pointer()
+                            .text_ui()
+                            .px_1()
+                            .map(|d| if on { d.text_color(rgb(pal().text)).font_weight(gpui_kit::FontWeight::MEDIUM) } else { d.text_color(rgb(pal().muted)).hover(|d| d.text_color(rgb(pal().text))) })
+                            .child(label)
+                            .when(count > 0, |d| d.child(div().font_family(theme::MONO).text_meta().text_color(rgb(pal().faint)).child(count.to_string())))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.panel = panel;
+                                this.transcript_open = true;
+                                cx.notify();
+                            }))
+                    })),
+            )
+            .when(side_panel == Panel::Transcript, |d| {
+                d.child(transcript).when(editable, |d| {
+                    d.child(
+                        div()
+                            .p_3()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .flex_none()
+                            .border_t_1()
+                            .border_color(rgb(pal().line))
+                            .when_some(self.speaker.clone(), |d, name| {
+                                let picked = name.clone();
+                                d.child(
+                                    div()
+                                        .id("next-speaker")
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .cursor_pointer()
+                                        .text_small()
+                                        .text_color(rgb(pal().muted))
+                                        .child(speaker_badge(&speakers, &name))
+                                        .child(ta!("typing-as", name = format!("{name}")))
+                                        .on_click(cx.listener(move |this, _, window, cx| this.choose_speaker(picked.clone(), window, cx))),
+                                )
+                            })
+                            // Enter is shown as the key it is, beside the hint, rather than spelled out in it.
+                            .child(Input::new(&self.input).suffix(div().flex().items_center().h(px(18.)).px(px(5.)).border_1().border_color(rgb(pal().line)).rounded(px(2.)).font_family(theme::MONO).text_meta().text_color(rgb(pal().faint)).child("Enter"))),
+                    )
+                })
+            })
+            .when_some(summary_panel, |d, panel| d.child(panel))
+            .when_some(speakers_panel, |d, panel| d.child(panel));
         let main = div().relative().flex_1().min_w_0().h_full().flex().flex_col().child(canvas_area);
         // The meeting: the board and the panel beside it, under whatever page is open over them.
         let meeting = div()
@@ -9441,6 +9616,7 @@ impl Render for Workbench {
             .text_color(rgb(pal().text))
             .child(window_bar)
             .child(content)
+            .into_any_element()
     }
 }
 
@@ -9484,9 +9660,11 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // Clear of what the system draws over the window: the iPad's status bar, its home indicator, the
         // corners of a rounded screen. Nothing on a desktop window.
-        let safe = window.insets().safe_area;
+        // Laid out for the iPad, the board runs under them and what floats over it keeps clear (ipad.rs).
+        let safe = if crate::platform::ipad_layout() && self.workbench.is_some() { gpui_kit::Edges::default() } else { window.insets().safe_area };
         div().size_full().font(theme::interface_font()).bg(rgb(pal().paper)).pt(safe.top).pb(safe.bottom).pl(safe.left).pr(safe.right).map(|d| match &self.workbench {
-            Some(workbench) => d.child(workbench.clone()).into_any_element(),
+            // The app comes up through the written name rather than cutting to it.
+            Some(workbench) => d.child(div().size_full().child(workbench.clone()).with_animation("hand-off", motion::ease(Duration::from_millis(360)), |d, t| d.opacity(t))).into_any_element(),
             // The bar is there from the start, so the window can be moved while the app gets ready.
             None => d.flex().flex_col().child(title_bar()).child(div().flex_1().min_h_0().child(crate::splash::splash(&self.word, self.started, window))).into_any_element(),
         })
@@ -9557,6 +9735,10 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
             "--root" => root = args.next().map(PathBuf::from),
             other => anyhow::bail!("unknown flag {other}"),
         }
+    }
+    // On the iPad a cold start lands on the meetings rather than the last one, unless something was asked for.
+    if crate::platform::ipad_layout() && start_panel == Panel::Transcript && open.is_none() && demo.is_none() && wav.is_none() && case.is_none() && synthetic.is_none() && start_import.is_none() && !start_replaying {
+        start_panel = Panel::Library;
     }
     let mut turns = vec![];
     if let Some(id) = case {
@@ -9681,6 +9863,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 clip_images: HashMap::new(),
                 page_src: None,
                 zoom_test: zoom_test.then_some(ZoomTest { started: None, frames: vec![], last: None, base: 0.0, rebuilds: vec![], peak_rss: 0 }),
+                closed_at: None,
                 instant: start_board.is_some(),
             };
             let mut live = start_meeting.unwrap_or_default();
@@ -9982,8 +10165,24 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     next_batch: 0,
                     exit_when_done,
                     close_refused: false,
+                    ipad: ipad::Chrome::new(),
+                    home: home::Home::new(),
+                    presenter: presenter::Presenter::new(),
+                    sheet: sheet::Sheet::new(),
+                    intro: onboarding::Intro::new(),
                 };
                 workbench.show_page_image();
+                // On the iPad: two fingers tapped undo and three redo, as in Notes; the Pencil's double tap and
+                // squeeze do what Settings says.
+                if crate::platform::ipad_layout() {
+                    let (taps, pencil) = (cx.entity().downgrade(), cx.entity().downgrade());
+                    crate::platform::on_multi_finger_tap(cx, move |fingers, cx| {
+                        let _ = taps.update(cx, |this, cx| this.step(fingers == 3, cx));
+                    });
+                    crate::platform::on_pencil_action(cx, move |action, cx| {
+                        let _ = pencil.update(cx, |this, cx| this.ipad_pencil_action(action, cx));
+                    });
+                }
                 if start_replaying {
                     workbench.start_replay(window, cx);
                 }
@@ -10029,7 +10228,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                                 },
                             }
                         }
-                        let written = this.update(cx, |shell: &mut Shell, _| shell.started.elapsed() >= crate::splash::WRITING).unwrap_or(true);
+                        let written = this.update(cx, |shell: &mut Shell, _| shell.started.elapsed() >= crate::splash::WRITING + crate::splash::HOLD).unwrap_or(true);
                         if ready.is_some() && (written || scripted) {
                             break;
                         }
@@ -10041,7 +10240,10 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     }
                     let build = build.take().expect("runs once");
                     let _ = this.update_in(cx, |shell: &mut Shell, window, cx| {
-                        shell.workbench = Some(build(prepared, window, cx));
+                        let workbench = build(prepared, window, cx);
+                        // The written name hands over to the iPad's meetings page, which takes it into its title.
+                        workbench.update(cx, |workbench, _| workbench.home_intro(shell.word.clone()));
+                        shell.workbench = Some(workbench);
                         cx.notify();
                     });
                 })

@@ -291,12 +291,66 @@ const PICTOGRAMS: [(&str, &str); 43] = [
     ("icons/x.svg", include_str!("../icons/x.svg")),
 ];
 
+/// The iPad's line icons, drawn for touch at 22 pt (crates/ui/src/ipad.rs), under `icons/ipad/`.
+const IPAD_ICONS: [(&str, &str); 23] = [
+    ("icons/ipad/airplay.svg", include_str!("../icons/ipad/airplay.svg")),
+    ("icons/ipad/cc.svg", include_str!("../icons/ipad/cc.svg")),
+    ("icons/ipad/chevron-down.svg", include_str!("../icons/ipad/chevron-down.svg")),
+    ("icons/ipad/chevron-left.svg", include_str!("../icons/ipad/chevron-left.svg")),
+    ("icons/ipad/chevron-right.svg", include_str!("../icons/ipad/chevron-right.svg")),
+    ("icons/ipad/chevron-up.svg", include_str!("../icons/ipad/chevron-up.svg")),
+    ("icons/ipad/circle.svg", include_str!("../icons/ipad/circle.svg")),
+    ("icons/ipad/crop.svg", include_str!("../icons/ipad/crop.svg")),
+    ("icons/ipad/eraser.svg", include_str!("../icons/ipad/eraser.svg")),
+    ("icons/ipad/export.svg", include_str!("../icons/ipad/export.svg")),
+    ("icons/ipad/live.svg", include_str!("../icons/ipad/live.svg")),
+    ("icons/ipad/mark.svg", include_str!("../icons/ipad/mark.svg")),
+    ("icons/ipad/more.svg", include_str!("../icons/ipad/more.svg")),
+    ("icons/ipad/plus.svg", include_str!("../icons/ipad/plus.svg")),
+    ("icons/ipad/redo.svg", include_str!("../icons/ipad/redo.svg")),
+    ("icons/ipad/replay.svg", include_str!("../icons/ipad/replay.svg")),
+    ("icons/ipad/sidebar.svg", include_str!("../icons/ipad/sidebar.svg")),
+    ("icons/ipad/sparkle.svg", include_str!("../icons/ipad/sparkle.svg")),
+    ("icons/ipad/tidy.svg", include_str!("../icons/ipad/tidy.svg")),
+    ("icons/ipad/transcript.svg", include_str!("../icons/ipad/transcript.svg")),
+    ("icons/ipad/undo.svg", include_str!("../icons/ipad/undo.svg")),
+    ("icons/ipad/x.svg", include_str!("../icons/ipad/x.svg")),
+    ("icons/ipad/zoom.svg", include_str!("../icons/ipad/zoom.svg")),
+];
+
+/// The iPad's meetings page (crates/ui/src/home.rs): its line icons, and the kingfisher in its colours.
+const HOME_ICONS: [(&str, &str); 7] = [
+    ("icons/ipad/halcy.svg", include_str!("../icons/ipad/halcy.svg")),
+    ("icons/ipad/import.svg", include_str!("../icons/ipad/import.svg")),
+    ("icons/ipad/pen.svg", include_str!("../icons/ipad/pen.svg")),
+    ("icons/ipad/pin.svg", include_str!("../icons/ipad/pin.svg")),
+    ("icons/ipad/search.svg", include_str!("../icons/ipad/search.svg")),
+    ("icons/ipad/sliders.svg", include_str!("../icons/ipad/sliders.svg")),
+    ("icons/ipad/trash.svg", include_str!("../icons/ipad/trash.svg")),
+];
+
+/// The iPad's Settings sheet and first run (crates/ui/src/sheet.rs, onboarding.rs), in the same hand.
+const IPAD_SHEET_ICONS: [(&str, &str); 12] = [
+    ("icons/ipad/airplay.svg", include_str!("../icons/ipad/airplay.svg")),
+    ("icons/ipad/check.svg", include_str!("../icons/ipad/check.svg")),
+    ("icons/ipad/chip.svg", include_str!("../icons/ipad/chip.svg")),
+    ("icons/ipad/cloud.svg", include_str!("../icons/ipad/cloud.svg")),
+    ("icons/ipad/download.svg", include_str!("../icons/ipad/download.svg")),
+    ("icons/ipad/info.svg", include_str!("../icons/ipad/info.svg")),
+    ("icons/ipad/keyboard.svg", include_str!("../icons/ipad/keyboard.svg")),
+    ("icons/ipad/lasso.svg", include_str!("../icons/ipad/lasso.svg")),
+    ("icons/ipad/lock.svg", include_str!("../icons/ipad/lock.svg")),
+    ("icons/ipad/mic.svg", include_str!("../icons/ipad/mic.svg")),
+    ("icons/ipad/sliders.svg", include_str!("../icons/ipad/sliders.svg")),
+    ("icons/ipad/waveform.svg", include_str!("../icons/ipad/waveform.svg")),
+];
+
 /// The icons the toolkit carries, the few more this window asks for, and our own pictograms over both.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {

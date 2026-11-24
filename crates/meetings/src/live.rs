@@ -283,7 +283,16 @@ impl Live {
     /// Carry a topic, with everything under it, over to a new board and show that board: the talk moved on
     /// to it. On the board it leaves, its going can be undone and is replayed like any change.
     pub fn split_topic(&mut self, topic: &str, note: &Note) -> bool {
-        let mut moved: HashSet<String> = [topic.to_string()].into();
+        self.split_nodes(&[topic.to_string()], note)
+    }
+
+    /// Carry some things, each with everything under it, over to a new board and show that board, as
+    /// [`Self::split_topic`] does for a topic: what was circled on the iPad, sent to a board of its own.
+    pub fn split_nodes(&mut self, ids: &[String], note: &Note) -> bool {
+        let mut moved: HashSet<String> = ids.iter().filter(|id| self.graph.nodes.iter().any(|n| &n.id == *id)).cloned().collect();
+        if moved.is_empty() {
+            return false;
+        }
         loop {
             let more: Vec<String> = self.graph.nodes.iter().filter(|n| n.parent.as_ref().is_some_and(|p| moved.contains(p)) && !moved.contains(&n.id)).map(|n| n.id.clone()).collect();
             if more.is_empty() {
@@ -291,7 +300,7 @@ impl Live {
             }
             moved.extend(more);
         }
-        if !self.graph.nodes.iter().any(|n| n.id == topic) || moved.len() == self.graph.nodes.len() {
+        if moved.len() == self.graph.nodes.len() {
             return false;
         }
         let mut left = self.graph.clone();
@@ -833,6 +842,38 @@ mod tests {
     fn loaded(value: Value, origin: Origin) -> Live {
         let Value::Object(raw) = value else { panic!("object") };
         Live::from_loaded(Loaded { raw, origin, revision: 0 })
+    }
+
+    #[test]
+    fn circled_things_move_to_a_board_of_their_own() {
+        let mut live = Live::new();
+        let mut g = Graph::default();
+        g.apply(&alcyo_board::graph::parse_ops("N 「网关」\nN 「鉴权」\nN 「Redis」\nE 「网关」 -> 「鉴权」\nE 「鉴权」 -> 「Redis」"));
+        live.change_board(g, Value::Null);
+        let id = |live: &Live, l: &str| live.graph.nodes.iter().find(|n| n.label == l).unwrap().id.clone();
+        let picked = vec![id(&live, "网关"), id(&live, "鉴权")];
+        assert!(live.split_nodes(&picked, &Note::plain("圈出的")));
+        assert_eq!((live.pages(), live.page()), (2, 1));
+        assert_eq!(live.graph.nodes.len(), 2);
+        assert_eq!(live.graph.edges.len(), 1, "the link between the two moved with them");
+        assert!(!live.split_nodes(&["n99".into()], &Note::plain("none")), "nothing there, nothing moves");
+    }
+
+    #[test]
+    fn pen_marks_old_and_new_survive_saving_and_loading() {
+        use alcyo_board::graph::Annotation;
+        let old = json!({ "id": "m", "graph": { "nodes": [], "edges": [], "groups": [], "nextNode": 1, "nextGroup": 1,
+            "annotations": [{ "tool": "pen", "points": [[1.0, 2.0], [3.0, 4.0]] }, { "tool": "pink", "points": [[5.0, 5.0], [9.0, 5.0]] }] } });
+        let mut live = loaded(old, Origin::Current);
+        assert_eq!(live.graph.annotations().len(), 2, "a meeting from before the black and blue pens reads as it was");
+        let mut g = live.graph.clone();
+        g.annotate(Annotation { tool: "pen-blue".into(), on: None, points: vec![[0.0, 0.0], [8.0, 8.0]] });
+        g.annotate(Annotation { tool: "pen-black".into(), on: None, points: vec![[0.0, 8.0], [8.0, 0.0]] });
+        live.change_board(g, Value::Null);
+        let saved = Value::Object(live.snapshot());
+        let back = loaded(saved, Origin::Current);
+        let tools: Vec<String> = back.graph.annotations().into_iter().map(|a| a.tool).collect();
+        assert_eq!(tools, ["pen", "pink", "pen-blue", "pen-black"]);
     }
 
 #[test]

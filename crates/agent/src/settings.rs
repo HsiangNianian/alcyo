@@ -66,11 +66,23 @@ pub struct Settings {
     /// The custom proxy's login, if it asks for one.
     pub proxy_user: String,
     pub proxy_password: String,
+    /// On the iPad: the bars step back a few seconds after the last touch while listening.
+    pub fade_tools: bool,
+    /// On the iPad: the screen does not lock by itself while listening.
+    pub keep_screen_on: bool,
+    /// On the iPad: only the Pencil marks the board, and fingers pan and zoom.
+    pub pencil_only: bool,
+    /// On the iPad: what a double tap on the Pencil does: "undo", "eraser", "tools" or "off".
+    pub pencil_double_tap: String,
+    /// On the iPad: what squeezing a Pencil Pro does: "tools", "undo", "eraser" or "off".
+    pub pencil_squeeze: String,
+    /// The first run's introduction has been seen.
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { base_url: String::new(), api_key: String::new(), model: String::new(), enabled: false, diarize: true, turn_pages: false, glossary: String::new(), templates: vec![], system_speech: false, speech_language: "auto".into(), interface_language: "en".into(), appearance: "auto".into(), listen: "microphone".into(), input: String::new(), computer: String::new(), meeting_search: true, messy: 0.0, sidebar_hidden: false, minimap_hidden: false, minimap_at: None, folded_groups: vec![], shortcuts: vec![], proxy: "system".into(), proxy_url: String::new(), proxy_user: String::new(), proxy_password: String::new(), keep_audio: true, reduce_motion: false }
+        Self { base_url: String::new(), api_key: String::new(), model: String::new(), enabled: false, diarize: true, turn_pages: false, glossary: String::new(), templates: vec![], system_speech: false, speech_language: "auto".into(), interface_language: "en".into(), appearance: "auto".into(), listen: "microphone".into(), input: String::new(), computer: String::new(), meeting_search: true, messy: 0.0, sidebar_hidden: false, minimap_hidden: false, minimap_at: None, folded_groups: vec![], shortcuts: vec![], proxy: "system".into(), proxy_url: String::new(), proxy_user: String::new(), proxy_password: String::new(), keep_audio: true, reduce_motion: false, fade_tools: true, keep_screen_on: true, pencil_only: true, pencil_double_tap: "undo".into(), pencil_squeeze: "tools".into(), onboarded: false }
     }
 }
 
@@ -89,6 +101,9 @@ fn config_dir() -> Result<PathBuf> {
     };
     Ok(base.join("app.alcyo.board"))
 }
+
+/// What a Pencil's double tap or squeeze can do.
+pub const PENCIL_ACTIONS: [&str; 4] = ["undo", "eraser", "tools", "off"];
 
 /// The names the secrets are kept under.
 const API_KEY: &str = "api-key";
@@ -163,6 +178,12 @@ impl Settings {
             keep_audio: v["keepAudio"].as_bool().unwrap_or(true),
             reduce_motion: v["reduceMotion"].as_bool().unwrap_or(false),
             proxy_password: text("proxyPassword"),
+            fade_tools: v["fadeTools"].as_bool().unwrap_or(true),
+            keep_screen_on: v["keepScreenOn"].as_bool().unwrap_or(true),
+            pencil_only: v["pencilOnly"].as_bool().unwrap_or(true),
+            pencil_double_tap: v["pencilDoubleTap"].as_str().filter(|a| PENCIL_ACTIONS.contains(a)).unwrap_or("undo").to_string(),
+            pencil_squeeze: v["pencilSqueeze"].as_str().filter(|a| PENCIL_ACTIONS.contains(a)).unwrap_or("tools").to_string(),
+            onboarded: v["onboarded"].as_bool().unwrap_or(false),
             folded_groups: v["foldedGroups"].as_array().map(|a| a.iter().filter_map(|g| g.as_str().map(str::to_string)).collect()).unwrap_or_default(),
         }
     }
@@ -170,7 +191,7 @@ impl Settings {
     pub fn save(&self) -> Result<()> {
         let dir = config_dir()?;
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let text = serde_json::to_string_pretty(&json!({ "baseUrl": self.base_url, "model": self.model, "enabled": self.enabled, "diarize": self.diarize, "turnPages": self.turn_pages, "glossary": self.glossary, "templates": self.templates.iter().map(|(name, topics)| json!({ "name": name, "topics": topics })).collect::<Vec<_>>(), "systemSpeech": self.system_speech, "speechLanguage": self.speech_language, "interfaceLanguage": self.interface_language, "appearance": self.appearance, "listen": self.listen, "input": self.input, "computer": self.computer, "searchMeetings": self.meeting_search, "messy": self.messy, "sidebarHidden": self.sidebar_hidden, "minimapHidden": self.minimap_hidden, "minimapAt": self.minimap_at.map(|(right, bottom, x, y)| json!({ "right": right, "bottom": bottom, "x": x, "y": y })), "foldedGroups": self.folded_groups, "proxy": self.proxy, "proxyUrl": self.proxy_url, "proxyUser": self.proxy_user, "keepAudio": self.keep_audio, "reduceMotion": self.reduce_motion, "shortcuts": self.shortcuts.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>() }))?;
+        let text = serde_json::to_string_pretty(&json!({ "baseUrl": self.base_url, "model": self.model, "enabled": self.enabled, "diarize": self.diarize, "turnPages": self.turn_pages, "glossary": self.glossary, "templates": self.templates.iter().map(|(name, topics)| json!({ "name": name, "topics": topics })).collect::<Vec<_>>(), "systemSpeech": self.system_speech, "speechLanguage": self.speech_language, "interfaceLanguage": self.interface_language, "appearance": self.appearance, "listen": self.listen, "input": self.input, "computer": self.computer, "searchMeetings": self.meeting_search, "messy": self.messy, "sidebarHidden": self.sidebar_hidden, "minimapHidden": self.minimap_hidden, "minimapAt": self.minimap_at.map(|(right, bottom, x, y)| json!({ "right": right, "bottom": bottom, "x": x, "y": y })), "foldedGroups": self.folded_groups, "proxy": self.proxy, "proxyUrl": self.proxy_url, "proxyUser": self.proxy_user, "keepAudio": self.keep_audio, "reduceMotion": self.reduce_motion, "fadeTools": self.fade_tools, "keepScreenOn": self.keep_screen_on, "pencilOnly": self.pencil_only, "pencilDoubleTap": self.pencil_double_tap, "pencilSqueeze": self.pencil_squeeze, "onboarded": self.onboarded, "shortcuts": self.shortcuts.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>() }))?;
         let tmp = dir.join("remote.json.tmp");
         // Private from the first byte: the key must never sit in a file others can read.
         let _ = fs::remove_file(&tmp);
@@ -242,6 +263,19 @@ mod tests {
     }
 
     #[test]
+    fn the_ipads_settings_start_as_the_design_has_them() {
+        let s = Settings::parse("{}");
+        assert!(s.fade_tools && s.keep_screen_on && s.pencil_only && !s.onboarded);
+        assert_eq!((s.pencil_double_tap.as_str(), s.pencil_squeeze.as_str()), ("undo", "tools"));
+        assert_eq!(s, Settings::default());
+        let s = Settings::parse(r#"{"fadeTools":false,"keepScreenOn":false,"pencilOnly":false,"pencilDoubleTap":"eraser","pencilSqueeze":"off","onboarded":true}"#);
+        assert!(!s.fade_tools && !s.keep_screen_on && !s.pencil_only && s.onboarded);
+        assert_eq!((s.pencil_double_tap.as_str(), s.pencil_squeeze.as_str()), ("eraser", "off"));
+        // Something unknown is taken as the default rather than kept.
+        assert_eq!(Settings::parse(r#"{"pencilDoubleTap":"dance"}"#).pencil_double_tap, "undo");
+    }
+
+    #[test]
     fn the_hint_never_shows_the_whole_key() {
         let key = |k: &str| Settings { api_key: k.into(), ..Settings::default() }.key_hint();
         assert_eq!(key(""), None);
@@ -255,7 +289,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("alcyo-settings-{}", std::process::id()));
         std::env::set_var("ALCYO_CONFIG", &dir);
-        let s = Settings { base_url: "https://x".into(), api_key: "sk-secret".into(), model: "m".into(), enabled: true, diarize: false, turn_pages: true, glossary: "鉴权; API = A P I".into(), templates: vec![("Sprint review".into(), vec!["Done".into(), "Next".into()])], system_speech: true, speech_language: "ja-JP".into(), interface_language: "zh".into(), appearance: "dark".into(), listen: "both".into(), input: "pulse:mic".into(), computer: "pulse:sink.monitor".into(), meeting_search: false, messy: 0.25, sidebar_hidden: true, minimap_hidden: true, minimap_at: Some((false, true, 24.0, 80.5)), folded_groups: vec!["earlier".into(), "pinned".into()], shortcuts: vec![("map".into(), "mod-shift-m".into()), ("tidy".into(), "mod-t".into())], proxy: "custom".into(), proxy_url: "socks5://127.0.0.1:7891".into(), proxy_user: "me".into(), proxy_password: "p@ss".into(), keep_audio: false, reduce_motion: true };
+        let s = Settings { base_url: "https://x".into(), api_key: "sk-secret".into(), model: "m".into(), enabled: true, diarize: false, turn_pages: true, glossary: "鉴权; API = A P I".into(), templates: vec![("Sprint review".into(), vec!["Done".into(), "Next".into()])], system_speech: true, speech_language: "ja-JP".into(), interface_language: "zh".into(), appearance: "dark".into(), listen: "both".into(), input: "pulse:mic".into(), computer: "pulse:sink.monitor".into(), meeting_search: false, messy: 0.25, sidebar_hidden: true, minimap_hidden: true, minimap_at: Some((false, true, 24.0, 80.5)), folded_groups: vec!["earlier".into(), "pinned".into()], shortcuts: vec![("map".into(), "mod-shift-m".into()), ("tidy".into(), "mod-t".into())], proxy: "custom".into(), proxy_url: "socks5://127.0.0.1:7891".into(), proxy_user: "me".into(), proxy_password: "p@ss".into(), keep_audio: false, reduce_motion: true, fade_tools: false, keep_screen_on: false, pencil_only: false, pencil_double_tap: "eraser".into(), pencil_squeeze: "off".into(), onboarded: true };
         s.save().unwrap();
         assert_eq!(Settings::load(), s);
         assert_eq!(fs::metadata(dir.join("remote.json")).unwrap().permissions().mode() & 0o777, 0o600);
