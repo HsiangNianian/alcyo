@@ -350,7 +350,10 @@ impl Workbench {
     /// 2: who draws the board, remote with a key or this iPad with a download.
     fn intro_model(&mut self, cx: &mut Context<Self>) -> gpui_kit::Div {
         let p = pal();
-        let remote = self.intro.remote;
+        // Until llama.cpp runs inside the app the iPad draws with a remote model only (platform.rs): the local
+        // choice is shown as coming, and nothing is downloaded for it.
+        let local_possible = crate::platform::LOCAL_MODELS;
+        let remote = self.intro.remote || !local_possible;
         let local = alcyo_models::catalog().into_iter().find(|m| m.id == LOCAL_MODEL);
         let card = |id: &'static str, glyph: &str, title: String, text: String, on: bool| {
             div()
@@ -425,10 +428,14 @@ impl Workbench {
                 cx.notify();
             }));
         let local_card = local.map(|model| {
-            card("ob-local", "chip", ta!("ob-2-local", model = model.label), ta!("ob-2-local-hint", size = gigabytes(model.size)), !remote).on_click(cx.listener(|this, _, _, cx| {
-                this.intro.remote = false;
-                cx.notify();
-            }))
+            if local_possible {
+                card("ob-local", "chip", ta!("ob-2-local", model = model.label), ta!("ob-2-local-hint", size = gigabytes(model.size)), !remote).on_click(cx.listener(|this, _, _, cx| {
+                    this.intro.remote = false;
+                    cx.notify();
+                }))
+            } else {
+                card("ob-local", "chip", t("ipad-on-this-ipad").to_string(), t("ipad-local-coming").to_string(), false).cursor_default().opacity(0.55)
+            }
         });
         div()
             .flex_1()
@@ -451,7 +458,7 @@ impl Workbench {
 
     /// Keep what was chosen for the board: the remote model with its key, or this iPad's, downloading.
     fn intro_choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.intro.remote {
+        if self.intro.remote || !crate::platform::LOCAL_MODELS {
             let key = self.intro.key.as_ref().map(|k| k.read(cx).value().trim().to_string()).unwrap_or_default();
             if !key.is_empty() {
                 // DeepSeek, filled in as Settings' own choice of it is.

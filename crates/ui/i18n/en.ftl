@@ -347,6 +347,7 @@ ipad-model-intro = The board model listens to the transcript and draws. Speech r
 ipad-remote-card = DeepSeek or any OpenAI-compatible API. Fast; the transcript is sent to the provider.
 ipad-on-this-ipad = On this iPad
 ipad-local-card = Runs on the iPad's chip. Private and offline; needs 3 GB free.
+ipad-local-coming = Coming soon: runs on the iPad's chip, private and offline. Until then the board draws with a remote model.
 # Over the remote model's fields, once it answered: how long it took.
 ipad-connected = Connected · { $ms } ms
 ipad-checking = Checking…

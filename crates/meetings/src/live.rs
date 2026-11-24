@@ -201,8 +201,10 @@ impl Live {
         self.raw.get("title").and_then(Value::as_str).unwrap_or(UNTITLED)
     }
 
+    /// Whether there is anything in the meeting to keep: something said, drawn by the model or by hand, or a
+    /// summary.
     pub fn has_content(&self) -> bool {
-        !self.lines.is_empty() || !self.graph.nodes.is_empty() || !self.summary().is_empty()
+        !self.lines.is_empty() || !self.graph.nodes.is_empty() || self.graph.has_annotations() || !self.summary().is_empty()
     }
 
     /// This meeting must not leave the machine, so it only uses the local model.
@@ -912,6 +914,16 @@ mod tests {
         live.rename_speaker("C", "Mia");
         assert_eq!(live.lines[0]["also"], json!(["Mia"]));
         assert_eq!(live.snapshot()["lines"][0]["also"], json!(["Mia"]));
+    }
+
+    #[test]
+    fn a_meeting_drawn_on_only_by_hand_is_kept() {
+        let mut live = Live::new();
+        assert!(!live.has_content());
+        let mut graph = live.graph.clone();
+        graph.annotate(alcyo_board::graph::Annotation { tool: "pen-black".into(), on: None, points: vec![[1.0, 1.0], [9.0, 4.0]] });
+        live.change_board(graph, json!({}));
+        assert!(live.has_content(), "a pen stroke on the board is something to save");
     }
 
     #[test]
