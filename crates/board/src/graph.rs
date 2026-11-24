@@ -257,6 +257,11 @@ impl Graph {
         self.extra.get("annotations").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default()
     }
 
+    /// Whether anything has been drawn by hand on the board, without reading it all.
+    pub fn has_annotations(&self) -> bool {
+        self.extra.get("annotations").is_some_and(|a| a.as_array().is_some_and(|a| !a.is_empty()))
+    }
+
     /// Draw by hand on the board. Annotations on a clip go when the clip does.
     pub fn annotate(&mut self, annotation: Annotation) {
         let mut all = self.annotations();
@@ -1183,6 +1188,14 @@ mod pen_tests {
         assert_eq!(tools(&again), ["pen", "yellow", "pen-black", "pen-blue"]);
         assert_eq!(again.annotations()[0], old.annotations()[0], "the old red line is untouched");
         assert!(ANNOTATION_TOOLS.iter().all(|t| PENS.contains(t) || ["yellow", "green", "pink"].contains(t)));
+    }
+
+    #[test]
+    fn a_board_drawn_on_by_hand_has_annotations() {
+        let mut g = Graph::default();
+        assert!(!g.has_annotations(), "an empty board has none");
+        g.annotate(Annotation { tool: "pen-black".into(), on: None, points: vec![[1.0, 1.0], [5.0, 5.0]] });
+        assert!(g.has_annotations(), "a pen stroke on the board itself counts");
     }
 }
 

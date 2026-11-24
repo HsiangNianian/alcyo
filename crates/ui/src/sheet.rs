@@ -10,6 +10,18 @@
 use super::*;
 use gpui_kit::{AnyElement, BoxShadow, ElementId, FontWeight, Image, ImageFormat, SpringConfig, Stateful};
 
+/// The remote provider an address is for, by its host, however much of the address was typed: `api.deepseek.com`,
+/// `https://api.deepseek.com/v1` and the preset's own all name DeepSeek.
+fn preset_for(base: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    let host = |url: &str| -> String {
+        let url = url.trim();
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+        rest.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase()
+    };
+    let wanted = host(base);
+    (!wanted.is_empty()).then(|| REMOTE_PRESETS.iter().find(|(_, b, _)| host(b) == wanted)).flatten()
+}
+
 /// The sheet's size, when the window has room for it, and its parts.
 const SHEET_W: f32 = 800.0;
 const SHEET_H: f32 = 732.0;
@@ -23,8 +35,6 @@ const RISE: SpringConfig = SpringConfig::new(260., 32.25, 1.);
 const SINK_FOR: Duration = Duration::from_millis(450);
 /// How far the sheet must be pulled down to be put away.
 const DISMISS_DRAG: f32 = 110.0;
-/// How far the meeting behind steps back, as a share of the screen's width on each side: about 0.96.
-const STEP_BACK: f32 = 0.02;
 
 /// What the sheet keeps for itself, beside the workbench's settings.
 pub(super) struct Sheet {
@@ -327,6 +337,16 @@ impl Workbench {
     /// The iPad's whole screen: the meeting, and over it the Settings sheet or the first run's introduction.
     pub(super) fn ipad_layers(&mut self, parts: ipad::Parts, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let open = self.panel == Panel::Settings;
+        // An address and model never typed start as the first provider's, written in rather than only hinted, so
+        // the provider row names the one the fields are for and a key is all that is left to give.
+        if open && !self.sheet.open {
+            let empty = |input: &Entity<InputState>, cx: &App| input.read(cx).value().trim().is_empty();
+            if empty(&self.form.base_url, cx) && empty(&self.form.model, cx) {
+                let (_, base, model) = REMOTE_PRESETS[0];
+                self.form.base_url.update(cx, |s, cx| s.set_value(base, window, cx));
+                self.form.model.update(cx, |s, cx| s.set_value(model, window, cx));
+            }
+        }
         if open {
             self.sheet.sinking = None;
         } else if self.sheet.open {
@@ -448,29 +468,16 @@ impl Workbench {
         let drag = self.sheet.drag.map_or(0.0, |(_, dy)| dy);
         let travel = h - top + 40.0;
         let dark = theme::is_dark();
-        let inset = (w * STEP_BACK).round();
 
-        // The meeting behind steps back: it dims, and a dark frame with rounded corners closes in around it, as
-        // if it shrank to about 0.96. GPUI cannot scale what it draws, so the frame is a border wide enough to
-        // reach past the screen's edges, its inner corners rounded.
-        const PAST: f32 = 40.0;
+        // The meeting behind dims. It does not step back as UIKit's would: GPUI cannot scale what it draws, and a
+        // frame closing in over it cut off what was at its edges.
         let behind = div()
+            .id("ipad-sheet-scrim")
             .absolute()
             .inset_0()
-            .child(
-                div()
-                    .id("ipad-sheet-scrim")
-                    .absolute()
-                    .inset_0()
-                    .bg(tint(0x0a_0a_0a, if dark { 0.5 } else { 0.3 }))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.close_sheet(window, cx)))
-                    .with_spring("ipad-sheet-scrim-fade", SpringAnimation::new(RISE).to(open).from(false), |d, v| d.opacity(v.0.clamp(0., 1.))),
-            )
-            .child(div().absolute().top(px(-PAST)).left(px(-PAST)).w(px(w + 2.0 * PAST)).h(px(h + 2.0 * PAST)).with_spring("ipad-sheet-behind", SpringAnimation::new(RISE).to(open).from(false), move |d, v| {
-                let v = v.0.clamp(0., 1.);
-                let m = inset * v;
-                d.border(px(PAST + m)).rounded(px(PAST + m + 22.)).border_color(tint(0, if dark { 0.6 } else { 0.32 } * v))
-            }));
+            .bg(tint(0x0a_0a_0a, if dark { 0.5 } else { 0.3 }))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.close_sheet(window, cx)))
+            .with_spring("ipad-sheet-scrim-fade", SpringAnimation::new(RISE).to(open).from(false), |d, v| d.opacity(v.0.clamp(0., 1.)));
 
         let sheet = div()
             .id("ipad-sheet")
@@ -602,6 +609,8 @@ impl Workbench {
             .px(px(12.))
             .pb(px(20.))
             .bg(rgb(pal().chrome))
+            // The sheet's corners do not clip what is in it, so the tabs' fill is rounded with them.
+            .rounded_l(px(30.))
             .child(div().mt(px(4.)).mx(px(10.)).mb(px(14.)).text_size(px(24.)).font_weight(FontWeight::BOLD).child(t("settings")))
             .child(list)
             .child(div().flex_1())
@@ -719,7 +728,9 @@ impl Workbench {
     fn sheet_model(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         self.probe_remote(cx);
         let p = pal();
-        let remote = self.form.remote || !crate::platform::local_models() && self.form.saved.enabled;
+        // Only where the model can run: on the iPad, one with memory enough for it (platform::local_models).
+        let local_possible = crate::platform::local_models();
+        let remote = self.form.remote || !local_possible;
         let option = |id: &'static str, glyph: &str, title: &str, text: &str, on: bool| {
             div()
                 .id(id)
@@ -748,21 +759,22 @@ impl Workbench {
                 }
                 cx.notify();
             })))
-            // Only where the model can run: an iPad with memory enough for it (platform::local_models).
-            .child(option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-card"), !remote).when(!crate::platform::local_models(), |d| d.opacity(0.4)).on_click(cx.listener(|this, _, window, cx| {
-                if !crate::platform::local_models() {
-                    return;
-                }
-                this.form.remote = false;
-                // A model already here is used at once; otherwise one is downloaded below.
-                let here = alcyo_models::current(&this.models).and_then(|path| alcyo_models::catalog().into_iter().find(|m| path.ends_with(&m.file)));
-                match here {
-                    Some(model) => this.use_model(&model, cx),
-                    None if this.form.saved.enabled && crate::platform::local_models() => this.save_settings(window, cx),
-                    None => {}
-                }
-                cx.notify();
-            })));
+            .child(if local_possible {
+                option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-card"), !remote).on_click(cx.listener(|this, _, window, cx| {
+                    this.form.remote = false;
+                    // A model already here is used at once; otherwise one is downloaded below.
+                    let here = alcyo_models::current(&this.models).and_then(|path| alcyo_models::catalog().into_iter().find(|m| path.ends_with(&m.file)));
+                    match here {
+                        Some(model) => this.use_model(&model, cx),
+                        None if this.form.saved.enabled => this.save_settings(window, cx),
+                        None => {}
+                    }
+                    cx.notify();
+                }))
+            } else {
+                // Shown, but this iPad has too little memory for the model.
+                option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-card"), false).cursor_default().opacity(0.55)
+            });
         let mut out = vec![
             div().text_size(px(14.)).line_height(gpui_kit::relative(1.5)).text_color(rgb(p.muted)).child(t("ipad-model-intro")).into_any_element(),
             options.into_any_element(),
@@ -804,7 +816,7 @@ impl Workbench {
             }
         };
         let base = self.form.base_url.read(cx).value().to_string();
-        let provider = REMOTE_PRESETS.iter().find(|(_, b, _)| base.trim_end_matches('/').starts_with(b.trim_end_matches('/'))).map(|(name, ..)| name.to_string());
+        let provider = preset_for(&base).map(|(name, ..)| name.to_string());
         let mut providers: Vec<(String, String)> = REMOTE_PRESETS.iter().map(|(name, ..)| (name.to_string(), name.to_string())).collect();
         providers.push((String::new(), t("ipad-other-provider").to_string()));
         let provider_row = row().child(key(t("ipad-provider"), 96.)).child(menu_row(
@@ -870,7 +882,13 @@ impl Workbench {
                 .into_any_element(),
         );
 
-        // On this iPad: the models that fit it, each to download or to use.
+        // On this iPad: the models that fit it, each to download or to use. Not where they cannot run.
+        if !local_possible {
+            if let Some(note) = self.form.note.clone().filter(|_| self.sheet.probing.is_none()) {
+                out.push(div().px(px(4.)).mt(px(-8.)).text_size(px(12.5)).text_color(rgb(p.faint)).child(note).into_any_element());
+            }
+            return out;
+        }
         let free = {
             let mut at = self.models.clone();
             while !at.exists() && at.pop() {}

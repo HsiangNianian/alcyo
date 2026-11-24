@@ -398,10 +398,17 @@ pub fn follows_system() -> bool {
 /// Settle light or dark, following the system unless Settings chose, and put that palette into the kit's theme.
 /// Called at start and again whenever the choice or the system's appearance changes.
 pub fn apply(cx: &mut App) {
-    if FOLLOW_SYSTEM.load(Ordering::Relaxed) {
+    let follow = FOLLOW_SYSTEM.load(Ordering::Relaxed);
+    // The iPad's status bar and system sheets keep to the theme, light text over dark; following the system,
+    // they are let go first, so the appearance read is the system's own.
+    if follow {
+        crate::platform::follow_theme(None);
         DARK_MODE.store(matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark), Ordering::Relaxed);
     }
     let dark = is_dark();
+    if !follow {
+        crate::platform::follow_theme(Some(dark));
+    }
     Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
     let p = pal();
     let color = |value: u32| -> Hsla { rgb(value).into() };

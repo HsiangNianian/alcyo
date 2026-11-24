@@ -224,3 +224,17 @@ pub fn open_room_window<V: gpui_kit::Render>(
     };
     gpui_kit::open_window(options, cx, build)
 }
+
+/// Holds the iPad's status bar, and the system's sheets and keyboard over the app, to the theme in use: light
+/// text over the dark theme, dark over the light. `None` lets them follow the system's appearance again, as
+/// the theme does then. A desktop build draws its own title bar, so it does nothing.
+pub fn follow_theme(dark: Option<bool>) {
+    #[cfg(target_os = "ios")]
+    gpui_ios::set_interface_style(match dark {
+        None => gpui_ios::InterfaceStyle::System,
+        Some(false) => gpui_ios::InterfaceStyle::Light,
+        Some(true) => gpui_ios::InterfaceStyle::Dark,
+    });
+    #[cfg(not(target_os = "ios"))]
+    let _ = dark;
+}

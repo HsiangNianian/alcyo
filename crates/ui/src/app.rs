@@ -943,6 +943,17 @@ impl Ink {
         self.touched = Instant::now();
     }
 
+    /// Whether the view was moved off the board's ink, so there is something to go back to: none on a board
+    /// with nothing drawn yet, nor while all of it is still in view.
+    fn away_from_latest(&self) -> bool {
+        let e = &self.extent;
+        if !self.reading || e.x1 <= e.x0 || e.y1 <= e.y0 {
+            return false;
+        }
+        let [x0, y0, x1, y1] = self.visible();
+        !(e.x0 as f32 >= x0 && e.y0 as f32 >= y0 && e.x1 as f32 <= x1 && e.y1 as f32 <= y1)
+    }
+
     fn show_latest(&mut self) {
         self.glide_from_here();
         self.reading = false;
@@ -1747,6 +1758,8 @@ struct Workbench {
     /// Nothing can draw yet, so opening the app leads to choosing a model.
     needs_model: bool,
     notice: Option<String>,
+    /// Something to know that went as it should, said over the board like a notice but not as an error.
+    info: Option<String>,
     /// What the board model is doing, said in the title bar while it matters.
     status: ModelStatus,
     /// What recognition wrote for the line being added, when the glossary rewrote it.
@@ -2876,11 +2889,12 @@ impl Workbench {
             *changed = true;
             return;
         }
-        // Another meeting opened ends the share: viewers were let in to that one only.
+        // Another meeting opened ends the share: viewers were let in to that one only. That is as it should be,
+        // so it is said, not raised as an error.
         if !sharing.shows(&self.live) {
             self.sharing = None;
             self.watching = 0;
-            self.notice = Some(t("share-stopped-other-meeting").into());
+            self.info = Some(t("share-stopped-other-meeting").into());
             *changed = true;
             return;
         }
@@ -2896,6 +2910,7 @@ impl Workbench {
         match crate::share::Sharing::start(self.live.id(), self.hanzi.clone()) {
             Ok(sharing) => {
                 self.sharing = Some(sharing);
+                self.info = None;
                 self.share_address = 0;
                 self.share_note = None;
             }
@@ -6708,9 +6723,9 @@ impl Render for Workbench {
                 window.request_animation_frame();
             }
         }
-        let (reading, zoom) = {
+        let (away, zoom) = {
             let ink = self.ink.borrow();
-            (ink.reading, ink.shown().k)
+            (ink.away_from_latest(), ink.shown().k)
         };
         let ink = self.ink.clone();
         let (touch_ink, touch_this) = (self.ink.clone(), cx.entity().downgrade());
@@ -7730,7 +7745,7 @@ impl Render for Workbench {
         // What the board offers, at its upper corner: the way back to the newest ink, and a board the talk has moved to.
         let offer = |id: &'static str, tone: u32| float().id(id).h(px(28.)).px_2().cursor_pointer().text_small().whitespace_nowrap().text_color(rgb(tone)).hover(|d| d.border_color(rgb(pal().text)));
         // Following the talk is the usual state and goes unsaid; looking elsewhere offers the way back.
-        let offers_latest = reading && self.replay.is_none();
+        let offers_latest = away && self.replay.is_none();
         let page_offer = self.page_hint.clone().filter(|_| self.replay.is_none());
         let topic_offer = self.topic_hint.clone().filter(|_| self.replay.is_none() && self.editable());
         let offering = offers_latest || page_offer.is_some() || topic_offer.is_some();
@@ -9061,7 +9076,8 @@ impl Render for Workbench {
         });
         // Over the board, where a message can't be missed, and never on top of the controls.
         let dismissable = self.notice.is_some();
-        let notices = (view_only.is_some() || banner.is_some()).then(|| {
+        let info = self.info.clone();
+        let notices = (view_only.is_some() || banner.is_some() || info.is_some()).then(|| {
             div()
                 .absolute()
                 .top(px(if offering { 48. } else { 12. }))
@@ -9094,9 +9110,27 @@ impl Render for Workbench {
                             .when(!dismissable, |d| d.pr_3()),
                     )
                 })
+                .when_some(info, |d, text| {
+                    d.child(
+                        float()
+                            .id("info-notice")
+                            .max_w(px(560.))
+                            .pl_3()
+                            .pr_1()
+                            .py(px(4.))
+                            .gap_2()
+                            .text_ui()
+                            .child(div().flex_1().min_w_0().py(px(2.)).child(text))
+                            .child(icon_button("dismiss-info", "x", t("dismiss")).on_click(cx.listener(|this, _, _, cx| {
+                                this.info = None;
+                                cx.notify();
+                            }))),
+                    )
+                })
         });
-        // An empty board says what to do with it, and offers the shapes a meeting can start from.
-        let blank = editable && pages <= 1 && self.live.lines.is_empty() && self.live.graph.nodes.is_empty() && self.live.graph.underlay().is_none();
+        // An empty board says what to do with it, and offers the shapes a meeting can start from. Marks drawn by
+        // hand are on it too, so the first stroke puts the welcome away.
+        let blank = editable && pages <= 1 && self.live.lines.is_empty() && self.live.graph.nodes.is_empty() && self.live.graph.underlay().is_none() && !self.live.graph.has_annotations();
         // An empty board says what it is for: its headline written by the board's own pen, the keys to begin
         // with, the templates to start from, and that a file can be dropped on it.
         let headline = t("talk-and-the-board-draws");
@@ -10154,6 +10188,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     vram_mib,
                     needs_model: false,
                     notice: None,
+                    info: None,
                     status: ModelStatus::Starting,
                     heard: None,
                     page_hint: None,
