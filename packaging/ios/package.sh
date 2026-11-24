@@ -117,7 +117,20 @@ if [ -n "${IOS_CERT_P12:-}" ] && [ -n "${IOS_PROFILE:-}" ]; then
 
   printf '%s' "$IOS_PROFILE" | base64 --decode > "$app/embedded.mobileprovision"
   security cms -D -i "$app/embedded.mobileprovision" > "$work/profile.plist"
-  /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$work/profile.plist" > "$work/entitlements.plist"
+  /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$work/profile.plist" > "$work/granted.plist"
+  # Signed with what the app uses, not all the profile grants: the App ID may carry more (Background GPU Access,
+  # Background Inference), which the app does not use, as its model stops in the background (crates/agent).
+  python3 -I - "$work/granted.plist" "$work/entitlements.plist" <<'PY'
+import plistlib, sys
+used = ["application-identifier", "com.apple.developer.team-identifier", "keychain-access-groups", "get-task-allow",
+        "beta-reports-active", "com.apple.developer.kernel.increased-memory-limit"]
+with open(sys.argv[1], "rb") as f:
+    granted = plistlib.load(f)
+for key in sorted(k for k in granted if k not in used):
+    print(f"granted but not used: {key}")
+with open(sys.argv[2], "wb") as f:
+    plistlib.dump({k: granted[k] for k in used if k in granted}, f)
+PY
   # Granted once Increased Memory Limit is turned on for app.alcyo.board in the Apple Developer portal and the profile
   # made again; without it the app is still signed, and the local model has iPadOS's default limit.
   if [ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.kernel.increased-memory-limit' "$work/entitlements.plist" 2>/dev/null)" = true ]; then
