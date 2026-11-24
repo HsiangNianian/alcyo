@@ -1,0 +1,80 @@
+name: Embedded llama.cpp
+
+# llama.cpp's server as static libraries, for the app to run inside itself on the iPad (crates/llama), built from
+# our fork's tag by scripts/build-llama-embedded.sh. The archives are uploaded here; whoever bumps the tag puts
+# them on the fork's release and records their SHA-256 in .cargo/llama-embedded.sha256.
+#
+# The Mac's build also runs crates/llama/examples/smoke.rs: the default board model, with the iPad's arguments,
+# started, asked and stopped twice in one process. A CI Mac is a VM with a small GPU, so its times say that it
+# works, not how fast an iPad is.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/build-llama-embedded.sh'
+      - 'crates/llama/**'
+      - '.github/workflows/llama-embedded.yml'
+
+concurrency:
+  group: llama-embedded-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ios-arm64, macos-arm64]
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest Xcode
+        run: |
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$xcode" ] || sudo xcode-select -s "$xcode"
+      - run: sh scripts/build-llama-embedded.sh ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-embedded-${{ matrix.platform }}
+          path: target/llama-embedded/llama-server-embedded-${{ matrix.platform }}.tar.gz
+          retention-days: 30
+
+  smoke:
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      MODEL: Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+      MODEL_SHA256: 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: llama-embedded
+      - uses: actions/download-artifact@v4
+        with:
+          name: llama-server-embedded-macos-arm64
+          path: llama
+      - name: Cache the model
+        uses: actions/cache@v4
+        with:
+          path: model
+          key: model-${{ env.MODEL_SHA256 }}
+      - name: The default board model
+        run: |
+          mkdir -p model llama/unpacked
+          [ -f "model/$MODEL" ] || curl -fL --retry 5 -o "model/$MODEL" "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/$MODEL"
+          echo "$MODEL_SHA256  model/$MODEL" | shasum -a 256 -c
+          tar -xzf llama/llama-server-embedded-macos-arm64.tar.gz -C llama/unpacked
+      - name: Start, ask, stop, twice
+        env:
+          ALCYO_LLAMA_LIB_DIR: ${{ github.workspace }}/llama/unpacked
+        run: |
+          # The arguments the iPad starts it with (crates/agent/src/lib.rs, server_args).
+          cargo run --release -p alcyo-llama --example smoke -- "model/$MODEL" chat \
+            -c 6144 --jinja -ngl auto --fit on -fa on -ctk q8_0 -ctv q8_0 --cache-ram 256 2> smoke.log | tee smoke.txt
+          { echo '```'; cat smoke.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: The server's log
+        if: always()
+        run: grep -vE '^\s*$' smoke.log | tail -150 || true
