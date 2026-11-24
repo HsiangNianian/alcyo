@@ -82,3 +82,8 @@ jobs:
       - name: The server's log
         if: always()
         run: grep -vE '^\s*$' smoke.log | tail -150 || true
+      - name: Where it crashed, if it did
+        if: failure()
+        run: |
+          lldb --batch -o run -k 'thread backtrace all' -k quit -- target/release/examples/smoke "model/$MODEL" chat \
+            -c 6144 --jinja -ngl auto --fit on -fa on -ctk q8_0 -ctv q8_0 --cache-ram 256 2>&1 | grep -vE '^\s*$' | tail -300 || true

@@ -11,8 +11,8 @@
 # tag it alcyo-<build>-<n>, set TAG and COMMIT here, and build, upload and record the archives anew.
 set -eu
 
-TAG=alcyo-b11954-1
-COMMIT=264d066d6391a4d4848d91fc2d9d5997577b299b
+TAG=alcyo-b11954-2
+COMMIT=db229e2c3ab18ed12ee32a1e0178fdf6b91a6422
 platform=${1:?usage: build-llama-embedded.sh ios-arm64|macos-arm64}
 
 root=$(cd "$(dirname "$0")/.." && pwd)

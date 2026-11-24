@@ -62,6 +62,8 @@ fn link(lib: &Path, os: &str) {
     assert!(lib.join("libllama-server-impl.a").is_file(), "no libllama-server-impl.a in {}", lib.display());
     println!("cargo:rustc-link-search=native={}", lib.display());
     for name in LIBS.iter().filter(|name| lib.join(format!("lib{name}.a")).is_file()) {
+        // They are bundled into this crate's library, so a library built anew must make it again.
+        println!("cargo:rerun-if-changed={}", lib.join(format!("lib{name}.a")).display());
         println!("cargo:rustc-link-lib=static={name}");
     }
     if os == "ios" || os == "macos" {
