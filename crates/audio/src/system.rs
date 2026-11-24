@@ -9,12 +9,15 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+#[cfg(not(target_os = "ios"))]
+use std::process::{Command, Stdio};
 
-/// What runs the recognizer: the helper process, or the thread running it inside the app.
+/// What runs the recognizer: the helper process, or the thread running it inside the app. Each build makes only
+/// one of them, and the thread is held without being joined (stopping never waits on a sentence), hence the allow.
+#[allow(dead_code)]
 enum Runner {
     Process(Child),
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
     Thread(std::thread::JoinHandle<()>),
 }
 
@@ -156,6 +159,9 @@ impl Drop for SystemSpeech {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Its own: the module above imports Command only where it starts the helper, which is not on iOS.
+    #[cfg(target_os = "ios")]
+    use std::process::Command;
 
     /// A stand-in helper that speaks the same protocol and says how many samples it got.
     const FAKE: &str = r#"
