@@ -816,25 +816,121 @@ fn end_with_this_process(child: u32) {
     }
 }
 
+/// A running model server: a program of its own on the desktop, a thread of this app on the iPad.
+enum Running {
+    Child(Child),
+    #[cfg(target_os = "ios")]
+    Embedded(alcyo_llama::Server),
+}
+
+impl Running {
+    fn stop(self) {
+        match self {
+            Running::Child(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            #[cfg(target_os = "ios")]
+            Running::Embedded(server) => {
+                if let Err(e) = server.stop() {
+                    eprintln!("{e:#}");
+                }
+            }
+        }
+    }
+}
+
+/// Whether a server that was started has ended since, and how.
+trait Ended {
+    fn ended(&mut self) -> Result<Option<String>>;
+}
+
+impl Ended for Child {
+    fn ended(&mut self) -> Result<Option<String>> {
+        Ok(self.try_wait()?.map(|status| status.to_string()))
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Ended for alcyo_llama::Server {
+    fn ended(&mut self) -> Result<Option<String>> {
+        Ok(self.exited().map(|code| format!("exit code {code}")))
+    }
+}
+
 /// Start the server on the best device, falling back to the CPU if that fails to come up.
-fn start_llama(server: &LocalServer) -> Result<(Child, String)> {
+#[cfg(not(target_os = "ios"))]
+fn start_llama(server: &LocalServer) -> Result<(Running, String)> {
     let base = format!("http://127.0.0.1:{LLAMA_PORT}");
     let health = format!("{base}/health");
     let gpus = list_gpus(&server.binaries);
     let device = pick_gpu(&gpus);
     let mut child = spawn_llama(server, device.as_deref(), is_discrete(&gpus, device.as_deref()), LLAMA_PORT, None)?;
     match wait_until_up(&health, &mut child) {
-        Ok(()) => Ok((child, base)),
+        Ok(()) => Ok((Running::Child(child), base)),
         Err(first) if device.is_some() => {
             eprintln!("local model did not start on {device:?}: {first:#}; trying the CPU");
             let _ = child.kill();
             let _ = child.wait();
             let mut child = spawn_llama(server, None, false, LLAMA_PORT, None)?;
             wait_until_up(&health, &mut child)?;
-            Ok((child, base))
+            Ok((Running::Child(child), base))
         }
         Err(first) => Err(first),
     }
+}
+
+/// On the iPad the server runs inside the app (alcyo-llama), as iPadOS lets an app start no other program. It
+/// has the graphics only: the CPU would be no fallback, too slow and short of memory just the same.
+#[cfg(target_os = "ios")]
+fn start_llama(server: &LocalServer) -> Result<(Running, String)> {
+    let base = format!("http://127.0.0.1:{LLAMA_PORT}");
+    let health = format!("{base}/health");
+    let size = std::fs::metadata(&server.model).with_context(|| format!("reading {}", server.model.display()))?.len();
+    let available = alcyo_llama::available_memory();
+    eprintln!("local model: {size} bytes, {available:?} bytes of memory left to the app");
+    fits_in_memory(size, available)?;
+    let mut embedded = alcyo_llama::Server::start(&embedded_args(&server.model, LLAMA_PORT))?;
+    match wait_until_up(&health, &mut embedded) {
+        Ok(()) => Ok((Running::Embedded(embedded), base)),
+        Err(e) => {
+            let _ = embedded.stop();
+            Err(e)
+        }
+    }
+}
+
+/// What the iPad's built-in server needs beside the model's file: the keys and values of a whole context at 8 bits
+/// (Qwen3-4B: 36 layers × 8 heads × 128 × 2 × 1 byte per token, about 0.45 GB for 6144 tokens), the graphics'
+/// working buffers (about 0.3 GB), prompts kept aside (`--cache-ram`, at most 0.25 GB) and a little to spare. An
+/// estimate until it is measured on a device.
+const EMBEDDED_OVERHEAD: u64 = 5 << 28;
+
+/// Say plainly when the model will not fit in what iPadOS lets the app use, rather than start it and have the
+/// system end the app. `available` is unknown off the iPad, where this lets it start.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn fits_in_memory(model_bytes: u64, available: Option<u64>) -> Result<()> {
+    let Some(available) = available else { return Ok(()) };
+    let needed = model_bytes + EMBEDDED_OVERHEAD;
+    if available < needed {
+        let gb = |bytes: u64| bytes as f64 / 1e9;
+        bail!(
+            "Not enough memory for the local model: it needs about {:.1} GB, and iPadOS lets Alcyo use {:.1} GB more now. Close other apps and try again, or draw with a remote model.",
+            gb(needed),
+            gb(available)
+        );
+    }
+    Ok(())
+}
+
+/// The iPad's built-in server's arguments: the desktop's, on the graphics, with the keys and values kept at 8
+/// bits rather than 16 (about 0.45 GB less for Qwen3-4B, for little loss) and fewer prompts kept aside, as every
+/// byte counts against what iPadOS lets the app use. `--fit` lets as many layers as fit go to the graphics.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn embedded_args(model: &std::path::Path, port: u16) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-m".into(), model.to_string_lossy().into_owned(), "--host".into(), "127.0.0.1".into(), "--port".into(), port.to_string()];
+    args.extend(["-c", "6144", "-np", "1", "--jinja", "--cache-ram", "256", "-ngl", "auto", "--fit", "on", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0"].map(String::from));
+    args
 }
 
 /// Read the prompt's progress from one line of a streamed reply.
@@ -867,10 +963,10 @@ fn prepare_prompt(base: &str, updates: &Sender<Update>) {
 }
 
 /// Wait for the server to answer, giving up early if it has already exited.
-fn wait_until_up(url: &str, child: &mut Child) -> Result<()> {
+fn wait_until_up(url: &str, server: &mut impl Ended) -> Result<()> {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(180) {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = server.ended()? {
             bail!("llama-server exited during startup ({status})");
         }
         if http(url).get(url).timeout(Duration::from_secs(2)).call().is_ok() {
@@ -1004,8 +1100,9 @@ impl Session {
         let speaking = session.speaking.clone();
         let consolidating = session.consolidating.clone();
         thread::spawn(move || {
-            // Held for the thread's lifetime: the child's death signal is tied to this thread.
-            let mut server: Option<(Child, String, PathBuf)> = None;
+            // Held for the thread's lifetime: the child's death signal is tied to this thread, and a server inside
+            // the app stops when this is dropped.
+            let mut server: Option<(Running, String, PathBuf)> = None;
             let mut provider_now = |updates: &Sender<Update>| -> Result<Provider> {
                 let choice = backend.lock().expect("backend lock").clone();
                 match choice {
@@ -1015,18 +1112,17 @@ impl Session {
                         // Another model was chosen: the running server cannot switch.
                         if server.as_ref().is_some_and(|(_, _, model)| model != &local.model) {
                             *local_base.lock().expect("base lock") = None;
-                            if let Some((mut child, _, _)) = server.take() {
-                                let _ = child.kill();
-                                let _ = child.wait();
+                            if let Some((running, _, _)) = server.take() {
+                                running.stop();
                             }
                         }
                         if server.is_none() {
                             let _ = updates.send(Update::Loading);
-                            let (child, base) = start_llama(&local)?;
+                            let (running, base) = start_llama(&local)?;
                             prepare_prompt(&base, updates);
                             let _ = updates.send(Update::Ready);
                             *local_base.lock().expect("base lock") = Some(base.clone());
-                            server = Some((child, base, local.model.clone()));
+                            server = Some((running, base, local.model.clone()));
                         }
                         Ok(Provider::Local { base: server.as_ref().map(|(_, b, _)| b.clone()).expect("just set") })
                     }
@@ -1464,6 +1560,33 @@ mod tests {
         let args: Vec<String> = llama_command(&server, None, false, 1, None).get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let at = args.iter().position(|a| a == "--cache-ram").expect("the prompt cache is capped");
         assert!(args[at + 1].parse::<u32>().unwrap() <= 1024, "{args:?}");
+    }
+
+    #[test]
+    fn the_ipad_server_runs_as_the_desktop_one_with_less_memory() {
+        let desktop: Vec<String> = llama_command(&LocalServer { binaries: "bin".into(), model: "m.gguf".into(), shaders: None }, Some("Metal"), false, 7, None)
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let ipad = embedded_args(std::path::Path::new("m.gguf"), 7);
+        let value = |args: &[String], flag: &str| args.iter().position(|a| a == flag).map(|at| args[at + 1].clone());
+        for flag in ["-m", "--host", "--port", "-c", "-np", "-ngl", "--fit"] {
+            assert_eq!(value(&ipad, flag), value(&desktop, flag), "{flag}");
+        }
+        assert!(ipad.contains(&"--jinja".to_string()));
+        assert!(value(&ipad, "--cache-ram").unwrap().parse::<u32>().unwrap() < value(&desktop, "--cache-ram").unwrap().parse::<u32>().unwrap());
+        // A quantized cache of values needs flash attention.
+        assert_eq!(value(&ipad, "-ctv").as_deref(), Some("q8_0"));
+        assert_eq!(value(&ipad, "-fa").as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn a_model_too_large_for_the_ipad_is_refused_with_the_numbers() {
+        let model = 2_497_281_120;
+        assert!(fits_in_memory(model, None).is_ok(), "unknown off the iPad");
+        assert!(fits_in_memory(model, Some(5_000_000_000)).is_ok());
+        let error = fits_in_memory(model, Some(3_000_000_000)).unwrap_err().to_string();
+        assert!(error.contains("3.8 GB") && error.contains("3.0 GB"), "{error}");
     }
 
     #[test]

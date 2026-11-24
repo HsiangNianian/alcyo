@@ -7,8 +7,11 @@
 # UPLOAD=1 and the App Store Connect API key (APPLE_API_KEY_P8, base64, APPLE_API_KEY_ID,
 # APPLE_API_ISSUER_ID) sent to TestFlight. Without them it is only built, which shows that it does.
 #
-# The board model runs remotely on the iPad, as iOS lets an app start no other program (see
-# crates/ui/src/platform.rs). Needs a Mac with Xcode and the aarch64-apple-ios Rust target.
+# A local board model runs inside the app, as iOS lets an app start no other program: llama.cpp's server is linked
+# into the program (crates/llama), Metal shaders and all, so nothing for it is copied here. It wants more memory than
+# iPadOS gives an app by default, which the com.apple.developer.kernel.increased-memory-limit entitlement asks for;
+# the app is signed with what its profile grants, so the profile must carry it. Needs a Mac with Xcode and the
+# aarch64-apple-ios Rust target.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -115,6 +118,13 @@ if [ -n "${IOS_CERT_P12:-}" ] && [ -n "${IOS_PROFILE:-}" ]; then
   printf '%s' "$IOS_PROFILE" | base64 --decode > "$app/embedded.mobileprovision"
   security cms -D -i "$app/embedded.mobileprovision" > "$work/profile.plist"
   /usr/libexec/PlistBuddy -x -c 'Print :Entitlements' "$work/profile.plist" > "$work/entitlements.plist"
+  # Granted once Increased Memory Limit is turned on for app.alcyo.board in the Apple Developer portal and the profile
+  # made again; without it the app is still signed, and the local model has iPadOS's default limit.
+  if [ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.kernel.increased-memory-limit' "$work/entitlements.plist" 2>/dev/null)" = true ]; then
+    echo "the profile grants the increased memory limit"
+  else
+    echo "::warning::the profile does not grant com.apple.developer.kernel.increased-memory-limit: turn on Increased Memory Limit for app.alcyo.board in the Apple Developer portal and make the profile again"
+  fi
   echo "signing with $(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Distribution/ { print $2; exit }'), profile $(/usr/libexec/PlistBuddy -c 'Print :Name' "$work/profile.plist")"
   codesign --force --sign "$identity" --timestamp=none "$app/Frameworks/SherpaOnnxC.framework"
   if ! codesign --force --sign "$identity" --timestamp=none --entitlements "$work/entitlements.plist" --verbose=4 "$app"; then

@@ -7,7 +7,7 @@
 set -u
 
 target=aarch64-apple-ios
-crates="alcyo-board alcyo-models alcyo-fonts alcyo-meetings alcyo-export alcyo-search alcyo-share alcyo-keep alcyo-update alcyo-import alcyo-agent alcyo-audio alcyo-ui"
+crates="alcyo-board alcyo-models alcyo-fonts alcyo-meetings alcyo-export alcyo-search alcyo-share alcyo-keep alcyo-update alcyo-import alcyo-llama alcyo-agent alcyo-audio alcyo-ui"
 # Those that build for the iPad today, kept that way.
 MUST=${MUST:-}
 

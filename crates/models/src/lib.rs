@@ -257,6 +257,42 @@ fn fastest_first<'a>(sources: &'a [Source], from: u64, cancel: &AtomicBool) -> V
     order.into_iter().map(|i| &sources[i]).collect()
 }
 
+/// Keep `dir` out of the iPad's backups, to iCloud or a computer: models are gigabytes that can be downloaded again,
+/// and Apple asks apps not to back such files up. Elsewhere it does nothing.
+pub fn exclude_from_backup(dir: &Path) -> Result<()> {
+    #[cfg(target_os = "ios")]
+    {
+        use std::ffi::c_void;
+        type Ref = *const c_void;
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            static kCFAllocatorDefault: Ref;
+            static kCFBooleanTrue: Ref;
+            static kCFURLIsExcludedFromBackupKey: Ref;
+            fn CFURLCreateFromFileSystemRepresentation(allocator: Ref, path: *const u8, length: isize, is_directory: u8) -> Ref;
+            fn CFURLSetResourcePropertyForKey(url: Ref, key: Ref, value: Ref, error: *mut Ref) -> u8;
+            fn CFRelease(object: Ref);
+        }
+        let path = dir.as_os_str().as_bytes();
+        // SAFETY: the path is valid for its length; the URL is released once used, and no error object is asked for.
+        let done = unsafe {
+            let url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, path.as_ptr(), path.len() as isize, 1);
+            if url.is_null() {
+                bail!("{} is not a path the system takes", dir.display());
+            }
+            let done = CFURLSetResourcePropertyForKey(url, kCFURLIsExcludedFromBackupKey, kCFBooleanTrue, std::ptr::null_mut());
+            CFRelease(url);
+            done
+        };
+        if done == 0 {
+            bail!("could not keep {} out of backups", dir.display());
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    let _ = dir;
+    Ok(())
+}
+
 /// Download a model, resuming anything left by an earlier attempt. `report` runs a few times a second.
 pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn FnMut(Progress)) -> Result<Outcome> {
     let path = dir.join(&model.file);
@@ -264,6 +300,10 @@ pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn
         return Ok(Outcome::Finished(path));
     }
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    // Whatever is downloaded into it, and the unfinished part too.
+    if let Err(e) = exclude_from_backup(dir) {
+        eprintln!("{e:#}");
+    }
     let part = part_of(&path);
 
     // Resuming means hashing what is already there, so a large leftover takes a moment.

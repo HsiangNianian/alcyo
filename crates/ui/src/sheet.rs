@@ -719,7 +719,7 @@ impl Workbench {
     fn sheet_model(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         self.probe_remote(cx);
         let p = pal();
-        let remote = self.form.remote || !crate::platform::LOCAL_MODELS && self.form.saved.enabled;
+        let remote = self.form.remote || !crate::platform::local_models() && self.form.saved.enabled;
         let option = |id: &'static str, glyph: &str, title: &str, text: &str, on: bool| {
             div()
                 .id(id)
@@ -748,13 +748,17 @@ impl Workbench {
                 }
                 cx.notify();
             })))
-            .child(option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-card"), !remote).on_click(cx.listener(|this, _, window, cx| {
+            // Only where the model can run: an iPad with memory enough for it (platform::local_models).
+            .child(option("ipad-use-local", "chip", t("ipad-on-this-ipad"), t("ipad-local-card"), !remote).when(!crate::platform::local_models(), |d| d.opacity(0.4)).on_click(cx.listener(|this, _, window, cx| {
+                if !crate::platform::local_models() {
+                    return;
+                }
                 this.form.remote = false;
                 // A model already here is used at once; otherwise one is downloaded below.
                 let here = alcyo_models::current(&this.models).and_then(|path| alcyo_models::catalog().into_iter().find(|m| path.ends_with(&m.file)));
                 match here {
                     Some(model) => this.use_model(&model, cx),
-                    None if this.form.saved.enabled && crate::platform::LOCAL_MODELS => this.save_settings(window, cx),
+                    None if this.form.saved.enabled && crate::platform::local_models() => this.save_settings(window, cx),
                     None => {}
                 }
                 cx.notify();

@@ -1827,7 +1827,7 @@ fn backend_from(settings: &Settings, local_only: bool, binaries: &std::path::Pat
     if settings.enabled && settings.is_complete() && !local_only {
         return Backend::Ready(Provider::Remote { base_url: settings.base_url.clone(), key: settings.api_key.clone(), model: settings.model.clone() });
     }
-    if !crate::platform::LOCAL_MODELS {
+    if !crate::platform::local_models() {
         return Backend::NoModel;
     }
     match alcyo_models::current(models) {
@@ -3509,7 +3509,7 @@ impl Workbench {
     fn start_search(&mut self) {
         // The meaning model runs as a program of its own, which the iPad does not allow; there meetings are
         // searched for their words instead (ipad.rs).
-        if !crate::platform::LOCAL_MODELS {
+        if !crate::platform::OWN_PROGRAMS {
             return;
         }
         let (Some(store), Some(data)) = (&self.store, self.models.parent()) else { return };
@@ -3611,7 +3611,7 @@ impl Workbench {
         if !self.form.saved.meeting_search {
             return None;
         }
-        if !crate::platform::LOCAL_MODELS {
+        if !crate::platform::OWN_PROGRAMS {
             return Some((t("ipad-search-words").to_string(), false));
         }
         let model = alcyo_models::embedding();
@@ -5166,7 +5166,7 @@ impl Workbench {
             model: value(&self.form.model),
             // An empty field keeps the saved key, which is never shown again.
             api_key: if key.is_empty() { self.form.saved.api_key.clone() } else { key },
-            enabled: self.form.remote || !crate::platform::LOCAL_MODELS,
+            enabled: self.form.remote || !crate::platform::local_models(),
             diarize: self.form.saved.diarize,
             turn_pages: self.form.saved.turn_pages,
             glossary: self.form.saved.glossary.clone(),
@@ -8430,7 +8430,7 @@ impl Render for Workbench {
                             .child(button("test-settings", t("test")).on_click(cx.listener(|this, _, _, cx| this.test_settings(cx)))),
                     );
                 // Where no board model can run on the device (the iPad), the remote one is the only choice.
-                let local = crate::platform::LOCAL_MODELS;
+                let local = crate::platform::local_models();
                 let remote_shown = self.form.remote || !local;
                 div()
                     .flex()

@@ -25,6 +25,7 @@ alcyo-fonts = { path = "crates/fonts" }
 alcyo-import = { path = "crates/import" }
 alcyo-update = { path = "crates/update" }
 alcyo-search = { path = "crates/search" }
+alcyo-llama = { path = "crates/llama" }
 
 [profile.dev]
 opt-level = 1
