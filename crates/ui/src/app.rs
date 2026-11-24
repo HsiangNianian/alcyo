@@ -7357,7 +7357,36 @@ impl Render for Workbench {
                     .shadow(theme::shadow(theme::Lift::Float))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .when(editing, |d| d.child(div().w(px(TOOLBAR_W_EDITING - 16.0)).child(Input::new(&self.label_input).small())))
+                    .when(editing && !crate::platform::ipad_layout(), |d| d.child(div().w(px(TOOLBAR_W_EDITING - 16.0)).child(Input::new(&self.label_input).small())))
+                    // On the iPad the words being written are a card of their own, as the circle's card is: a roomy
+                    // field and a check that puts them on the board, as the keyboard's return does.
+                    .when(editing && crate::platform::ipad_layout(), |d| {
+                        d.h(px(52.))
+                            .gap(px(6.))
+                            .pl(px(14.))
+                            .pr(px(6.))
+                            .rounded(px(18.))
+                            .border_color(rgb(pal().line))
+                            .bg(rgb(pal().surface))
+                            .shadow(theme::shadow(theme::Lift::Sheet))
+                            .child(div().w(px(TOOLBAR_W_EDITING - 40.0)).text_size(px(16.)).child(Input::new(&self.label_input).appearance(false)))
+                            .child(
+                                div()
+                                    .id("ipad-label-done")
+                                    .flex_none()
+                                    .size(px(40.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(rgb(pal().accent))
+                                    .text_color(rgb(0xff_ff_ff))
+                                    .cursor_pointer()
+                                    .active(|d| d.opacity(0.8))
+                                    .child(icon("ipad/check").size(px(18.)))
+                                    .on_click(cx.listener(|this, _, window, cx| this.finish_label(true, window, cx))),
+                            )
+                    })
                     // A document's card opens its pages, as a double click on it does.
                     .when_some(opens.filter(|_| !editing), |d, doc| {
                         d.child(
@@ -9451,7 +9480,8 @@ impl Render for Workbench {
                 })
                 .tooltip(|window, cx| Tooltip::new(t("drag-to-move-the-map")).build(window, cx))
                 // The handle shows only once the pointer is over the map, so at rest the map is just the board.
-                .child(div().w(px(28.)).h(px(3.)).rounded_full().group_hover("minimap", |s| s.bg(rgb(pal().line))).group_hover("map-grip", |s| s.bg(rgb(pal().faint))))
+                // On the iPad there is no pointer to hover, so the handle always shows: it is how the map is moved.
+                .child(div().w(px(28.)).h(px(3.)).rounded_full().when(ipad, |s| s.w(px(36.)).h(px(4.)).bg(rgb(pal().faint))).group_hover("minimap", |s| s.bg(rgb(pal().line))).group_hover("map-grip", |s| s.bg(rgb(pal().faint))))
                 // Closing it is offered on the map itself, once the pointer is over it.
                 .child(
                     div()

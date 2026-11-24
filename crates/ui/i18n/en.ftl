@@ -712,7 +712,7 @@ presenter-speakers = { $n ->
         [one] { $n } speaker
        *[other] { $n } speakers
     }
-presenter-captions = Captions
+presenter-captions = Board + captions
 presenter-board-only = Board only
 presenter-room-sees-this = The room sees this
 presenter-leave = Leave presenter
@@ -720,3 +720,20 @@ presenter-meetings-and-settings = Meetings and settings
 presenter-follow-live = Follow live
 # Meeting search on the iPad, where the meaning model cannot run yet.
 ipad-search-words = On iPad, search matches words for now
+# The iPad's third round of feedback: menus, the glossary page, dialogs, the model's first start, search.
+ipad-model-compiling = The model is being prepared for this iPad's graphics. This takes about half a minute, once for each version of Alcyo. Next time it opens right away.
+ipad-export-ready = Ready: save it to Files or send it from the share sheet.
+ipad-share-again = Share again
+ipad-glossary-add = Add a name
+ipad-glossary-change = Change a name
+ipad-glossary-name = Name
+ipad-glossary-heard = Heard as
+ipad-test-connection = Test connection
+ipad-test-hint = Sends one short request with these settings.
+ipad-search-by-words = Search what was said
+ipad-search-by-words-hint = Finds meetings by the words in their transcript, boards and summary, from the search box on the meetings page.
+ipad-search-meaning-later = Search by meaning, which also finds what was said in other words, needs a model server of its own, and iPadOS does not let an app start one. It is not on iPad yet.
+home-word-search = Words in what was said · { $n ->
+        [one] { $n } meeting
+       *[other] { $n } meetings
+    }

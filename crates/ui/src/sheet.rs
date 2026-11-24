@@ -1296,6 +1296,20 @@ impl Workbench {
             look_group.into_any_element(),
             listening.into_any_element(),
             div().flex().flex_col().gap(px(8.)).child(label(t("ipad-pencil-touch"), None)).child(pencil).into_any_element(),
+            // Search: by the words themselves here, as search by meaning needs a server of its own, which iPadOS does
+            // not let an app start.
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(label(t("search"), None))
+                .child(group(vec![row()
+                    .min_h(px(64.))
+                    .child(div().flex_none().size(px(30.)).flex().items_center().justify_center().rounded(px(8.)).bg(rgb(0x8e_8e_93)).text_color(rgb(0xff_ff_ff)).child(icon("ipad/search").size(px(17.))))
+                    .child(titled(t("ipad-search-by-words"), Some(t("ipad-search-by-words-hint").to_string())))
+                    .into_any_element()]))
+                .child(div().px(px(4.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(pal().faint)).child(t("ipad-search-meaning-later")))
+                .into_any_element(),
         ]
     }
 
