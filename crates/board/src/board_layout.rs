@@ -897,8 +897,8 @@ mod clip_tests {
         g.extra.insert("underlay".into(), json!({ "w": 800.0, "h": 1000.0 }));
         let clip = Clip { src: "p.jpg".into(), pw: 800.0, ph: 1000.0, x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
         let id = g.add_clip("Fig. 3", "", &clip);
-        g.annotate(Annotation { tool: "green".into(), on: Some(id.clone()), points: vec![[0.1, 0.5], [0.9, 0.5]] });
-        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[100.0, 100.0], [200.0, 120.0]] });
+        g.annotate(Annotation { tool: "green".into(), on: Some(id.clone()), points: vec![[0.1, 0.5], [0.9, 0.5]], anchor: None });
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[100.0, 100.0], [200.0, 120.0]], anchor: None });
         let l = StableLayout::default().layout(&g, &mut crate::sugiyama::first_diagram);
         let card = l.clips[0].clone();
         let mut glyphs = crate::glyphs::Glyphs::from_checkout(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))).unwrap();
@@ -956,9 +956,9 @@ mod clip_tests {
     fn the_model_is_told_what_was_drawn_by_hand_and_notes_on_a_clip_are_shown() {
         use crate::graph::Annotation;
         let mut g = paper();
-        g.annotate(Annotation { tool: "green".into(), on: None, points: vec![[110.0, 128.0], [200.0, 128.0]] });
+        g.annotate(Annotation { tool: "green".into(), on: None, points: vec![[110.0, 128.0], [200.0, 128.0]], anchor: None });
         g.apply(&crate::graph::parse_ops("C n2\nK n3 「worth a rerun」"));
-        g.annotate(Annotation { tool: "pen".into(), on: Some("n3".into()), points: vec![[0.1, 0.5], [0.9, 0.5]] });
+        g.annotate(Annotation { tool: "pen".into(), on: Some("n3".into()), points: vec![[0.1, 0.5], [0.9, 0.5]], anchor: None });
         let told = g.describe();
         assert!(told.contains("n1 [原文] Table 2: Ablation（手动绿色高亮）"), "{told}");
         assert!(told.contains("n3 [摘录] Removing the residual path（手写红笔）"), "{told}");
@@ -998,8 +998,8 @@ mod clip_tests {
         let clip = Clip { src: "p.jpg".into(), pw: 800.0, ph: 1000.0, x: 100.0, y: 100.0, w: 400.0, h: 100.0 };
         let id = from.add_clip("Table 4", "Batch-8 41ms", &clip);
         from.apply(&crate::graph::parse_ops(&format!("M {id} 星标")));
-        from.annotate(Annotation { tool: "pen".into(), on: Some(id.clone()), points: vec![[0.1, 0.5], [0.9, 0.5]] });
-        from.annotate(Annotation { tool: "yellow".into(), on: None, points: vec![[0.0, 0.0], [10.0, 0.0]] });
+        from.annotate(Annotation { tool: "pen".into(), on: Some(id.clone()), points: vec![[0.1, 0.5], [0.9, 0.5]], anchor: None });
+        from.annotate(Annotation { tool: "yellow".into(), on: None, points: vec![[0.0, 0.0], [10.0, 0.0]], anchor: None });
         let drawn = from.drawn_on(&id);
         assert_eq!(drawn.len(), 1, "only what is on the card goes with it");
         let marks = from.nodes.iter().find(|n| n.id == id).unwrap().marks.clone();
@@ -1020,7 +1020,7 @@ mod clip_tests {
         use crate::graph::Annotation;
         let mut g = Graph::default();
         for tool in ["yellow", "pen", "green"] {
-            g.annotate(Annotation { tool: tool.into(), on: None, points: vec![[0.0, 0.0], [10.0, 0.0]] });
+            g.annotate(Annotation { tool: tool.into(), on: None, points: vec![[0.0, 0.0], [10.0, 0.0]], anchor: None });
         }
         g.erase(&[0, 2]);
         assert_eq!(g.annotations().iter().map(|a| a.tool.as_str()).collect::<Vec<_>>(), ["pen"]);

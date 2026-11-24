@@ -311,6 +311,13 @@ pub fn catch_up(asked: &Graph, now: &Graph, rewritten: &Graph) -> Graph {
     }
     edges.retain(|e| present.contains(e.from.as_str()) && present.contains(e.to.as_str()));
     graph.edges = edges;
+    // What was drawn by hand is never the model's: the strokes are as they are now, drawn meanwhile or erased.
+    match now.extra.get("annotations") {
+        Some(drawn) => graph.extra.insert("annotations".into(), drawn.clone()),
+        None => graph.extra.remove("annotations"),
+    };
+    // Erasing nothing drops the lines on a clip the rewrite let go.
+    graph.erase(&[]);
     graph
 }
 
@@ -616,6 +623,25 @@ mod tests {
         assert!(!caught.nodes.iter().any(|n| n.label == "旧的一条"), "deleted since, so gone");
         let ids: HashSet<&str> = caught.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids.len(), caught.nodes.len(), "no id twice");
+    }
+
+    #[test]
+    fn strokes_drawn_while_the_model_thought_are_kept() {
+        use alcyo_board::graph::{Anchor, Annotation};
+        let mut asked = Graph::default();
+        asked.apply(&parse_ops("T 「议题」\nL 「议题」 「一」"));
+        asked.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[0.0, 0.0], [5.0, 5.0]], anchor: None });
+        let mut now = asked.clone();
+        let one = now.nodes.iter().find(|n| n.label == "一").unwrap().id.clone();
+        now.annotate(Annotation { tool: "pen-blue".into(), on: None, points: vec![[10.0, 10.0], [50.0, 12.0]], anchor: Some(Anchor { id: one, at: [8.0, 4.0] }) });
+        let rewritten = rebuild(&asked, &parse("T 议题\n  L 一")).unwrap();
+        assert_eq!(rewritten.annotations().len(), 1, "the rewrite only knows the board as asked");
+        let caught = catch_up(&asked, &now, &rewritten);
+        assert_eq!(caught.annotations(), now.annotations());
+        // Erased meanwhile: gone from the caught-up board too.
+        let mut cleared = asked.clone();
+        cleared.erase(&[0]);
+        assert!(!catch_up(&asked, &cleared, &rewritten).has_annotations());
     }
 
     #[test]

@@ -869,8 +869,8 @@ mod tests {
         let mut live = loaded(old, Origin::Current);
         assert_eq!(live.graph.annotations().len(), 2, "a meeting from before the black and blue pens reads as it was");
         let mut g = live.graph.clone();
-        g.annotate(Annotation { tool: "pen-blue".into(), on: None, points: vec![[0.0, 0.0], [8.0, 8.0]] });
-        g.annotate(Annotation { tool: "pen-black".into(), on: None, points: vec![[0.0, 8.0], [8.0, 0.0]] });
+        g.annotate(Annotation { tool: "pen-blue".into(), on: None, points: vec![[0.0, 0.0], [8.0, 8.0]], anchor: None });
+        g.annotate(Annotation { tool: "pen-black".into(), on: None, points: vec![[0.0, 8.0], [8.0, 0.0]], anchor: None });
         live.change_board(g, Value::Null);
         let saved = Value::Object(live.snapshot());
         let back = loaded(saved, Origin::Current);
@@ -921,7 +921,7 @@ mod tests {
         let mut live = Live::new();
         assert!(!live.has_content());
         let mut graph = live.graph.clone();
-        graph.annotate(alcyo_board::graph::Annotation { tool: "pen-black".into(), on: None, points: vec![[1.0, 1.0], [9.0, 4.0]] });
+        graph.annotate(alcyo_board::graph::Annotation { tool: "pen-black".into(), on: None, points: vec![[1.0, 1.0], [9.0, 4.0]], anchor: None });
         live.change_board(graph, json!({}));
         assert!(live.has_content(), "a pen stroke on the board is something to save");
     }
