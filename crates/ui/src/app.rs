@@ -2623,6 +2623,13 @@ impl Workbench {
                     let id = self.next_batch;
                     let arrived = Instant::now();
                     let text = lines.last().map_or(String::new(), |l| l.text.clone());
+                    // A rewrite may have taken away what strokes were drawn over: they stay where they were.
+                    let graph = if graph.has_loose_anchors() {
+                        let before = self.ink.borrow().targets.clone();
+                        self.session().settle_anchors(&before)
+                    } else {
+                        graph
+                    };
                     let mut ink = self.ink.borrow_mut();
                     let strokes = ink.update(&graph, id);
                     if strokes > 0 {
@@ -4580,13 +4587,18 @@ impl Workbench {
             (ink.mark_tool, card)
         };
         let annotation = match card {
-            Some(c) => Annotation { tool: tool.to_string(), on: Some(c.id.clone()), points: line.iter().map(|p| [(f64::from(p[0]) - c.x) / c.w, (f64::from(p[1]) - c.y) / c.h]).collect() },
+            Some(c) => Annotation { tool: tool.to_string(), on: Some(c.id.clone()), points: line.iter().map(|p| [(f64::from(p[0]) - c.x) / c.w, (f64::from(p[1]) - c.y) / c.h]).collect(), anchor: None },
             None => match self.live.graph.underlay() {
                 Some((w, h)) if f64::from(line[0][0]) <= w && f64::from(line[0][1]) <= h && line[0][0] >= 0.0 && line[0][1] >= 0.0 => {
-                    Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() }
+                    Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect(), anchor: None }
                 }
-                // On the iPad the Pencil marks the board itself too, where the lines stay as they were drawn.
-                _ if crate::platform::ipad_layout() => Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() },
+                // On the iPad the Pencil marks the board itself too. A line drawn over something holds on to it,
+                // so it moves with it when the board is laid out again.
+                _ if crate::platform::ipad_layout() => {
+                    let points: Vec<[f64; 2]> = line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+                    let anchor = alcyo_board::graph::anchor_for(&points, &self.ink.borrow().targets);
+                    Annotation { tool: tool.to_string(), on: None, points, anchor }
+                }
                 _ => {
                     self.notice = Some(t("marks-go-on-an-imported").to_string());
                     return;
@@ -4710,7 +4722,9 @@ impl Workbench {
                         Some(id) => Some(*cards.get(id.as_str())?),
                         None => None,
                     };
-                    let points: Vec<[f64; 2]> = a.points.iter().map(|p| card.map_or(*p, |c| [c.x + p[0] * c.w, c.y + p[1] * c.h])).collect();
+                    // A stroke anchored to a node is where the node has taken it.
+                    let [dx, dy] = a.anchor.as_ref().and_then(|an| ink.targets.iter().find(|t| t.id == an.id).map(|t| [t.x - an.at[0], t.y - an.at[1]])).unwrap_or([0.0, 0.0]);
+                    let points: Vec<[f64; 2]> = a.points.iter().map(|p| card.map_or([p[0] + dx, p[1] + dy], |c| [c.x + p[0] * c.w, c.y + p[1] * c.h])).collect();
                     let reach = f64::from(ERASER_W + annotation_look(&a.tool).2) / 2.0;
                     erased(&points, line, reach).then_some(i)
                 })
@@ -4753,7 +4767,11 @@ impl Workbench {
         if !self.editable() {
             return;
         }
-        let graph = self.session().edit(ops);
+        let mut graph = self.session().edit(ops);
+        if graph.has_loose_anchors() {
+            let before = self.ink.borrow().targets.clone();
+            graph = self.session().settle_anchors(&before);
+        }
         self.next_batch += 1;
         let mut ink = self.ink.borrow_mut();
         ink.update(&graph, self.next_batch);
