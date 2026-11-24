@@ -68,13 +68,17 @@ jobs:
           echo "$MODEL_SHA256  model/$MODEL" | shasum -a 256 -c
           tar -xzf llama/llama-server-embedded-macos-arm64.tar.gz -C llama/unpacked
       - name: Start, ask, stop, twice
+        # bash as named, so a failure inside the pipe fails the step.
+        shell: bash
         env:
           ALCYO_LLAMA_LIB_DIR: ${{ github.workspace }}/llama/unpacked
         run: |
-          # The arguments the iPad starts it with (crates/agent/src/lib.rs, server_args).
-          cargo run --release -p alcyo-llama --example smoke -- "model/$MODEL" chat \
+          cargo build --release -p alcyo-llama --example smoke
+          # The arguments the iPad starts it with (crates/agent/src/lib.rs, embedded_args).
+          target/release/examples/smoke "model/$MODEL" chat \
             -c 6144 --jinja -ngl auto --fit on -fa on -ctk q8_0 -ctv q8_0 --cache-ram 256 2> smoke.log | tee smoke.txt
           { echo '```'; cat smoke.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          tail -1 smoke.txt | grep -qx ok
       - name: The server's log
         if: always()
         run: grep -vE '^\s*$' smoke.log | tail -150 || true

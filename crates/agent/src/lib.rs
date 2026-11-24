@@ -818,6 +818,7 @@ fn end_with_this_process(child: u32) {
 
 /// A running model server: a program of its own on the desktop, a thread of this app on the iPad.
 enum Running {
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     Child(Child),
     #[cfg(target_os = "ios")]
     Embedded(alcyo_llama::Server),

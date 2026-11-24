@@ -69,6 +69,14 @@ fn link(lib: &Path, os: &str) {
         for framework in ["Foundation", "Metal", "MetalKit", "Accelerate"] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
+        // The Metal backend asks `@available(...)` for systems newer than the one built for, which clang answers
+        // from its runtime library; rustc links without it.
+        let (sdk, runtime) = if os == "ios" { ("iphoneos", "clang_rt.ios") } else { ("macosx", "clang_rt.osx") };
+        let resources = Command::new("xcrun").args(["--sdk", sdk, "clang", "--print-resource-dir"]).output().ok().filter(|out| out.status.success());
+        if let Some(darwin) = resources.map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("lib/darwin")).filter(|dir| dir.join(format!("lib{runtime}.a")).is_file()) {
+            println!("cargo:rustc-link-search=native={}", darwin.display());
+            println!("cargo:rustc-link-lib=static={runtime}");
+        }
     } else {
         println!("cargo:rustc-link-lib=stdc++");
     }
