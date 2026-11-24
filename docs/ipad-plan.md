@@ -39,7 +39,7 @@ faster or lighter. Today's first line takes about 0.5 s on an RTX 3060 Laptop, s
 **Done: B.** A mistral.rs spike (branch `spike/mistralrs-ios`) refused the default model on a CI Mac, so the iPad runs
 llama.cpp's own server inside the app:
 
-- **Library.** Our fork, HsiangNianian/llama.cpp, tag `alcyo-b11954-1` (branch `alcyo/b11954`, upstream b11954 as the
+- **Library.** Our fork, HsiangNianian/llama.cpp, tag `alcyo-b11954-2` (branch `alcyo/b11954`, upstream b11954 as the
   desktop uses), adds `llama_server_main(argc, argv)`, which installs no signal handlers and never exits the process, and
   `llama_server_shutdown()`, which may be called from any thread at any time and also cancels a model still loading.
   `scripts/build-llama-embedded.sh` builds it as static libraries with Metal and its shaders built in, once per tag;
