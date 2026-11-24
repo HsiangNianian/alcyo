@@ -2906,7 +2906,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-ios"
 version = "0.3.11"
-source = "git+https://github.com/HsiangNianian/gpui-pre-ios?rev=7261cfd56db5bfe15ba1f85f836097a3bfb986d9#7261cfd56db5bfe15ba1f85f836097a3bfb986d9"
+source = "git+https://github.com/HsiangNianian/gpui-pre-ios?rev=d67d5304e5d7f732737660426d583de9e6472c13#d67d5304e5d7f732737660426d583de9e6472c13"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
