@@ -1,4 +1,5 @@
-//! Start the built-in server, ask it once, stop it, and do it all again, timing each step:
+//! Start the built-in server, ask it once and stop it, three times over, timing each step and saying how much memory
+//! the process holds after each stop, so memory not given back would show as growth:
 //!
 //!   cargo run --release -p alcyo-llama --features mac --example smoke -- <model.gguf> [chat|embed] [server args…]
 //!
@@ -17,7 +18,8 @@ fn main() -> Result<()> {
     let kind = args.next().unwrap_or_else(|| "chat".into());
     let extra: Vec<String> = args.collect();
     println!("memory: physical {:?} bytes, available {:?} bytes", alcyo_llama::physical_memory(), alcyo_llama::available_memory());
-    for round in 1..=2 {
+    println!("before: {}", memory());
+    for round in 1..=3 {
         println!("round {round}");
         let mut server_args = vec!["-m".to_string(), model.clone(), "--host".into(), "127.0.0.1".into(), "--port".into(), PORT.to_string(), "-np".into(), "1".into()];
         if kind == "embed" {
@@ -57,7 +59,7 @@ fn main() -> Result<()> {
 
         let stopping = Instant::now();
         let code = server.stop()?;
-        println!("  stopped in {:.2} s, exit {code}", stopping.elapsed().as_secs_f64());
+        println!("  stopped in {:.2} s, exit {code}; {}", stopping.elapsed().as_secs_f64(), memory());
         anyhow::ensure!(ureq::get(&health).timeout(Duration::from_secs(1)).call().is_err(), "still answering after it stopped");
     }
 
@@ -74,4 +76,23 @@ fn main() -> Result<()> {
     println!("stopped while loading in {:.2} s, exit {code}", stopping.elapsed().as_secs_f64());
     println!("ok");
     Ok(())
+}
+
+/// What this process holds: resident and, on a Mac, its footprint (what iPadOS counts against an app), in MB.
+fn memory() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
+        }
+        // rusage_info_v0: a 16-byte UUID, then user and system time, idle and interrupt wakeups, page-ins, wired,
+        // resident size and the footprint, each 64 bits.
+        let mut info = [0_u64; 16];
+        // SAFETY: the buffer is larger than rusage_info_v0, the flavor asked for.
+        if unsafe { proc_pid_rusage(std::process::id() as i32, 0, info.as_mut_ptr()) } == 0 {
+            return format!("resident {} MB, footprint {} MB", info[8] >> 20, info[9] >> 20);
+        }
+    }
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    status.lines().find(|l| l.starts_with("VmRSS")).map_or_else(|| "memory unknown".into(), |l| l.split_whitespace().collect::<Vec<_>>().join(" "))
 }

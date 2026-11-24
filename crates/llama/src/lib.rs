@@ -27,6 +27,16 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 /// How long a stop may take before it is given up on: a reply being written finishes first.
 const STOP_WAIT: Duration = Duration::from_secs(30);
 
+/// Set once the app is ending, when the system frees everything anyway: a stop then asks once and does not wait.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// The app is ending (iPadOS's `applicationWillTerminate`): from now on stopping a server does not wait for it, so
+/// nothing holds up the end.
+pub fn quitting() {
+    QUITTING.store(true, Ordering::SeqCst);
+    shutdown();
+}
+
 /// A server running on a thread of this process. Dropping it stops it.
 pub struct Server {
     thread: Option<JoinHandle<i32>>,
@@ -85,6 +95,10 @@ impl Server {
 
     fn stop_and_wait(&mut self) -> Result<i32> {
         let Some(thread) = self.thread.take() else { return Ok(self.exit.unwrap_or(0)) };
+        if QUITTING.load(Ordering::SeqCst) {
+            shutdown();
+            return Ok(0);
+        }
         let started = Instant::now();
         // Asked again until it ends: a stop that comes just as the server starts its loop can be missed once.
         while !thread.is_finished() {
