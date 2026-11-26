@@ -74,8 +74,8 @@ fn groups(lengths: &[usize], tokens: usize, sequences: usize) -> Vec<std::ops::R
 
 #[cfg(not(llama_missing))]
 mod ffi {
-    //! What of llama.h is used, mirrored from our fork at commit db229e2c3ab18ed12ee32a1e0178fdf6b91a6422 (tag
-    //! alcyo-b11954-2, the libraries crates/llama links). The parameter structs are passed and returned by value,
+    //! What of llama.h is used, mirrored from our fork at commit 1611c3b96f8a3a90cad798cdaae16adcb1b2f60e (tag
+    //! alcyo-b11954-3, the libraries crates/llama links). The parameter structs are passed and returned by value,
     //! so their fields must match that header's exactly, in order and type; a newer llama.cpp needs them checked
     //! again. Their sizes on a 64-bit system are asserted below, from a C program built against the header.
     #![allow(non_camel_case_types, dead_code)]

@@ -15,6 +15,7 @@ pub use embed::Embedder;
 use anyhow::{bail, Context, Result};
 use std::ffi::{c_char, c_int, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -30,8 +31,71 @@ pub const BUILT_IN: bool = !cfg!(llama_missing);
 /// The server keeps its state in globals, so only one runs at a time.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// How long a stop may take before it is given up on: a reply being written finishes first.
+/// How long a stop may take before it is given up on. A reply being written is cut short and a decode under way
+/// aborted (the fork's `llama_server_shutdown` from alcyo-b11954-3 on), so it takes a second or two; before that, a
+/// reply being sent held the stop until its client gave up, minutes later.
 const STOP_WAIT: Duration = Duration::from_secs(30);
+
+/// How long a start waits for a server whose stop was given up on to end by itself, asking it again meanwhile.
+const LINGER_WAIT: Duration = Duration::from_secs(60);
+
+/// The thread of a server whose stop was given up on ([`StopTimedOut`]): it still holds the server's globals and
+/// the model's memory, so nothing starts until it has ended ([`Server::start`] waits for it).
+static LINGERING: Mutex<Option<JoinHandle<i32>>> = Mutex::new(None);
+
+/// A stop that was given up on: the server's thread is left to end by itself, and the next start waits for it.
+#[derive(Debug)]
+pub struct StopTimedOut(pub Duration);
+
+impl std::fmt::Display for StopTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the local model did not stop within {} s", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for StopTimedOut {}
+
+/// A start refused because a server whose stop was given up on is still ending: it can be tried again later.
+#[derive(Debug)]
+pub struct StillStopping;
+
+impl std::fmt::Display for StillStopping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the local model is still stopping")
+    }
+}
+
+impl std::error::Error for StillStopping {}
+
+/// Whether a server whose stop was given up on is still ending.
+pub fn stopping() -> bool {
+    LINGERING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|t| !t.is_finished())
+}
+
+/// Wait at most `limit` for a server whose stop was given up on to end, asking it to again meanwhile. Whether none
+/// is left.
+pub fn wait_stopped(limit: Duration) -> bool {
+    let started = Instant::now();
+    loop {
+        let mut lingering = LINGERING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match lingering.take() {
+            None => return true,
+            Some(thread) if thread.is_finished() => {
+                let _ = thread.join();
+                return true;
+            }
+            Some(thread) => {
+                *lingering = Some(thread);
+                if started.elapsed() >= limit {
+                    return false;
+                }
+            }
+        }
+        drop(lingering);
+        shutdown();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 
 /// Set once the app is ending, when the system frees everything anyway: a stop then asks once and does not wait.
 static QUITTING: AtomicBool = AtomicBool::new(false);
@@ -61,6 +125,10 @@ impl Server {
             .chain(args.iter().map(AsRef::as_ref))
             .map(|a| CString::new(a).context("an argument holds a NUL byte"))
             .collect::<Result<_>>()?;
+        // A server whose stop was given up on is waited for first: it holds the globals a new one would use.
+        if !wait_stopped(LINGER_WAIT) {
+            return Err(StillStopping.into());
+        }
         if RUNNING.swap(true, Ordering::SeqCst) {
             bail!("a local model server is already running in this app");
         }
@@ -93,13 +161,19 @@ impl Server {
         self.exit
     }
 
-    /// Stop the server and wait until it has, at most [`STOP_WAIT`]: a model still loading stops loading, and the
-    /// model's memory is given back. Returns what it exited with.
-    pub fn stop(mut self) -> Result<i32> {
-        self.stop_and_wait()
+    /// Stop the server and wait until it has, at most [`STOP_WAIT`]: a model still loading stops loading, a reply
+    /// being written is cut short, and the model's memory is given back. Returns what it exited with. A stop given up
+    /// on is a [`StopTimedOut`], and the next start waits for the server to end.
+    pub fn stop(self) -> Result<i32> {
+        self.stop_within(STOP_WAIT)
     }
 
-    fn stop_and_wait(&mut self) -> Result<i32> {
+    /// As [`Server::stop`], giving up after `limit`.
+    pub fn stop_within(mut self, limit: Duration) -> Result<i32> {
+        self.stop_and_wait(limit)
+    }
+
+    fn stop_and_wait(&mut self, limit: Duration) -> Result<i32> {
         let Some(thread) = self.thread.take() else { return Ok(self.exit.unwrap_or(0)) };
         if QUITTING.load(Ordering::SeqCst) {
             shutdown();
@@ -107,12 +181,16 @@ impl Server {
         }
         let started = Instant::now();
         // Asked again until it ends: a stop that comes just as the server starts its loop can be missed once.
-        while !thread.is_finished() {
-            if started.elapsed() > STOP_WAIT {
-                // Its thread is left to end by itself; joining could hang the app.
-                bail!("the local model did not stop within {} s", STOP_WAIT.as_secs());
-            }
+        loop {
             shutdown();
+            if thread.is_finished() {
+                break;
+            }
+            if started.elapsed() >= limit {
+                // Its thread is left to end by itself, where the next start finds it; joining could hang the app.
+                *LINGERING.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread);
+                return Err(StopTimedOut(limit).into());
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
         let code = thread.join().unwrap_or(-1);
@@ -123,7 +201,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if let Err(e) = self.stop_and_wait() {
+        if let Err(e) = self.stop_and_wait(STOP_WAIT) {
             eprintln!("{e:#}");
         }
     }
