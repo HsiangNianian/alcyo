@@ -1,0 +1,18 @@
+[package]
+name = "alcyo-diag"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# What a tester sends back about one meeting (#360): a rolling app log and structured events kept on disk, and the
+# diagnostic bundle made from them. Nothing here knows the window, the audio or the models; they report to it.
+[dependencies]
+anyhow.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json.workspace = true
+sha2 = "0.10"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

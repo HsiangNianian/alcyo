@@ -230,6 +230,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "alcyo-diag"
+version = "0.34.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
+ "zip",
+]
+
+[[package]]
 name = "alcyo-export"
 version = "0.34.1"
 dependencies = [
