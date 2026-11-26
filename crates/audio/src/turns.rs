@@ -17,7 +17,7 @@
 
 use sherpa_onnx::{OnlineSpeakerDiarization, OnlineSpeakerDiarizationConfig};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -152,11 +152,13 @@ struct Answer {
     /// Audio heard and the time it took, in seconds.
     heard: f64,
     took: f64,
+    /// Audio dropped unheard, to catch up ([`Turns::catch_up`]): it says nothing of the model's pace.
+    skipped: bool,
 }
 
 /// The model runs on a thread of its own, so the recognizers never wait for it. `None` if the system gives
 /// no thread: the ear then hears without it. Once `stop` is set, what is still queued is dropped.
-fn spawn(model: OnlineSpeakerDiarization, stop: Arc<AtomicBool>) -> Option<(Sender<Ask>, Receiver<Answer>)> {
+fn spawn(model: OnlineSpeakerDiarization, stop: Arc<AtomicBool>, skip_to: Arc<AtomicUsize>) -> Option<(Sender<Ask>, Receiver<Answer>)> {
     let (ask, asked) = channel::<Ask>();
     let (answer, answers) = channel::<Answer>();
     let rate = f64::from(model.sample_rate());
@@ -170,6 +172,17 @@ fn spawn(model: OnlineSpeakerDiarization, stop: Arc<AtomicBool>) -> Option<(Send
                     return;
                 }
                 let began = Instant::now();
+                // Audio queued for a stream since given up on, to catch up: dropped, but answered for, so what is
+                // waiting is still counted right.
+                if let Ask::Hear(samples) = &ask {
+                    if generation < skip_to.load(Ordering::Relaxed) {
+                        let heard = samples.len() as f64 / rate;
+                        if answer.send(Answer { generation, first_frame: 0, probs: vec![], heard, took: 0.0, skipped: true }).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                }
                 let heard = match ask {
                     Ask::Hear(samples) => {
                         model.accept_waveform(&samples);
@@ -187,7 +200,7 @@ fn spawn(model: OnlineSpeakerDiarization, stop: Arc<AtomicBool>) -> Option<(Send
                 };
                 let got = model.frames();
                 let took = began.elapsed().as_secs_f64();
-                if answer.send(Answer { generation, first_frame: got.first_frame, probs: got.probs, heard, took }).is_err() {
+                if answer.send(Answer { generation, first_frame: got.first_frame, probs: got.probs, heard, took, skipped: false }).is_err() {
                     return;
                 }
             }
@@ -198,11 +211,12 @@ fn spawn(model: OnlineSpeakerDiarization, stop: Arc<AtomicBool>) -> Option<(Send
 }
 
 /// The model is too slow for this machine when, over this much audio, it took more than `TOO_SLOW` of its
-/// length: with the recognizers on the same processor, it would fall ever further behind.
-const JUDGED_OVER: f64 = 30.0;
+/// length: with the recognizers on the same processor, it would fall ever further behind. A minute and a half, so a
+/// while of something else taking the processor (the board model loading) is caught up on instead ([`Turns::behind`]).
+const JUDGED_OVER: f64 = 90.0;
 const TOO_SLOW: f64 = 0.8;
-/// More audio than this waiting for the model, in seconds, is too slow at once: the queue must not grow
-/// while the 30 s above are still being heard.
+/// More audio than this waiting for the model, in seconds, is dropped to catch up: the queue must not grow
+/// while the pace above is still being judged.
 const BACKLOG: f64 = 10.0;
 /// Waiting at every step, as measuring does, gives up after this: a model that stopped answering must not
 /// hang a run.
@@ -213,6 +227,8 @@ pub(crate) struct Turns {
     answers: Receiver<Answer>,
     /// Tells the model's thread to drop what is queued and end, when this is dropped.
     stop: Arc<AtomicBool>,
+    /// Audio queued for streams before this one is dropped unheard ([`Turns::catch_up`]).
+    skip_to: Arc<AtomicUsize>,
     /// Samples sent and samples answered for, to see how much waits for the model.
     sent: usize,
     answered_samples: usize,
@@ -255,8 +271,9 @@ impl Turns {
         let width = usize::try_from(model.num_speakers()).unwrap_or(4).max(1);
         let rate = f64::from(model.sample_rate());
         let stop = Arc::new(AtomicBool::new(false));
-        let (ask, answers) = spawn(model, stop.clone())?;
-        Some(Self { ask, answers, stop, sent: 0, answered_samples: 0, rate, stalled: false, asked: 0, answered: 0, timeline: Timeline::default(), frames: VecDeque::new(), first: 0, shift: shift.max(1), generation: 0, width, pace: VecDeque::new() })
+        let skip_to = Arc::new(AtomicUsize::new(0));
+        let (ask, answers) = spawn(model, stop.clone(), skip_to.clone())?;
+        Some(Self { ask, answers, stop, skip_to, sent: 0, answered_samples: 0, rate, stalled: false, asked: 0, answered: 0, timeline: Timeline::default(), frames: VecDeque::new(), first: 0, shift: shift.max(1), generation: 0, width, pace: VecDeque::new() })
     }
 
     fn send(&mut self, ask: Ask) {
@@ -292,6 +309,14 @@ impl Turns {
         self.generation += 1;
     }
 
+    /// Fallen behind for a moment, as while the board model loads and takes the processor: drop the audio still
+    /// queued for the model and begin a new stream, rather than stop telling speakers apart for the rest of the
+    /// meeting. The new stream's slots are numbered on from the old ones', and named again as their voices are known.
+    pub(crate) fn catch_up(&mut self) {
+        self.skip_to.store(self.generation + 1, Ordering::Relaxed);
+        self.restart();
+    }
+
     /// Take the frames the model has given back; with `wait`, until it has heard everything asked.
     pub(crate) fn take(&mut self, wait: bool) {
         loop {
@@ -311,7 +336,7 @@ impl Turns {
             };
             self.answered += 1;
             self.answered_samples += (answer.heard * self.rate).round() as usize;
-            if answer.heard > 0.0 {
+            if answer.heard > 0.0 && !answer.skipped {
                 self.pace.push_back((answer.heard, answer.took));
                 while self.pace.iter().map(|p| p.0).sum::<f64>() - self.pace.front().map_or(0.0, |p| p.0) > JUDGED_OVER {
                     self.pace.pop_front();
@@ -327,11 +352,16 @@ impl Turns {
         }
     }
 
-    /// Whether the model has lately taken too long for the audio it heard, or has too much waiting for it.
+    /// Whether the model has lately taken too long for the audio it heard: it cannot keep up on this machine.
     pub(crate) fn too_slow(&self) -> bool {
         let (heard, took) = self.pace.iter().fold((0.0, 0.0), |(h, t), p| (h + p.0, t + p.1));
-        let waiting = self.sent.saturating_sub(self.answered_samples) as f64 / self.rate;
-        (heard >= JUDGED_OVER && took > heard * TOO_SLOW) || waiting > BACKLOG
+        heard >= JUDGED_OVER && took > heard * TOO_SLOW
+    }
+
+    /// Whether too much audio waits for the model, as when something else took the processor for a while: it catches
+    /// up ([`Turns::catch_up`]) rather than let the queue grow.
+    pub(crate) fn behind(&self) -> bool {
+        self.sent.saturating_sub(self.answered_samples) as f64 / self.rate > BACKLOG
     }
 
     /// Whether the model stopped answering while waited for.

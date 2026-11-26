@@ -15,7 +15,11 @@ drawing = Drawing…
 the-model-did-not-answer = The model did not answer: { $error }
 apple-s-speech-recognition-did = Apple's speech recognition did not start, so the speech models hear instead: { $error }
 could-not-write-the-summary = Could not write the summary: { $error }
-can-t-replay-while-listening = Can't replay while listening or while the model is drawing.
+can-t-replay-while-listening = Can't replay while listening.
+can-t-replay-while-drawing = { $n ->
+    [one] The model is still drawing a line. Replay once it is on the board.
+   *[other] The model is still drawing { $n } lines. Replay once they are on the board.
+}
 this-meeting-has-no-board = This meeting has no board history to replay.
 could-not-connect = Could not connect: { $error }
 could-not-start-the-new = Could not start the new version: { $error }
@@ -350,6 +354,9 @@ ipad-on-this-ipad = On this iPad
 ipad-local-card = Runs on the iPad's chip. Private and offline; needs 3 GB free.
 ipad-model-unloaded-memory = The local model was stopped because the iPad is low on memory. It starts again with the next line.
 ipad-restart-failed = Couldn't free the old model's memory. Swipe Alcyo away in the app switcher and open it again.
+local-model-slow-to-stop = The local model is taking a while to stop. New lines wait, and are drawn once it has started again.
+local-model-missed-lines = The local model stopped answering. The lines it missed are marked: tap one to draw it again.
+local-model-not-answering = the local model is not answering. Try again in a moment.
 # Over the remote model's fields, once it answered: how long it took.
 ipad-connected = Connected · { $ms } ms
 ipad-checking = Checking…

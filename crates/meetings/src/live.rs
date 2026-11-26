@@ -3,7 +3,7 @@
 
 use crate::store::{new_id, Loaded, Origin};
 use alcyo_board::graph::{Graph, Kind};
-use alcyo_board::speakers::{identify_in_slot, move_sentence, raised_by, rename_by, rename_by_in_steps, rename_voice, Voice};
+use alcyo_board::speakers::{identify_in_slot, move_sentence, MOST_SPEAKERS, raised_by, rename_by, rename_by_in_steps, rename_voice, Voice};
 use alcyo_board::steps::{diff, ink_only, replay};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -457,12 +457,31 @@ impl Live {
     pub fn identify_voice(&mut self, voiceprint: &[f32], seconds: f64, slot_name: Option<&str>) -> Option<String> {
         let print: Vec<f64> = voiceprint.iter().map(|x| f64::from(*x)).collect();
         let taken: Vec<&str> = self.lines.iter().filter_map(|l| l["speaker"].as_str()).collect();
-        let name = identify_in_slot(&mut self.voices, &print, seconds, &taken, slot_name)?;
+        let most = self.participants().unwrap_or(MOST_SPEAKERS);
+        let name = identify_in_slot(&mut self.voices, &print, seconds, &taken, slot_name, most)?;
         // The line this voice is for is the next one added.
         self.prints.insert(self.lines.len(), print);
         self.voices_changed = true;
         self.touch();
         Some(name)
+    }
+
+    /// How many people the meeting was said to have when it started, 1 to [`MOST_SPEAKERS`]; `None` for "Auto". Voices
+    /// are told apart up to that many, never more ([`identify_in_slot`]).
+    pub fn participants(&self) -> Option<usize> {
+        self.raw.get("participants").and_then(Value::as_u64).map(|n| n as usize).filter(|n| (1..=MOST_SPEAKERS).contains(n))
+    }
+
+    /// Say how many people take part, or `None` for "Auto". Saved with the meeting.
+    pub fn set_participants(&mut self, participants: Option<usize>) {
+        if participants == self.participants() {
+            return;
+        }
+        match participants.filter(|n| (1..=MOST_SPEAKERS).contains(n)) {
+            Some(n) => self.raw.insert("participants".into(), json!(n)),
+            None => self.raw.remove("participants"),
+        };
+        self.touch();
     }
 
     /// Everyone in this meeting, in the order they first spoke.
@@ -1167,6 +1186,25 @@ mod tests {
         assert_eq!(again.identify_voice(&[1.0, 0.0], 3.0, None).unwrap(), "A");
         let strange = Live::build(json!({ "id": "x", "voices": [1] }).as_object().unwrap().clone(), Origin::Current, 1).snapshot();
         assert_eq!(strange["voices"], json!([1]));
+    }
+
+    #[test]
+    fn the_number_of_participants_is_kept_and_caps_the_voices() {
+        let mut live = Live::new();
+        assert_eq!(live.participants(), None, "Auto unless said");
+        live.set_participants(Some(2));
+        let mut again = Live::build(live.snapshot(), Origin::Current, 1);
+        assert_eq!(again.participants(), Some(2), "kept with the meeting");
+        // Two people: a third voice, like neither, is the closer of them.
+        assert_eq!(again.identify_voice(&[1.0, 0.0, 0.0], 3.0, None).as_deref(), Some("A"));
+        assert_eq!(again.identify_voice(&[0.0, 1.0, 0.0], 3.0, None).as_deref(), Some("B"));
+        assert_eq!(again.identify_voice(&[0.3, 0.0, 1.0], 3.0, None).as_deref(), Some("A"));
+        assert_eq!(again.speakers(), vec!["A", "B"]);
+        // Back to Auto, and nonsense is Auto too.
+        again.set_participants(None);
+        assert!(!again.snapshot().contains_key("participants"));
+        let odd = Live::build(json!({ "id": "x", "participants": 40 }).as_object().unwrap().clone(), Origin::Current, 1);
+        assert_eq!(odd.participants(), None);
     }
 
     #[test]

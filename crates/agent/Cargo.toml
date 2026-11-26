@@ -6,9 +6,14 @@ license.workspace = true
 publish.workspace = true
 
 
+[features]
+# The board model's server inside the app on any system, as the iPad runs it, with the libraries ALCYO_LLAMA_LIB_DIR
+# names: for testing its start, stop and restart off the iPad (tests marked `embedded`).
+embedded = ["dep:alcyo-llama"]
 
 [dependencies]
 flate2 = "1"
+alcyo-llama = { workspace = true, optional = true }
 pinyin = { version = "0.11", default-features = false, features = ["plain", "heteronym"] }
 anyhow.workspace = true
 base64 = "0.22"
