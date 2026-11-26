@@ -6,8 +6,11 @@
 //! is there, whatever models those are, so a model added later shows up by itself.
 //!
 //! Anything else under `shader-cache/` was left by versions that kept one cache for every model, and is listed as
-//! that. On the iPad the system keeps Metal's own cache in the app's `Library/Caches/com.apple.metal`, for every
-//! model at once; it is listed too when it is there.
+//! that. On the iPad the model's graphics code is built from source as it starts (llama.cpp's Metal library is
+//! embedded as source, and no binary archive is kept), and the system caches what it compiled in the app's own
+//! `Library/Caches`, in folders named `com.apple.metal` (directly there, or under a folder of the app's bundle id).
+//! That cache serves every model at once, so it is one shared row with its real size; a model's own row there is
+//! only the note that it was built, and says no size.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -67,6 +70,8 @@ pub struct Entry {
     pub kind: Kind,
     /// What is on disk for it: a folder, or for `Older` the cache's root (its model folders aside).
     pub path: PathBuf,
+    /// Further folders that make up the same entry: Metal's cache where the system keeps it in more than one.
+    pub more: Vec<PathBuf>,
     pub bytes: u64,
     /// When a start of it last got all the way through, or else when it last changed.
     pub built: Option<SystemTime>,
@@ -75,8 +80,8 @@ pub struct Entry {
 }
 
 /// Everything in the cache under `root`, model by model as found on disk, then what is shared. `system` is Metal's
-/// own cache folder where there is one (the iPad).
-pub fn entries(root: &Path, system: Option<&Path>) -> Vec<Entry> {
+/// own cache folders where there are some (the iPad).
+pub fn entries(root: &Path, system: &[PathBuf]) -> Vec<Entry> {
     let mut out = vec![];
     if let Ok(dirs) = std::fs::read_dir(root.join(MODELS)) {
         let mut models: Vec<_> = dirs.flatten().filter(|d| d.file_type().is_ok_and(|t| t.is_dir())).collect();
@@ -86,7 +91,7 @@ pub fn entries(root: &Path, system: Option<&Path>) -> Vec<Entry> {
             let note = path.join(READY);
             let versions = std::fs::read_to_string(&note).map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()).unwrap_or_default();
             let built = std::fs::metadata(&note).or_else(|_| std::fs::metadata(&path)).and_then(|m| m.modified()).ok();
-            out.push(Entry { kind: Kind::Model(dir.file_name().to_string_lossy().into_owned()), bytes: size(&path), path, built, versions });
+            out.push(Entry { kind: Kind::Model(dir.file_name().to_string_lossy().into_owned()), bytes: size(&path), path, more: vec![], built, versions });
         }
     }
     // What older versions kept at the root, for every model.
@@ -94,11 +99,13 @@ pub fn entries(root: &Path, system: Option<&Path>) -> Vec<Entry> {
     let bytes: u64 = older.iter().map(|p| size(p)).sum();
     if !older.is_empty() {
         let built = older.iter().filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok()).max();
-        out.push(Entry { kind: Kind::Older, path: root.to_path_buf(), bytes, built, versions: vec![] });
+        out.push(Entry { kind: Kind::Older, path: root.to_path_buf(), more: vec![], bytes, built, versions: vec![] });
     }
-    if let Some(system) = system.filter(|s| s.is_dir()) {
-        let built = std::fs::metadata(system).and_then(|m| m.modified()).ok();
-        out.push(Entry { kind: Kind::System, path: system.to_path_buf(), bytes: size(system), built, versions: vec![] });
+    let found: Vec<&PathBuf> = system.iter().filter(|s| s.is_dir()).collect();
+    if let Some((first, rest)) = found.split_first() {
+        let built = found.iter().filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok()).max();
+        let bytes = found.iter().map(|p| size(p)).sum();
+        out.push(Entry { kind: Kind::System, path: first.to_path_buf(), more: rest.iter().map(|p| p.to_path_buf()).collect(), bytes, built, versions: vec![] });
     }
     out
 }
@@ -112,10 +119,12 @@ pub fn clear(entry: &Entry) -> std::io::Result<()> {
             }
             Ok(())
         }
-        // Metal's folder is the system's: what is in it goes, the folder stays.
+        // Metal's folders are the system's: what is in them goes, the folders stay.
         Kind::System => {
-            for item in std::fs::read_dir(&entry.path)?.flatten() {
-                remove(&item.path())?;
+            for dir in std::iter::once(&entry.path).chain(&entry.more) {
+                for item in std::fs::read_dir(dir)?.flatten() {
+                    remove(&item.path())?;
+                }
             }
             Ok(())
         }
@@ -133,14 +142,30 @@ pub fn in_use(entry: &Entry, running: Option<&Path>, busy: bool) -> bool {
     }
 }
 
-/// Metal's cache folder on the iPad: `Library/Caches/com.apple.metal` beside the app's data in `Library/Application
-/// Support`. `None` elsewhere.
-pub fn system_dir(data: &Path) -> Option<PathBuf> {
+/// Metal's cache folders on the iPad: every folder named `com.apple.metal` in the app's `Library/Caches`, there or a
+/// level or two down (the system has kept it under a folder of the bundle id too). `data` is the app's data folder
+/// in `Library/Application Support`. None elsewhere.
+pub fn system_dirs(data: &Path) -> Vec<PathBuf> {
     if !cfg!(target_os = "ios") {
-        return None;
+        return vec![];
     }
-    let library = data.ancestors().find(|p| p.file_name().is_some_and(|n| n == "Library"))?;
-    Some(library.join("Caches").join("com.apple.metal"))
+    let Some(library) = data.ancestors().find(|p| p.file_name().is_some_and(|n| n == "Library")) else { return vec![] };
+    metal_dirs(&library.join("Caches"), 3)
+}
+
+/// Folders named `com.apple.metal` at most `depth` levels under `dir`.
+fn metal_dirs(dir: &Path, depth: usize) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut out = vec![];
+    for entry in entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
+        if entry.file_name() == "com.apple.metal" {
+            out.push(entry.path());
+        } else if depth > 1 {
+            out.extend(metal_dirs(&entry.path(), depth - 1));
+        }
+    }
+    out.sort();
+    out
 }
 
 fn remove(path: &Path) -> std::io::Result<()> {
@@ -196,7 +221,7 @@ mod tests {
         note_ready(&root, Path::new("/m/Qwen3-4B-Q4_K_M.gguf"), "0.35.0").unwrap();
         note_ready(&root, Path::new("some-future-model.gguf"), "0.35.0").unwrap();
         std::fs::write(model_dir(&root, Path::new("some-future-model.gguf")).join("driver.bin"), vec![0u8; 4000]).unwrap();
-        let found = entries(&root, None);
+        let found = entries(&root, &[]);
         assert_eq!(found.iter().map(|e| e.kind.clone()).collect::<Vec<_>>(), vec![Kind::Model("Qwen3-4B-Q4_K_M.gguf".into()), Kind::Model("some-future-model.gguf".into())]);
         assert_eq!(found[0].versions, vec!["0.34.1", "0.35.0"]);
         assert!(found[1].bytes >= 4000);
@@ -225,24 +250,45 @@ mod tests {
         note_ready(&root, Path::new("b.gguf"), "1.0").unwrap();
         std::fs::create_dir_all(root.join("mesa_shader_cache")).unwrap();
         std::fs::write(root.join("mesa_shader_cache/index"), b"x").unwrap();
-        let found = entries(&root, None);
+        let found = entries(&root, &[]);
         assert_eq!(found.last().unwrap().kind, Kind::Older);
         clear(&found[0]).unwrap();
         clear(found.last().unwrap()).unwrap();
-        let left = entries(&root, None);
+        let left = entries(&root, &[]);
         assert_eq!(left.iter().map(|e| e.kind.clone()).collect::<Vec<_>>(), vec![Kind::Model("b.gguf".into())]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_running_model_keeps_its_cache() {
-        let entry = |kind| Entry { kind, path: PathBuf::new(), bytes: 0, built: None, versions: vec![] };
+        let entry = |kind| Entry { kind, path: PathBuf::new(), more: vec![], bytes: 0, built: None, versions: vec![] };
         let running = Some(Path::new("/models/a.gguf"));
         assert!(in_use(&entry(Kind::Model("a.gguf".into())), running, false));
         assert!(!in_use(&entry(Kind::Model("b.gguf".into())), running, false));
         assert!(in_use(&entry(Kind::Older), running, false), "shared by the model that runs");
         assert!(!in_use(&entry(Kind::System), None, false));
         assert!(in_use(&entry(Kind::Model("b.gguf".into())), None, true), "starting or stopping: wait");
+    }
+
+    /// Metal's cache is found wherever the system put it under Caches, and its folders are counted and cleared as one.
+    #[test]
+    fn metal_caches_are_found_and_shared() {
+        let caches = scratch("metal");
+        for dir in ["com.apple.metal", "app.alcyo.board/com.apple.metal"] {
+            std::fs::create_dir_all(caches.join(dir)).unwrap();
+            std::fs::write(caches.join(dir).join("functions.data"), vec![0u8; 3000]).unwrap();
+        }
+        std::fs::create_dir_all(caches.join("other")).unwrap();
+        let found = metal_dirs(&caches, 3);
+        assert_eq!(found.len(), 2);
+        let root = caches.join("shader-cache");
+        let listed = entries(&root, &found);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, Kind::System);
+        assert!(listed[0].bytes >= 6000, "both folders counted");
+        clear(&listed[0]).unwrap();
+        assert!(found.iter().all(|d| d.is_dir() && std::fs::read_dir(d).unwrap().next().is_none()), "emptied, kept");
+        let _ = std::fs::remove_dir_all(&caches);
     }
 
     #[test]

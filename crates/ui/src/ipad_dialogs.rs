@@ -3,7 +3,8 @@
 //! `app` beside ipad.rs.
 
 use super::*;
-use gpui_kit::{AnyElement, FontWeight};
+use gpui_kit::{AnyElement, BoxShadow, ElementId, FontWeight};
+use std::rc::Rc;
 
 /// How long "Copied" stands in for "Copy link" once the link is on the clipboard.
 pub(super) const COPIED_FOR: Duration = Duration::from_secs(2);
@@ -15,7 +16,7 @@ fn alpha(color: u32, a: f32) -> Hsla {
 }
 
 /// A grey that reads on the dialog's white, or its dark, as a group of rows does in Settings.
-fn well() -> Hsla {
+pub(super) fn well() -> Hsla {
     if theme::is_dark() { alpha(0xff_ff_ff, 0.08) } else { alpha(0x76_76_80, 0.1) }
 }
 
@@ -72,6 +73,38 @@ pub(super) fn round_icon(id: impl Into<gpui_kit::ElementId>, glyph: &str) -> gpu
         .child(icon(glyph).size(px(19.)))
 }
 
+/// One choice in an iPad floating menu.
+pub(super) struct MenuRow {
+    pub(super) label: String,
+    pub(super) glyph: Option<&'static str>,
+    /// Shown chosen, with a check.
+    pub(super) checked: bool,
+    /// A hairline above it, between groups.
+    pub(super) apart: bool,
+    pub(super) act: Rc<dyn Fn(&mut Workbench, &mut Window, &mut Context<Workbench>)>,
+}
+
+impl MenuRow {
+    pub(super) fn new(label: impl Into<String>, act: impl Fn(&mut Workbench, &mut Window, &mut Context<Workbench>) + 'static) -> Self {
+        Self { label: label.into(), glyph: None, checked: false, apart: false, act: Rc::new(act) }
+    }
+
+    pub(super) fn glyph(mut self, glyph: &'static str) -> Self {
+        self.glyph = Some(glyph);
+        self
+    }
+
+    pub(super) fn checked(mut self, checked: bool) -> Self {
+        self.checked = checked;
+        self
+    }
+
+    pub(super) fn apart(mut self) -> Self {
+        self.apart = true;
+        self
+    }
+}
+
 /// A short note in a rounded box of its own: what to know before going on.
 fn note(lines: Vec<&'static str>) -> gpui_kit::Div {
     let p = pal();
@@ -86,6 +119,68 @@ fn note(lines: Vec<&'static str>) -> gpui_kit::Div {
 }
 
 impl Workbench {
+    /// A menu as the iPad shows one (#341): a rounded card floating under its button with 44 pt rows, each with its
+    /// icon, put away by a choice or a touch anywhere else. `trigger` opens and closes it; `above` opens it upward,
+    /// as from a bar along the bottom.
+    pub(super) fn ipad_menu(&self, id: &'static str, trigger: gpui_kit::Stateful<gpui_kit::Div>, rows: Vec<MenuRow>, above: bool, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let p = pal();
+        let dark = theme::is_dark();
+        let open = self.ipad.menu == Some(id);
+        let trigger = trigger.when(open, |d| d.bg(well())).on_click(cx.listener(move |this, _, _, cx| {
+            this.ipad.menu = if this.ipad.menu == Some(id) { None } else { Some(id) };
+            cx.notify();
+        }));
+        let holder = div().relative().flex_none().child(trigger);
+        if !open {
+            return holder;
+        }
+        let rows = rows.into_iter().enumerate().map(|(i, row)| {
+            let act = row.act.clone();
+            div()
+                .id(ElementId::Name(format!("{id}-{i}").into()))
+                .min_h(px(44.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .px(px(14.))
+                .text_size(px(15.))
+                .text_color(rgb(p.text))
+                .cursor_pointer()
+                .when(row.apart, |d| d.border_t_1().border_color(rgb(p.line)))
+                .hover(|d| d.bg(well()))
+                .active(|d| d.bg(well()).opacity(0.8))
+                .child(div().flex_none().w(px(20.)).flex().justify_center().text_color(rgb(if row.checked { p.accent } else { p.muted })).when_some(row.glyph, |d, glyph| d.child(icon(glyph).size(px(18.)))).when(row.glyph.is_none() && row.checked, |d| d.child(icon("ipad/check").size(px(16.)))))
+                .child(div().flex_1().min_w_0().whitespace_nowrap().when(row.checked, |d| d.font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.accent))).child(row.label))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.ipad.menu = None;
+                    act(this, window, cx);
+                    cx.notify();
+                }))
+        });
+        let card = div()
+            .id(ElementId::Name(format!("{id}-menu").into()))
+            .occlude()
+            .min_w(px(220.))
+            .max_h(px(440.))
+            .overflow_y_scroll()
+            .rounded(px(14.))
+            .bg(rgb(if dark { 0x2c_2c_2e } else { p.surface }))
+            .shadow(vec![
+                BoxShadow { color: alpha(0, if dark { 0.55 } else { 0.18 }), offset: point(px(0.), px(12.)), blur_radius: px(40.), spread_radius: px(0.), inset: false },
+                BoxShadow { color: if dark { alpha(0xff_ff_ff, 0.1) } else { alpha(0, 0.08) }, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false },
+            ])
+            .py(px(4.))
+            .children(rows)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.ipad.menu = None;
+                cx.notify();
+            }))
+            .with_animation(ElementId::Name(format!("{id}-menu-in").into()), gpui_kit::Animation::new(Duration::from_millis(180)).with_easing(|t: f32| 1. - (1. - t).powi(3)), move |d, t| d.opacity(t).mt(px(if above { 0. } else { 6. - 6. * (1. - t) })));
+        let anchor = if above { gpui_kit::Anchor::BottomRight } else { gpui_kit::Anchor::TopRight };
+        let place = if above { div().absolute().bottom_full().right_0().pb(px(8.)) } else { div().absolute().top_full().right_0().pt(px(6.)) };
+        holder.child(place.child(gpui_kit::deferred(gpui_kit::anchored().anchor(anchor).snap_to_window_with_margin(px(12.)).child(card)).with_priority(1)))
+    }
+
     /// Copy the share link, and say so on the button for a moment.
     pub(super) fn copy_share_link(&mut self, link: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(link));

@@ -135,6 +135,7 @@ could-not-export = Could not export: { $error }
 free-edit-content-is-not = Free-edit content is not included.
 putting-it-together = Putting it together…
 writing = Writing…
+ipad-summary-writing = Writing the summary
 the-meeting-has-moved-on = The meeting has moved on
 write-again = Write again
 copy-as-plain-text = Copy as plain text
@@ -411,12 +412,6 @@ ob-1-tip = It needs the microphone
 ob-1-tip-hint = Speech is recognized on this iPad. The sound is not uploaded or kept unless you choose to.
 ob-1-allow = Allow the microphone
 # Captions along the foot of each step's picture.
-ob-art-1 = Alcyo
-ob-art-1-2 = listens · draws
-ob-art-2 = The board model
-ob-art-2-2 = draws this
-ob-art-3 = Circle with Pencil
-ob-art-3-2 = then say it
 ob-2-title =
     Who draws
     the board?
@@ -444,6 +439,8 @@ compile-cache-empty = Nothing compiled yet: a model compiles here on its first s
 compile-cache-older = Older versions, all models
 compile-cache-system = Metal, all models
 compile-cache-built = { $size } · built { $when }
+compile-cache-built-when = built { $when }; compiled code is kept with Metal's, below
+compile-cache-noted = built; compiled code is kept with Metal's, below
 compile-cache-in-use = In use
 compile-cache-clear = Clear
 compile-cache-clear-all = Clear all
@@ -747,6 +744,10 @@ ipad-search-off = Off: the search box on the meetings page finds the words thems
 ipad-search-no-model = This build has no search model: the search box finds the words themselves.
 ipad-search-no-memory = Not memory enough free beside the board model now: the search box finds the words themselves until there is.
 ipad-search-failed = { $error }. Until it runs, the search box finds the words themselves.
+home-found-passages = { $n ->
+        [one] { $n } passage found
+       *[other] { $n } passages found
+    }
 home-word-search = Words in what was said · { $n ->
         [one] { $n } meeting
        *[other] { $n } meetings

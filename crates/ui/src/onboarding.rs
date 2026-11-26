@@ -147,16 +147,20 @@ impl Workbench {
             .top(px(art_top))
             .w(px(art_w))
             .h(px(art_h))
-            .child(gpui_kit::img(art(step)).size_full().object_fit(ObjectFit::Fill))
+            .map(|d| {
+                let image = gpui_kit::img(art(step)).size_full().object_fit(ObjectFit::Fill);
+                // The kingfisher breathes in its pool of light: a slow rise and fall of a few points, not where motion
+                // is turned down.
+                if step == 0 && !motion::reduced(self.form.saved.reduce_motion) {
+                    d.child(div().size_full().child(image).with_animation("ob-art-breathe", gpui_kit::Animation::new(Duration::from_millis(6400)).repeat(), |d, t| d.mt(px(-4.0 * (t * std::f32::consts::TAU).sin()))))
+                } else {
+                    d.child(image)
+                }
+            })
             .with_spring(ElementId::Name(format!("ob-art-{step}").into()), SpringAnimation::new(motion::SETTLE).to(true).from(false), move |d, v| {
                 let v = v.0.clamp(0., 1.);
                 d.opacity(v).left(px(art_left + went * 36. * (1. - v)))
             });
-        let (cap_left, cap_right) = match step {
-            0 => (t("ob-art-1"), t("ob-art-1-2")),
-            1 => (t("ob-art-2"), t("ob-art-2-2")),
-            _ => (t("ob-art-3"), t("ob-art-3-2")),
-        };
         let art_pane = div()
             .relative()
             .flex_none()
@@ -164,21 +168,7 @@ impl Workbench {
             .bg(rgb(if dark_art { 0x0d_0d_0e } else { pal().paper }))
             .w(px(pane_w))
             .h(px(pane_h))
-            .child(picture)
-            .child(
-                div()
-                    .absolute()
-                    .left(px(40.))
-                    .right(px(40.))
-                    .bottom(px(if upright { 24. } else { 40. }))
-                    .flex()
-                    .justify_between()
-                    .font_family(theme::MONO)
-                    .text_size(px(13.))
-                    .text_color(rgb(if dark_art { 0xc4_c4_c4 } else { pal().faint }))
-                    .child(cap_left.to_uppercase())
-                    .child(cap_right.to_uppercase()),
-            );
+            .child(picture);
 
         // Where the steps are: "1 / 3" and a bar a step, filling in as they go.
         let steps = div()

@@ -23,6 +23,7 @@ mod eval_report;
 mod check;
 mod demo_record;
 mod ink_sample;
+mod onboarding_art;
 mod export;
 mod fetch;
 mod read_pdf;
@@ -56,6 +57,7 @@ fn main() -> Result<()> {
         Some("search-eval") => search_eval::run(args),
         Some("demo-record") => demo_record::run(args),
         Some("ink-sample") => ink_sample::run(args),
+        Some("onboarding-art") => onboarding_art::run(args),
         Some("score-board") => score_board(args),
         _ => bail!("usage: check <root> ... | agent-eval <root> <output.json> ..."),
     }
