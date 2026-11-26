@@ -578,6 +578,7 @@ impl Workbench {
             };
             kept && (query.is_empty() || e.title.to_lowercase().contains(&query) || hits.contains(&e.id))
         });
+        let found = entries.len();
 
         // By day, as the sidebar has them: today, yesterday, and before.
         use chrono::{Datelike, TimeZone};
@@ -749,6 +750,8 @@ impl Workbench {
                 }))
         };
         let indexing = self.search.as_ref().and_then(|s| s.indexing.map(|done| (done, s.held)));
+        // Where search by meaning cannot run, it says it looks for the words themselves, and how many it found.
+        let word_search = (self.search.is_none() && !query.is_empty()).then(|| ta!("home-word-search", n = found));
         let chips = div()
             .absolute()
             .top(px(top + 72.))
@@ -763,6 +766,7 @@ impl Workbench {
             .child(chip("home-summary", Filter::Summary, t("home-with-summary"), counts[2], false))
             .child(chip("home-imported", Filter::Imported, t("home-imported"), counts[3], false))
             .child(div().flex_1())
+            .when_some(word_search, |d, said| d.child(div().flex_none().flex().items_center().gap(px(6.)).text_size(px(12.5)).text_color(rgb(p.faint)).whitespace_nowrap().child(icon("ipad/search").size(px(13.))).child(said)))
             .when_some(indexing, |d, ((done, total), held)| {
                 let share = if total == 0 { 0. } else { (done as f32 / total as f32).clamp(0., 1.) };
                 d.child(

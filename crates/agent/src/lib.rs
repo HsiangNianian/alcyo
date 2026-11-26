@@ -1529,6 +1529,14 @@ impl Session {
         graph.clone()
     }
 
+    /// Leave strokes anchored to nodes now gone where they were last drawn, `before` being the targets of the
+    /// board shown before the change ([`Graph::settle_anchors`]), and give back the board.
+    pub fn settle_anchors(&self, before: &[alcyo_board::board_layout::Rect]) -> Graph {
+        let mut graph = self.graph.lock().expect("graph lock");
+        graph.settle_anchors(before);
+        graph.clone()
+    }
+
     /// Put a card from the inbox on the board where it was dropped, and give back the board and its id.
     pub fn add_card(&self, label: &str, text: &str, clip: &alcyo_board::graph::Clip, marks: &[String], drawn: &[alcyo_board::graph::Annotation], at: [f64; 2]) -> (Graph, String) {
         let mut graph = self.graph.lock().expect("graph lock");

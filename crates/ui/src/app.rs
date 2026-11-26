@@ -1836,6 +1836,39 @@ fn shader_dir(models: &std::path::Path) -> PathBuf {
 /// from the moment it starts, so what is there says nothing about whether it finished.
 const SHADERS_READY: &str = "ready";
 
+/// What a finished start is noted under. The desktop's driver keeps its shaders across versions, so one start
+/// anywhere counts. The iPad's model runs inside the app, whose graphics code comes with each version, so it
+/// counts for that model and version.
+fn shaders_key(models: &std::path::Path) -> String {
+    if !cfg!(target_os = "ios") {
+        return String::new();
+    }
+    let model = alcyo_models::current(models).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    format!("{} {model}", alcyo_update::VERSION)
+}
+
+/// Whether the local model has started all the way here before, so its next start is not its first.
+fn shaders_ready(models: &std::path::Path) -> bool {
+    let key = shaders_key(models);
+    std::fs::read_to_string(shader_dir(models).join(SHADERS_READY)).is_ok_and(|noted| key.is_empty() || noted.lines().any(|l| l == key))
+}
+
+/// Note that the local model started all the way. The folder is made here too: on the iPad no server program
+/// makes it first (the model runs inside the app), so the note was never kept there and every start, after the
+/// app came back from the background or opened another meeting, looked like the first.
+fn note_shaders_ready(models: &std::path::Path) {
+    let dir = shader_dir(models);
+    let key = shaders_key(models);
+    let noted = std::fs::read_to_string(dir.join(SHADERS_READY)).unwrap_or_default();
+    if noted.lines().any(|l| l == key) && !key.is_empty() {
+        return;
+    }
+    let kept = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(SHADERS_READY), if key.is_empty() { noted } else { format!("{noted}{key}\n") }));
+    if let Err(e) = kept {
+        eprintln!("could not note the model as ready in {}: {e}", dir.display());
+    }
+}
+
 fn dir_size(dir: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries
@@ -1861,7 +1894,10 @@ struct Preparing {
 
 impl Preparing {
     fn showing(&self) -> bool {
-        !self.dismissed && (self.first_time || self.started.elapsed() > PREPARING_PAGE_AFTER)
+        // On the iPad a later start, as after the background, is only said in the status pill: the page over
+        // everything is for the first, which takes long enough to need explaining.
+        let slow = !crate::platform::ipad_layout() && self.started.elapsed() > PREPARING_PAGE_AFTER;
+        !self.dismissed && (self.first_time || slow)
     }
 
     /// How far along, from 0 to 1. Compiling reports nothing, so until tokens are counted this is an
@@ -2554,7 +2590,7 @@ impl Workbench {
             match event {
                 Event::Agent(Update::Loading) => {
                     self.status = ModelStatus::Loading;
-                    self.preparing = Some(Preparing { started: Instant::now(), first_time: !shader_dir(&self.models).join(SHADERS_READY).exists(), done: 0, total: 0, dismissed: false });
+                    self.preparing = Some(Preparing { started: Instant::now(), first_time: !shaders_ready(&self.models), done: 0, total: 0, dismissed: false });
                 }
                 Event::Agent(Update::Preparing { done, total }) => {
                     if let Some(preparing) = &mut self.preparing {
@@ -2563,7 +2599,7 @@ impl Workbench {
                 }
                 Event::Agent(Update::Ready) => {
                     if self.preparing.take().is_some() {
-                        let _ = std::fs::write(shader_dir(&self.models).join(SHADERS_READY), "");
+                        note_shaders_ready(&self.models);
                     }
                     self.status = ModelStatus::Quiet;
                     self.needs_model = false;
@@ -2623,6 +2659,13 @@ impl Workbench {
                     let id = self.next_batch;
                     let arrived = Instant::now();
                     let text = lines.last().map_or(String::new(), |l| l.text.clone());
+                    // A rewrite may have taken away what strokes were drawn over: they stay where they were.
+                    let graph = if graph.has_loose_anchors() {
+                        let before = self.ink.borrow().targets.clone();
+                        self.session().settle_anchors(&before)
+                    } else {
+                        graph
+                    };
                     let mut ink = self.ink.borrow_mut();
                     let strokes = ink.update(&graph, id);
                     if strokes > 0 {
@@ -4580,13 +4623,18 @@ impl Workbench {
             (ink.mark_tool, card)
         };
         let annotation = match card {
-            Some(c) => Annotation { tool: tool.to_string(), on: Some(c.id.clone()), points: line.iter().map(|p| [(f64::from(p[0]) - c.x) / c.w, (f64::from(p[1]) - c.y) / c.h]).collect() },
+            Some(c) => Annotation { tool: tool.to_string(), on: Some(c.id.clone()), points: line.iter().map(|p| [(f64::from(p[0]) - c.x) / c.w, (f64::from(p[1]) - c.y) / c.h]).collect(), anchor: None },
             None => match self.live.graph.underlay() {
                 Some((w, h)) if f64::from(line[0][0]) <= w && f64::from(line[0][1]) <= h && line[0][0] >= 0.0 && line[0][1] >= 0.0 => {
-                    Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() }
+                    Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect(), anchor: None }
                 }
-                // On the iPad the Pencil marks the board itself too, where the lines stay as they were drawn.
-                _ if crate::platform::ipad_layout() => Annotation { tool: tool.to_string(), on: None, points: line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect() },
+                // On the iPad the Pencil marks the board itself too. A line drawn over something holds on to it,
+                // so it moves with it when the board is laid out again.
+                _ if crate::platform::ipad_layout() => {
+                    let points: Vec<[f64; 2]> = line.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect();
+                    let anchor = alcyo_board::graph::anchor_for(&points, &self.ink.borrow().targets);
+                    Annotation { tool: tool.to_string(), on: None, points, anchor }
+                }
                 _ => {
                     self.notice = Some(t("marks-go-on-an-imported").to_string());
                     return;
@@ -4710,7 +4758,9 @@ impl Workbench {
                         Some(id) => Some(*cards.get(id.as_str())?),
                         None => None,
                     };
-                    let points: Vec<[f64; 2]> = a.points.iter().map(|p| card.map_or(*p, |c| [c.x + p[0] * c.w, c.y + p[1] * c.h])).collect();
+                    // A stroke anchored to a node is where the node has taken it.
+                    let [dx, dy] = a.anchor.as_ref().and_then(|an| ink.targets.iter().find(|t| t.id == an.id).map(|t| [t.x - an.at[0], t.y - an.at[1]])).unwrap_or([0.0, 0.0]);
+                    let points: Vec<[f64; 2]> = a.points.iter().map(|p| card.map_or([p[0] + dx, p[1] + dy], |c| [c.x + p[0] * c.w, c.y + p[1] * c.h])).collect();
                     let reach = f64::from(ERASER_W + annotation_look(&a.tool).2) / 2.0;
                     erased(&points, line, reach).then_some(i)
                 })
@@ -4753,7 +4803,11 @@ impl Workbench {
         if !self.editable() {
             return;
         }
-        let graph = self.session().edit(ops);
+        let mut graph = self.session().edit(ops);
+        if graph.has_loose_anchors() {
+            let before = self.ink.borrow().targets.clone();
+            graph = self.session().settle_anchors(&before);
+        }
         self.next_batch += 1;
         let mut ink = self.ink.borrow_mut();
         ink.update(&graph, self.next_batch);
@@ -6382,6 +6436,48 @@ impl Workbench {
                 .child(div().pt(px(2.)).font_family(theme::MONO).text_small().text_color(rgb(pal().faint)).whitespace_nowrap().child(format!(".{} ↓", kind.extension())))
         });
         let result = self.exported.as_ref().map(|result| match result {
+            // The iPad wrote the file aside and handed it to the share sheet: where it was written means nothing
+            // there, and no folder can be shown. The sheet can be had again.
+            Exported::Saved { path, text_left_out } if crate::platform::ipad_layout() => {
+                let shared = path.clone();
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .pt_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(div().text_small().font_weight(gpui_kit::FontWeight::MEDIUM).child(t("ipad-export-ready")))
+                            .child(div().text_small().text_color(rgb(pal().faint)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                            .when(*text_left_out, |d| d.child(div().text_small().text_color(rgb(pal().warning)).child(t("no-usable-font-was-found")))),
+                    )
+                    .child(
+                        div()
+                            .id("share-export")
+                            .flex_none()
+                            .h(px(38.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(16.))
+                            .rounded_full()
+                            .bg(rgb(pal().button))
+                            .text_color(rgb(pal().on_button))
+                            .text_small()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .active(|d| d.opacity(0.8))
+                            .child(icon("ipad/export").size(px(15.)))
+                            .child(t("ipad-share-again"))
+                            .on_click(move |_, _, _| crate::platform::share_file(&shared)),
+                    )
+            }
             Exported::Saved { path, text_left_out } => {
                 let shown = path.clone();
                 div()
@@ -7261,7 +7357,36 @@ impl Render for Workbench {
                     .shadow(theme::shadow(theme::Lift::Float))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .when(editing, |d| d.child(div().w(px(TOOLBAR_W_EDITING - 16.0)).child(Input::new(&self.label_input).small())))
+                    .when(editing && !crate::platform::ipad_layout(), |d| d.child(div().w(px(TOOLBAR_W_EDITING - 16.0)).child(Input::new(&self.label_input).small())))
+                    // On the iPad the words being written are a card of their own, as the circle's card is: a roomy
+                    // field and a check that puts them on the board, as the keyboard's return does.
+                    .when(editing && crate::platform::ipad_layout(), |d| {
+                        d.h(px(52.))
+                            .gap(px(6.))
+                            .pl(px(14.))
+                            .pr(px(6.))
+                            .rounded(px(18.))
+                            .border_color(rgb(pal().line))
+                            .bg(rgb(pal().surface))
+                            .shadow(theme::shadow(theme::Lift::Sheet))
+                            .child(div().w(px(TOOLBAR_W_EDITING - 40.0)).text_size(px(16.)).child(Input::new(&self.label_input).appearance(false)))
+                            .child(
+                                div()
+                                    .id("ipad-label-done")
+                                    .flex_none()
+                                    .size(px(40.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(rgb(pal().accent))
+                                    .text_color(rgb(0xff_ff_ff))
+                                    .cursor_pointer()
+                                    .active(|d| d.opacity(0.8))
+                                    .child(icon("ipad/check").size(px(18.)))
+                                    .on_click(cx.listener(|this, _, window, cx| this.finish_label(true, window, cx))),
+                            )
+                    })
                     // A document's card opens its pages, as a double click on it does.
                     .when_some(opens.filter(|_| !editing), |d, doc| {
                         d.child(
@@ -9031,12 +9156,19 @@ impl Render for Workbench {
         let speakers_panel = (self.panel == Panel::Speakers).then(|| self.speakers_panel(editable, cx));
         // A dialog for what is done in one go, over a dimmed window; clicking outside closes it.
         let dialog = |title: &'static str, body: gpui_kit::Stateful<gpui_kit::Div>, cx: &mut Context<Self>| {
+            // On the iPad a floating card over the whole screen, wherever the transcript card or anything else is.
+            if ipad {
+                return self.ipad_dialog(title, body, cx);
+            }
             let mut veil: Hsla = rgb(pal().strong).into();
             veil.a = 0.18;
             div()
                 .id("dialog-veil")
                 .occlude()
                 .absolute()
+                // Pinned to the corner: left to its static place it starts below whatever is in the flow before it.
+                .top_0()
+                .left_0()
                 .size_full()
                 .flex()
                 .items_center()
@@ -9138,7 +9270,7 @@ impl Render for Workbench {
             let (title, detail) = if p.first_time {
                 (
                     t("getting-ready-for-the-first"),
-                    t("the-model-is-compiling-for"),
+                    if cfg!(target_os = "ios") { t("ipad-model-compiling") } else { t("the-model-is-compiling-for") },
                 )
             } else {
                 (t("getting-the-model-ready"), t("this-is-taking-longer-than"))
@@ -9348,7 +9480,8 @@ impl Render for Workbench {
                 })
                 .tooltip(|window, cx| Tooltip::new(t("drag-to-move-the-map")).build(window, cx))
                 // The handle shows only once the pointer is over the map, so at rest the map is just the board.
-                .child(div().w(px(28.)).h(px(3.)).rounded_full().group_hover("minimap", |s| s.bg(rgb(pal().line))).group_hover("map-grip", |s| s.bg(rgb(pal().faint))))
+                // On the iPad there is no pointer to hover, so the handle always shows: it is how the map is moved.
+                .child(div().w(px(28.)).h(px(3.)).rounded_full().when(ipad, |s| s.w(px(36.)).h(px(4.)).bg(rgb(pal().faint))).group_hover("minimap", |s| s.bg(rgb(pal().line))).group_hover("map-grip", |s| s.bg(rgb(pal().faint))))
                 // Closing it is offered on the map itself, once the pointer is over it.
                 .child(
                     div()

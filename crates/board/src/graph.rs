@@ -332,7 +332,7 @@ impl Graph {
         self.nodes[i].marks = marks.to_vec();
         self.place(&id, at[0], at[1]);
         let mut all = self.annotations();
-        all.extend(drawn.iter().map(|a| Annotation { on: Some(id.clone()), ..a.clone() }));
+        all.extend(drawn.iter().map(|a| Annotation { on: Some(id.clone()), anchor: None, ..a.clone() }));
         self.keep_annotations(all);
         id
     }
@@ -341,6 +341,37 @@ impl Graph {
     pub fn erase(&mut self, which: &[usize]) {
         let kept: Vec<Annotation> = self.annotations().into_iter().enumerate().filter(|(i, _)| !which.contains(i)).map(|(_, a)| a).collect();
         self.keep_annotations(kept);
+    }
+
+    /// Let go of the nodes strokes were anchored to that are no longer on the board, leaving each stroke where it
+    /// was last drawn: `before` is where things stood on the board shown before this change, as
+    /// [`crate::board_layout::Layout::targets`] gave them. Says whether any stroke changed.
+    pub fn settle_anchors(&mut self, before: &[crate::board_layout::Rect]) -> bool {
+        let mut all = self.annotations();
+        let mut changed = false;
+        for a in &mut all {
+            let Some(anchor) = &a.anchor else { continue };
+            if self.nodes.iter().any(|n| n.id == anchor.id) {
+                continue;
+            }
+            if let Some(r) = before.iter().find(|r| r.id == anchor.id) {
+                let (dx, dy) = (r.x - anchor.at[0], r.y - anchor.at[1]);
+                for p in &mut a.points {
+                    (p[0], p[1]) = (p[0] + dx, p[1] + dy);
+                }
+            }
+            a.anchor = None;
+            changed = true;
+        }
+        if changed {
+            self.keep_annotations(all);
+        }
+        changed
+    }
+
+    /// Whether a stroke is anchored to a node no longer on the board, so [`Graph::settle_anchors`] has work.
+    pub fn has_loose_anchors(&self) -> bool {
+        self.has_annotations() && self.annotations().iter().any(|a| a.anchor.as_ref().is_some_and(|an| !self.nodes.iter().any(|n| n.id == an.id)))
     }
 
     /// What was drawn by hand on one clip, as it would go with the card elsewhere.
@@ -907,6 +938,50 @@ pub struct Annotation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<String>,
     pub points: Vec<[f64; 2]>,
+    /// A stroke on the board itself may hold on to what it was drawn over, so it moves with it when the board
+    /// is laid out again. The points stay board positions, true while the node stood where `at` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Anchor>,
+}
+
+/// The node a stroke on the board was drawn over, and where that node's box stood (its top left, in board
+/// units) when the stroke's points were right.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    pub id: String,
+    pub at: [f64; 2],
+}
+
+/// How far a box is grown before a stroke is measured against it, so a circle drawn around a line counts.
+const ANCHOR_REACH: f64 = 12.0;
+
+/// The node a stroke drawn at these board positions belongs to: the one among `targets` (as
+/// [`crate::board_layout::Layout::targets`] gives them) its bounds overlap most, more points inside breaking a
+/// tie. None when it is drawn on empty board.
+pub fn anchor_for(points: &[[f64; 2]], targets: &[crate::board_layout::Rect]) -> Option<Anchor> {
+    let first = points.first()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (first[0], first[1], first[0], first[1]);
+    for p in points {
+        (x0, y0, x1, y1) = (x0.min(p[0]), y0.min(p[1]), x1.max(p[0]), y1.max(p[1]));
+    }
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let mut best: Option<(&crate::board_layout::Rect, f64, usize, f64)> = None;
+    for t in targets {
+        let (tx0, ty0, tx1, ty1) = (t.x - ANCHOR_REACH, t.y - ANCHOR_REACH, t.x + t.w + ANCHOR_REACH, t.y + t.h + ANCHOR_REACH);
+        let (w, h) = (x1.min(tx1) - x0.max(tx0), y1.min(ty1) - y0.max(ty0));
+        if w < 0.0 || h < 0.0 {
+            continue;
+        }
+        // A straight underline has no height; its length still says how much it covers.
+        let area = w.max(1.0) * h.max(1.0);
+        let inside = points.iter().filter(|p| p[0] >= tx0 && p[0] <= tx1 && p[1] >= ty0 && p[1] <= ty1).count();
+        // Still even, as an underline between two rows is: the row it is nearer.
+        let far = (t.x - cx).max(cx - t.x - t.w).max(0.0).hypot((t.y - cy).max(cy - t.y - t.h).max(0.0));
+        if best.is_none_or(|(_, a, n, d)| area > a || (area == a && (inside > n || (inside == n && far < d)))) {
+            best = Some((t, area, inside, far));
+        }
+    }
+    best.map(|(t, _, _, _)| Anchor { id: t.id.clone(), at: [t.x, t.y] })
 }
 
 /// The highlighters and the pens a hand annotation is drawn with. "pen" is the red pen, named before there
@@ -1182,7 +1257,7 @@ mod pen_tests {
         assert_eq!(tools(&old), ["pen", "yellow"]);
         let mut g = old.clone();
         for pen in ["pen-black", "pen-blue"] {
-            g.annotate(Annotation { tool: pen.into(), on: None, points: vec![[10.0, 10.0], [40.0, 12.0]] });
+            g.annotate(Annotation { tool: pen.into(), on: None, points: vec![[10.0, 10.0], [40.0, 12.0]], anchor: None });
         }
         let again: Graph = serde_json::from_value(serde_json::to_value(&g).unwrap()).unwrap();
         assert_eq!(tools(&again), ["pen", "yellow", "pen-black", "pen-blue"]);
@@ -1194,8 +1269,61 @@ mod pen_tests {
     fn a_board_drawn_on_by_hand_has_annotations() {
         let mut g = Graph::default();
         assert!(!g.has_annotations(), "an empty board has none");
-        g.annotate(Annotation { tool: "pen-black".into(), on: None, points: vec![[1.0, 1.0], [5.0, 5.0]] });
+        g.annotate(Annotation { tool: "pen-black".into(), on: None, points: vec![[1.0, 1.0], [5.0, 5.0]], anchor: None });
         assert!(g.has_annotations(), "a pen stroke on the board itself counts");
+    }
+
+    fn rect(id: &str, x: f64, y: f64, w: f64, h: f64) -> crate::board_layout::Rect {
+        crate::board_layout::Rect { id: id.into(), x, y, w, h }
+    }
+
+    #[test]
+    fn a_stroke_holds_on_to_what_it_was_drawn_over() {
+        let targets = [rect("n1", 100.0, 100.0, 200.0, 30.0), rect("n2", 100.0, 140.0, 200.0, 30.0)];
+        // An underline between the rows, nearer the first: both reach it, the nearer has it.
+        let under = anchor_for(&[[110.0, 133.0], [290.0, 133.0]], &targets).unwrap();
+        assert_eq!(under, Anchor { id: "n1".into(), at: [100.0, 100.0] });
+        // A circle around the second row.
+        let circle = [[95.0, 138.0], [305.0, 138.0], [305.0, 172.0], [95.0, 172.0], [95.0, 138.0]];
+        assert_eq!(anchor_for(&circle, &targets).unwrap().id, "n2");
+        assert_eq!(anchor_for(&[[600.0, 600.0], [650.0, 640.0]], &targets), None, "empty board: no anchor");
+        assert_eq!(anchor_for(&[], &targets), None);
+    }
+
+    #[test]
+    fn an_anchor_is_saved_only_when_there_is_one() {
+        let mut g = Graph::default();
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[1.0, 1.0], [5.0, 5.0]], anchor: None });
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[1.0, 1.0], [5.0, 5.0]], anchor: Some(Anchor { id: "n1".into(), at: [0.0, 2.0] }) });
+        let saved = serde_json::to_value(&g).unwrap();
+        assert!(saved["annotations"][0].get("anchor").is_none());
+        assert_eq!(saved["annotations"][1]["anchor"], serde_json::json!({ "id": "n1", "at": [0.0, 2.0] }));
+        let back: Graph = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.annotations(), g.annotations());
+    }
+
+    #[test]
+    fn a_stroke_whose_node_is_gone_stays_where_it_was_last_drawn() {
+        let mut g = Graph::default();
+        g.apply(&parse_ops("T 「议题」\nL 「议题」 「一」\nL 「议题」 「二」"));
+        let one = g.nodes.iter().find(|n| n.label == "一").unwrap().id.clone();
+        let two = g.nodes.iter().find(|n| n.label == "二").unwrap().id.clone();
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[10.0, 20.0], [50.0, 20.0]], anchor: Some(Anchor { id: one.clone(), at: [0.0, 10.0] }) });
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[10.0, 60.0], [50.0, 60.0]], anchor: Some(Anchor { id: two.clone(), at: [0.0, 50.0] }) });
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: vec![[0.0, 0.0], [5.0, 5.0]], anchor: Some(Anchor { id: "n99".into(), at: [0.0, 0.0] }) });
+        assert!(g.has_loose_anchors(), "n99 was never there");
+        // Where the board shown last had them: the first row had moved down by 30.
+        let before = [rect(&one, 0.0, 40.0, 100.0, 20.0), rect(&two, 0.0, 80.0, 100.0, 20.0)];
+        g.apply(&parse_ops(&format!("D {one}")));
+        assert!(g.settle_anchors(&before));
+        let a = g.annotations();
+        assert_eq!(a[0].points, vec![[10.0, 50.0], [50.0, 50.0]], "baked in where it was last seen");
+        assert_eq!(a[0].anchor, None);
+        assert_eq!(a[1].anchor.as_ref().map(|an| an.id.as_str()), Some(two.as_str()), "its node is still there");
+        assert_eq!(a[1].points, vec![[10.0, 60.0], [50.0, 60.0]]);
+        assert_eq!((a[2].points.clone(), a[2].anchor.clone()), (vec![[0.0, 0.0], [5.0, 5.0]], None), "never shown: let go as it is");
+        assert!(!g.has_loose_anchors());
+        assert!(!g.settle_anchors(&before), "nothing left to settle");
     }
 }
 

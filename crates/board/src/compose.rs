@@ -1118,7 +1118,11 @@ pub fn compose(g: &Graph, l: &Layout, glyphs: &mut Glyphs) -> (Vec<Piece>, Vec<S
     }
 
     // What was drawn by hand: highlighters under the ink, the pen over it.
-    for (i, a) in g.annotations().iter().enumerate() {
+    let drawn = g.annotations();
+    // A stroke anchored to a node moves as far as the node has since it was drawn; one whose node is gone
+    // stays where it was drawn.
+    let targets = if drawn.iter().any(|a| a.anchor.is_some()) { l.targets() } else { vec![] };
+    for (i, a) in drawn.iter().enumerate() {
         let card = match &a.on {
             Some(id) => match l.clips.iter().find(|c| &c.id == id) {
                 Some(card) => Some(card),
@@ -1126,12 +1130,17 @@ pub fn compose(g: &Graph, l: &Layout, glyphs: &mut Glyphs) -> (Vec<Piece>, Vec<S
             },
             None => None,
         };
+        let [dx, dy] = a
+            .anchor
+            .as_ref()
+            .and_then(|an| targets.iter().find(|t| t.id == an.id).map(|t| [t.x - an.at[0], t.y - an.at[1]]))
+            .unwrap_or([0.0, 0.0]);
         let points: Vec<Pt> = a
             .points
             .iter()
             .map(|p| match card {
                 Some(c) => [(c.x + p[0] * c.w) as f32, (c.y + p[1] * c.h) as f32],
-                None => [p[0] as f32, p[1] as f32],
+                None => [(p[0] + dx) as f32, (p[1] + dy) as f32],
             })
             .collect();
         if points.len() < 2 {
@@ -1483,6 +1492,49 @@ mod tests {
             unclear.is_empty(),
             "the label found no clear spot: {unclear:?}"
         );
+    }
+
+    #[test]
+    fn a_stroke_drawn_over_a_row_moves_with_it() {
+        use crate::graph::{anchor_for, Annotation};
+        let mut g = Graph::default();
+        g.apply(&crate::graph::parse_ops("T 「议题」\nL 「议题」 「一」\nL 「议题」 「二」"));
+        let two = g.nodes.iter().find(|n| n.label == "二").unwrap().id.clone();
+        let mut board = crate::board_layout::StableLayout::default();
+        let before = board.layout(&g, &mut crate::sugiyama::first_diagram);
+        let was = before.targets().into_iter().find(|t| t.id == two).unwrap();
+        // An underline under 「二」, and a line far off on empty board.
+        let under = vec![[was.x + 2.0, was.y + was.h + 2.0], [was.x + was.w - 2.0, was.y + was.h + 2.0]];
+        let anchor = anchor_for(&under, &before.targets());
+        assert_eq!(anchor.as_ref().map(|a| a.id.as_str()), Some(two.as_str()));
+        g.annotate(Annotation { tool: "pen".into(), on: None, points: under.clone(), anchor });
+        let far = vec![[2000.0, 2000.0], [2100.0, 2000.0]];
+        assert_eq!(anchor_for(&far, &before.targets()), None);
+        g.annotate(Annotation { tool: "pen-blue".into(), on: None, points: far.clone(), anchor: None });
+        // The row above grows to several lines, which pushes 「二」 down.
+        let one = g.nodes.iter().find(|n| n.label == "一").unwrap().id.clone();
+        g.apply(&crate::graph::parse_ops(&format!("R {one} 「{}」", "一句很长很长的话，".repeat(12))));
+        let after = board.layout(&g, &mut crate::sugiyama::first_diagram);
+        let now = after.targets().into_iter().find(|t| t.id == two).unwrap();
+        assert!(now.y > was.y + 20.0, "the row moved down: {} -> {}", was.y, now.y);
+        let mut glyphs = crate::glyphs::Glyphs::load(crate::glyphs::HanziSource::Directory(Default::default())).unwrap();
+        let drawn = |g: &Graph, l: &Layout, glyphs: &mut Glyphs, seed: &str| {
+            let (pieces, _) = compose(g, l, glyphs);
+            pieces.into_iter().find(|p| p.seed == seed).unwrap().lines[0].points.clone()
+        };
+        let moved = drawn(&g, &after, &mut glyphs, "a0|pen");
+        let (dx, dy) = ((now.x - was.x) as f32, (now.y - was.y) as f32);
+        for (p, q) in moved.iter().zip(&under) {
+            assert!((p[0] - (q[0] as f32 + dx)).abs() < 0.01 && (p[1] - (q[1] as f32 + dy)).abs() < 0.01, "{p:?} is {q:?} moved by ({dx}, {dy})");
+        }
+        assert_eq!(drawn(&g, &after, &mut glyphs, "a1|pen-blue"), far.iter().map(|p| [p[0] as f32, p[1] as f32]).collect::<Vec<_>>(), "unanchored: where it was drawn");
+        // Its node gone, the stroke stays where it was last seen.
+        let shown = after.targets();
+        g.apply(&crate::graph::parse_ops(&format!("D {two}")));
+        assert!(g.settle_anchors(&shown));
+        let last = board.layout(&g, &mut crate::sugiyama::first_diagram);
+        let kept = drawn(&g, &last, &mut glyphs, "a0|pen");
+        assert!(kept.iter().zip(&moved).all(|(p, q)| (p[0] - q[0]).abs() < 0.01 && (p[1] - q[1]).abs() < 0.01));
     }
 
     /// A board as it grows, line by line, since that places things differently from laying it out whole.

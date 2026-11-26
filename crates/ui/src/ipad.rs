@@ -109,7 +109,8 @@ pub(super) struct Chrome {
     /// Where the transcript card is, and a drag under way.
     pub(super) corner: Corner,
     pub(super) drag: Option<Drag>,
-    /// The last word search where search by meaning cannot run, and the meetings it found.
+    /// The last word search where search by meaning cannot run: the query and the library as it was, and the
+    /// meetings it found.
     word_search: (String, Vec<String>),
     /// The corner the board's map sits in while zoomed in.
     map_corner: Corner,
@@ -140,7 +141,8 @@ impl Chrome {
             corner: Corner::TopRight,
             drag: None,
             sheet: DETENTS[1],
-            map_corner: Corner::TopLeft,
+            // Out of the way at first: above the dock, beside the palette, where nothing else sits.
+            map_corner: Corner::BottomLeft,
             word_search: (String::new(), vec![]),
             newest_for: None,
             touched: Rc::new(Cell::new(Instant::now())),
@@ -299,6 +301,26 @@ pub(super) fn glass<E: gpui_kit::Styled>(el: E, card: bool) -> E {
     el.bg(fill).border(px(0.5)).border_color(if dark { alpha(0, 0.6) } else { alpha(0, 0.08) }).shadow(shadows)
 }
 
+/// What a meeting says, as one lowercase text to look for words in: every string in it (the transcript's
+/// lines, the boards' labels, the summary, the title), and none of its names for things, its numbers, or the
+/// pictures kept in it as data.
+pub(super) fn words_of(meeting: &serde_json::Value) -> String {
+    fn gather(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::String(text) if !text.starts_with("data:") => {
+                out.push_str(&text.to_lowercase());
+                out.push('\n');
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| gather(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| gather(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    gather(meeting, &mut out);
+    out
+}
+
 /// A round 44 pt button with a line icon, filled in ink when `on`.
 fn round_button(id: impl Into<gpui_kit::ElementId>, name: &str, on: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
     let p = pal();
@@ -395,21 +417,28 @@ impl Workbench {
     }
 
     /// The meetings whose transcript, boards or summary hold `query`, for search where search by meaning
-    /// cannot run: read once for each query, case left aside.
+    /// cannot run (the iPad): the words themselves, case left aside. Read once for each query and state of the
+    /// library, so a meeting saved since is searched too.
     pub(super) fn word_hits(&mut self, query: &str) -> Vec<String> {
-        if self.ipad.word_search.0 == query {
+        let newest = self.library.iter().map(|m| m.updated_at).fold(0.0, f64::max);
+        let key = format!("{query}\u{0}{}\u{0}{newest}", self.library.len());
+        if self.ipad.word_search.0 == key {
             return self.ipad.word_search.1.clone();
         }
         let Some(store) = self.store.as_ref() else { return vec![] };
-        let hits: Vec<String> = self
+        let mut hits: Vec<String> = self
             .library
             .iter()
-            .filter(|m| {
-                store.load(&m.id).ok().flatten().is_some_and(|loaded| serde_json::Value::Object(loaded.raw).to_string().to_lowercase().contains(query))
-            })
+            .filter(|m| store.load(&m.id).ok().flatten().is_some_and(|loaded| words_of(&serde_json::Value::Object(loaded.raw)).contains(query)))
             .map(|m| m.id.clone())
             .collect();
-        self.ipad.word_search = (query.to_string(), hits.clone());
+        // The meeting open now, as it is, though not saved yet.
+        let id = self.live.id().to_string();
+        let open: Vec<String> = self.live.lines.iter().filter_map(|l| l["text"].as_str().map(str::to_string)).chain(self.live.graph.nodes.iter().map(|n| n.label.clone())).chain([self.live.summary().to_string(), self.live.title().to_string()]).collect();
+        if !hits.contains(&id) && open.iter().any(|text| text.to_lowercase().contains(query)) {
+            hits.push(id);
+        }
+        self.ipad.word_search = (key, hits.clone());
         hits
     }
 
@@ -418,13 +447,26 @@ impl Workbench {
         (false, false, 0.0, 0.0)
     }
 
-    /// The map's place at its corner: clear of the bars at the top and the dock at the bottom.
+    /// The map's place at its corner: clear of the safe area, the bars at the top, the dock (or the upright
+    /// sheet) at the bottom, the palette, and the transcript card when it is out in the same corner.
     fn ipad_map_rect(&self, f: &Frame, corner: Corner) -> (f32, f32) {
         let (w, h) = (MAP_PANEL_W, MAP_PANEL_H);
-        let left = f.margin + if self.ipad.tools_right || f.mode != Mode::Wide { 0.0 } else { PALETTE_W + 12.0 };
-        let right = f.w - f.margin - w - if self.ipad.tools_right && f.mode == Mode::Wide { PALETTE_W + 12.0 } else { 0.0 };
-        let top = f.top() + 10.0 + CARD_H + 16.0;
-        let bottom = f.h - f.dock_bottom() - DOCK_H - 16.0 - h;
+        let wide = f.mode == Mode::Wide;
+        let mut left = f32::from(f.safe.left) + f.margin + if self.ipad.tools_right || !wide { 0.0 } else { PALETTE_W + 12.0 };
+        let mut right = f.w - f32::from(f.safe.right) - f.margin - w - if self.ipad.tools_right && wide { PALETTE_W + 12.0 } else { 0.0 };
+        // Under the meeting's card and the actions, with room to breathe.
+        let top = f.top() + 10.0 + CARD_H + 24.0;
+        let floor = if f.mode == Mode::Upright { self.ipad.sheet.min(f.detents()[1]) + 40.0 } else { f.dock_bottom() + DOCK_H };
+        let bottom = (f.h - floor - 16.0 - h).max(top);
+        // The transcript card, out in a corner on that side, keeps the map beside it rather than under it.
+        if wide && self.side_shown() {
+            let (cx_, _, cw, _) = self.ipad_card_rect(f, true);
+            if cx_ < f.w / 2.0 {
+                left = left.max(cx_ + cw + 12.0);
+            } else {
+                right = right.min(cx_ - 12.0 - w);
+            }
+        }
         match corner {
             Corner::TopLeft => (left, top),
             Corner::TopRight => (right, top),
@@ -447,7 +489,8 @@ impl Workbench {
             .w(px(MAP_PANEL_W + 8.0))
             .h(px(MAP_PANEL_H + 8.0))
             .child(map)
-            .child(div().absolute().top_0().left_0().right_0().h(px(MAP_GRIP + 4.0)).child(self.ipad_drag_area(Grab::Map, cx)));
+            // A finger-sized strip along the top, over the handle, takes hold of it.
+            .child(div().absolute().top_0().left_0().right_0().h(px(MAP_GRIP + 14.0)).child(self.ipad_drag_area(Grab::Map, cx)));
         div()
             .absolute()
             .top_0()
@@ -831,6 +874,72 @@ impl Workbench {
             .into_any_element()
     }
 
+    /// Export, Share or Import on the iPad: a rounded card floating over the whole screen, status bar and all,
+    /// on a scrim a tap puts away. It is pinned to the screen's corner, never to where the flow before it ends,
+    /// so the transcript card being out cannot push it down.
+    pub(super) fn ipad_dialog(&self, title: &str, body: gpui_kit::Stateful<gpui_kit::Div>, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let p = pal();
+        let dark = theme::is_dark();
+        let close = |this: &mut Self, cx: &mut Context<Self>| {
+            this.panel = Panel::Transcript;
+            cx.notify();
+        };
+        let shade = |a: f32, y: f32, blur: f32| BoxShadow { color: alpha(0, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(0.), inset: false };
+        let hairline = BoxShadow { color: if dark { alpha(0xff_ff_ff, 0.1) } else { alpha(0, 0.08) }, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false };
+        let card = div()
+            .id("dialog")
+            .occlude()
+            .w(px(560.))
+            .max_w_full()
+            .max_h(gpui_kit::relative(0.86))
+            .flex()
+            .flex_col()
+            .rounded(px(26.))
+            .overflow_hidden()
+            .bg(rgb(p.surface))
+            .shadow(vec![shade(if dark { 0.6 } else { 0.26 }, 24., 70.), hairline])
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(64.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pl(px(24.))
+                    .pr(px(14.))
+                    .child(div().text_size(px(19.)).font_weight(FontWeight::BOLD).text_color(rgb(p.text)).child(title.to_string()))
+                    .child(
+                        div()
+                            .id("close-dialog")
+                            .size(px(TARGET))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(div().size(px(30.)).flex().items_center().justify_center().rounded_full().bg(soft(1.3)).text_color(rgb(p.muted)).child(icon("x").size(px(13.))))
+                            .active(|d| d.opacity(0.6))
+                            .on_click(cx.listener(move |this, _, _, cx| close(this, cx))),
+                    ),
+            )
+            .child(body.px(px(24.)).pb(px(24.)).pt(px(4.)).text_size(px(14.5)))
+            .with_animation("ipad-dialog-in", gpui_kit::Animation::new(Duration::from_millis(260)).with_easing(|t: f32| 1. - (1. - t).powi(3)), |d, t| d.opacity(t).mt(px(18. * (1. - t))));
+        div()
+            .id("dialog-veil")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .p(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(alpha(0x0a_0a_0a, if dark { 0.5 } else { 0.3 }))
+            .on_click(cx.listener(move |this, _, _, cx| close(this, cx)))
+            .child(card)
+    }
+
     /// The meetings list, as iPadOS's own sidebars: the whole height of the screen along its left edge, sliding
     /// in from it over a dimmed board. Its head is where the meeting's card was, the button that brought it out
     /// in the same place to put it away.
@@ -852,7 +961,7 @@ impl Workbench {
             .gap(px(4.))
             .child(round_button("ipad-sidebar-close", "sidebar", false).on_click(close))
             .child(div().flex_1().min_w_0().pl_1().text_title().font_weight(FontWeight::SEMIBOLD).child(t("meetings")));
-        let list = self.sidebar(listening, cx).w_full().flex_1().min_h_0().bg(gpui_kit::transparent_black()).border_r(px(0.));
+        let list = self.ipad_drawer_list(listening, cx);
         let panel = div()
             .id("ipad-sidebar")
             .occlude()
@@ -869,7 +978,7 @@ impl Workbench {
             .border_color(rgb(pal().line))
             .shadow(vec![BoxShadow { color: alpha(0, if dark { 0.5 } else { 0.12 }), offset: point(px(0.), px(0.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }])
             .child(head)
-            .child(div().flex_1().min_h_0().flex().flex_col().pl(px((f.top_left - 8.0).max(0.0))).child(list))
+            .child(div().flex_1().min_h_0().flex().flex_col().pl(px((f.top_left - 12.0).max(8.0))).pr(px(8.)).child(list))
             .with_animation("ipad-sidebar-in", gpui_kit::Animation::new(Duration::from_millis(320)).with_easing(|t: f32| 1. - (1. - t).powi(4)), move |d, t| d.left(px(-w * (1. - t))));
         // Pinned to the screen's corner: left to its static place it would start below the board, which is in
         // the flow before it, and so it did on the iPad, half way down.
@@ -890,6 +999,124 @@ impl Workbench {
                     .with_animation("ipad-sidebar-veil-in", gpui_kit::Animation::new(Duration::from_millis(240)), |d, t| d.opacity(t)),
             )
             .child(panel)
+    }
+
+    /// The meetings list's contents, in the iPad's own style rather than the desktop sidebar's: finger-sized
+    /// rounded rows for what to do, the meetings under each day's name, the one open filled in the accent, and
+    /// Settings at the foot.
+    fn ipad_drawer_list(&self, listening: bool, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let p = pal();
+        let accent_fill = if theme::is_dark() { alpha(p.accent, 0.18) } else { alpha(p.accent, 0.1) };
+        let nav = |id: &'static str, glyph: &'static str, text: &'static str, on: bool, aside: Option<String>| {
+            div()
+                .id(id)
+                .flex_none()
+                .h(px(TARGET))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .px(px(12.))
+                .rounded(px(12.))
+                .text_size(px(15.))
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .map(|d| if on { d.bg(accent_fill).text_color(rgb(p.accent)) } else { d.text_color(rgb(p.text)).active(|d| d.bg(soft(1.5))) })
+                .child(div().flex_none().w(px(22.)).flex().justify_center().text_color(rgb(if on { p.accent } else { p.muted })).child(icon(glyph).size(px(18.))))
+                .child(div().flex_1().min_w_0().child(text))
+                .when_some(aside, |d, aside| d.child(div().text_size(px(13.)).text_color(rgb(p.faint)).child(aside)))
+        };
+        let page_open = matches!(self.panel, Panel::Library | Panel::Settings | Panel::Import);
+        let actions = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pt(px(8.))
+            .when(self.store.is_some(), |d| d.child(nav("drawer-new", "plus", t("new-meeting"), false, None).on_click(cx.listener(|this, _, _, cx| this.new_meeting(cx)))))
+            .child(nav("drawer-search", "search", t("search"), false, None).on_click(cx.listener(|this, _, window, cx| this.search_meetings(window, cx))))
+            .child(nav("drawer-all", "folder-open", t("all-meetings"), self.panel == Panel::Library, (!self.library.is_empty()).then(|| self.library.len().to_string())).on_click(cx.listener(|this, _, _, cx| {
+                if this.panel != Panel::Library {
+                    this.toggle_panel(Panel::Library, cx);
+                }
+            })))
+            .child(nav("drawer-import", "import", t("import"), self.panel == Panel::Import, None).on_click(cx.listener(|this, _, _, cx| {
+                if this.panel != Panel::Import {
+                    this.toggle_panel(Panel::Import, cx);
+                }
+            })));
+
+        // The meetings by day, pinned ones first, as the desktop groups them.
+        let current = self.live.id().to_string();
+        let today = chrono::Local::now().date_naive();
+        let age = |m: &Info| {
+            use chrono::TimeZone;
+            chrono::Local.timestamp_millis_opt(m.updated_at as i64).single().map_or(2, |t| (today - t.date_naive()).num_days().clamp(0, 2))
+        };
+        let pinned = |id: &str| self.pinned.iter().any(|p| p == id);
+        let readable: Vec<&Info> = self.library.iter().filter(|m| m.read_error.is_none()).collect();
+        let unsaved = self.store.is_some() && !self.library.iter().any(|m| m.id == current);
+        let row = |index: usize, id: String, title: String, when: Option<f64>| {
+            let open = id == current;
+            let lit = open && !page_open;
+            let live = open && listening;
+            div()
+                .id(("drawer-meeting", index))
+                .flex_none()
+                .min_h(px(TARGET))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(12.))
+                .rounded(px(12.))
+                .text_size(px(15.))
+                .cursor_pointer()
+                .map(|d| if lit { d.bg(accent_fill).text_color(rgb(p.accent)).font_weight(FontWeight::SEMIBOLD) } else { d.text_color(rgb(p.text)).active(|d| d.bg(soft(1.5))) })
+                .when(live, |d| d.child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(p.recording)).with_animation("drawer-live", motion::pulse(), |d, t| d.opacity(t))))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                .map(|d| match (live, when) {
+                    (true, _) => d.child(div().flex_none().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.recording)).child(t("live"))),
+                    (false, Some(ms)) => d.child(div().flex_none().text_size(px(12.5)).text_color(rgb(if lit { p.accent } else { p.faint })).child(short_time(ms, today))),
+                    _ => d,
+                })
+                .on_click(cx.listener(move |this, _, _, cx| this.open_meeting(&id, cx)))
+                .into_any_element()
+        };
+        let heading = |text: &'static str| div().flex_none().pt(px(18.)).pb(px(4.)).px(px(12.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.faint)).child(text).into_any_element();
+        let title_of = |m: &Info| if m.id == current { self.live.title().to_string() } else { m.title.clone() };
+        let mut rows: Vec<AnyElement> = vec![];
+        let pins: Vec<(usize, &Info)> = readable.iter().copied().enumerate().filter(|(_, m)| pinned(&m.id)).collect();
+        if !pins.is_empty() {
+            rows.push(heading(t("pinned")));
+            rows.extend(pins.iter().map(|(i, m)| row(*i, m.id.clone(), title_of(m), Some(m.updated_at))));
+        }
+        for (days, name) in [t("today"), t("yesterday"), t("earlier")].into_iter().enumerate() {
+            let group: Vec<(usize, &Info)> = readable.iter().copied().enumerate().filter(|(_, m)| !pinned(&m.id) && age(m) == days as i64).collect();
+            let first = days == 0 && unsaved;
+            if group.is_empty() && !first {
+                continue;
+            }
+            rows.push(heading(name));
+            if first {
+                rows.push(row(usize::MAX, current.clone(), self.live.title().to_string(), None));
+            }
+            rows.extend(group.iter().map(|(i, m)| row(*i, m.id.clone(), title_of(m), Some(m.updated_at))));
+        }
+        if self.store.is_none() {
+            rows.push(div().px(px(12.)).pt(px(18.)).text_size(px(13.)).text_color(rgb(p.muted)).child(t("this-is-a-sample-it")).into_any_element());
+        }
+        let meetings = div().id("drawer-meetings").flex_1().min_h_0().overflow_y_scroll().pb(px(12.)).flex().flex_col().gap(px(2.)).children(rows);
+        let settings = div()
+            .flex_none()
+            .pt(px(8.))
+            .pb(px(8.))
+            .border_t_1()
+            .border_color(rgb(p.line))
+            .child(nav("drawer-settings", "ipad/sliders", t("settings"), self.panel == Panel::Settings, Some(format!("v{}", alcyo_update::VERSION))).on_click(cx.listener(|this, _, _, cx| {
+                this.ipad.sidebar = None;
+                this.panel = Panel::Settings;
+                cx.notify();
+            })));
+        div().flex_1().min_h_0().flex().flex_col().child(actions).child(meetings).child(settings)
     }
 
     /// While zoomed in, the status pill gives way to how far, and how to come back.
@@ -1631,5 +1858,28 @@ fn dashes(pb: &mut PathBuilder, points: &[Point<Pixels>]) {
             s += step;
             phase = (phase + step) % (ON + OFF);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::words_of;
+
+    #[test]
+    fn a_meeting_is_searched_by_what_it_says_not_by_its_field_names() {
+        let meeting = serde_json::json!({
+            "title": "Weekly Sync",
+            "lines": [{ "speaker": "A", "text": "我们下周上线 Beta" }],
+            "graph": { "nodes": [{ "id": "n1", "label": "Launch plan" }] },
+            "summary": "",
+            "image": "data:image/png;base64,QUJD",
+            "updatedAt": 17
+        });
+        let words = words_of(&meeting);
+        assert!(words.contains("weekly sync"));
+        assert!(words.contains("上线 beta"));
+        assert!(words.contains("launch plan"));
+        assert!(!words.contains("speaker"), "field names are not what was said");
+        assert!(!words.contains("base64"), "pictures are not searched");
     }
 }

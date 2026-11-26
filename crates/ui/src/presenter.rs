@@ -1,6 +1,6 @@
 //! Presenter mode on the iPad (#341, direction C): the iPad on the lectern, cabled or AirPlayed to the room's
 //! projector. The room sees a clean 16:9 board with two lines of captions; the iPad shows that same picture
-//! in a frame on a dark surround, with a few big controls around it: listening, circle, undo, the boards as
+//! in a frame on a dark surround, with a few big controls around it: listening, undo, the boards as
 //! thumbnails, and Follow live.
 //!
 //! What the room sees is drawn by one function, [`Workbench::room_picture`], wherever it is shown: inside the
@@ -403,6 +403,8 @@ impl Workbench {
     pub(super) fn enter_presenter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.presenter.on = true;
         self.presenter.menu = false;
+        // Nothing circled could be acted on here: the circle's card is the meeting's own screen's.
+        self.ink.borrow_mut().put_tools_down();
         self.presenter.display = room_display(cx);
         if let Some(display) = self.presenter.display.clone() {
             self.present_on_external(display, cx);
@@ -1120,7 +1122,7 @@ impl Workbench {
             .child(menu)
     }
 
-    /// The controls along the bottom: listening, circle, undo, the boards, and Follow live.
+    /// The controls along the bottom: listening, undo, the boards, and Follow live.
     fn presenter_bar(&self, bottom: f32, listening: bool, cx: &mut Context<Self>) -> gpui_kit::Div {
         let editable = self.editable();
         let level = self.level;
@@ -1181,23 +1183,26 @@ impl Workbench {
                 })
                 .when(listening || !recorded.is_zero(), |d| d.child(div().font_family(theme::MONO).text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(clock(recorded.as_secs_f64() * 1000.0))))
         });
-        let live_shown = self.room_shows() == Shown::Live;
-        let circling = self.ink.borrow().circling;
-        let circle = editable.then(|| {
-            dark_button("presenter-circle", "circle", BIG, circling)
-                .when(!live_shown, |d| d.opacity(0.35))
-                .when(live_shown, |d| {
-                    d.on_click(cx.listener(move |this, _, _, cx| {
-                        let mut ink = this.ink.borrow_mut();
-                        let on = ink.circling;
-                        ink.put_tools_down();
-                        ink.circling = !on;
-                        cx.notify();
-                    }))
-                })
-        });
         let can_undo = self.live.can_undo();
-        let undo = editable.then(|| dark_button("presenter-undo", "undo", BIG, false).when(!can_undo, |d| d.opacity(0.35)).when(can_undo, |d| d.on_click(cx.listener(|this, _, _, cx| this.step(false, cx)))));
+        // Undo takes back the board's last change, and the room's picture of the live board is made again from
+        // what is left: added to stroke by stroke, it would otherwise keep what was taken back.
+        let undo = editable.then(|| {
+            dark_button("presenter-undo", "undo", BIG, false).when(!can_undo, |d| d.opacity(0.35)).when(can_undo, |d| {
+                d.on_click(cx.listener(|this, _, _, cx| {
+                    this.step(false, cx);
+                    let mut art = this.presenter.art.borrow_mut();
+                    if let Some(old) = art.live_room.take() {
+                        let released = old.tier.release();
+                        art.retired.extend(released);
+                    }
+                    if let Some((tier, _, _)) = art.live_thumb.take() {
+                        let released = tier.release();
+                        art.retired.extend(released);
+                    }
+                    cx.notify();
+                }))
+            })
+        });
 
         // The boards as thumbnails: the one in the room lifted, with the accent around it. A tap sends a board
         // to the room.
@@ -1338,7 +1343,6 @@ impl Workbench {
             .items_center()
             .gap(px(12.))
             .when_some(capsule, |d, c| d.child(c))
-            .when_some(circle, |d, c| d.child(c))
             .when_some(undo, |d, c| d.child(c))
             .child(div().flex_1().min_w_0().flex().justify_center().child(thumbs))
             .child(follow)
