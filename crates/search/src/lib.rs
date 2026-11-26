@@ -1,8 +1,8 @@
 //! Finding what was said in past meetings by what it means, not only by its words.
 //!
 //! A meeting is cut into passages ([`chunk`]): runs of transcript lines, each topic of a board with what
-//! hangs under it, and each part of the summary. An embedding model served by llama-server turns them into
-//! vectors ([`embed`]), kept in an index beside the meeting ([`index`]). A query is ranked against every
+//! hangs under it, and each part of the summary. An embedding model, served by llama-server or run inside
+//! the app ([`Embed`]), turns them into vectors ([`embed`]), kept in an index beside the meeting ([`index`]). A query is ranked against every
 //! passage by the cosine of its vector, together with how many of its words the passage shares
 //! ([`rank`]), which keeps names, numbers and terms from being lost to meaning alone.
 //!
@@ -15,7 +15,7 @@ pub mod rank;
 pub mod service;
 
 pub use chunk::{Chunk, Said, Source};
-pub use embed::{Embedder, Family};
+pub use embed::{Embed, Embedder, Family};
 pub use index::Index;
 pub use rank::{rank, Hit};
 

@@ -5,6 +5,12 @@
 //!
 //! Unlike a child process, a crash in it takes the app with it, and the operating system ends an app that uses
 //! more memory than it may without a word: see [`available_memory`] for checking that first.
+//!
+//! The same libraries also run the meeting search's embedding model in the app, without a server ([`embed`]).
+
+pub mod embed;
+
+pub use embed::Embedder;
 
 use anyhow::{bail, Context, Result};
 use std::ffi::{c_char, c_int, CString};

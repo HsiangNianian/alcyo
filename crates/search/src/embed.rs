@@ -80,6 +80,26 @@ impl Embedder {
     }
 }
 
+/// Anything that turns texts into vectors, one for each, in order: the server above, or a model the app runs
+/// itself, as on the iPad, where no server can be started. The search cuts what it gets with [`cut`], so a vector
+/// may come at the model's full size.
+pub trait Embed {
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+}
+
+impl Embed for Embedder {
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Embedder::embed(self, texts)
+    }
+}
+
+/// A closure is one too, so the app can hand over a model of a crate this one does not know.
+impl<F: FnMut(&[String]) -> Result<Vec<Vec<f32>>>> Embed for F {
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self(texts)
+    }
+}
+
 /// The first `dims` values at unit length.
 pub fn cut(v: &[f32], dims: usize) -> Vec<f32> {
     let v = &v[..dims.min(v.len())];
