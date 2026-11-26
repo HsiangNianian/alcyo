@@ -11125,6 +11125,9 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     })
                     .detach();
                 }
+                if workbench.panel == Panel::Diagnostics {
+                    workbench.diag_opened(cx);
+                }
                 if start_replaying {
                     workbench.start_replay(window, cx);
                 }
