@@ -859,9 +859,16 @@ impl Ear {
             self.turns = None;
             return self.release(all, heard);
         }
+        // Fallen behind for a while, as when the board model loads: what waits is heard with what is known of it, and the
+        // model starts a new stream rather than giving up on telling speakers apart. It once gave up for good, and a
+        // meeting's later sentences were named by voice alone, growing one-line speakers (2026-11-26).
+        let behind = !self.wait_for_turns && turns.behind();
+        if behind {
+            eprintln!("the diarization model fell behind; dropping what it has not heard and starting a new stream");
+        }
         while let Some((samples, start, _)) = self.waiting.front() {
             let Some(turns) = self.turns.as_ref() else { break };
-            if !all && start + samples.len() > turns.known_until(self.fed) {
+            if !all && !behind && start + samples.len() > turns.known_until(self.fed) {
                 break;
             }
             let pieces = turns.split(*start, samples.len());
@@ -870,6 +877,11 @@ impl Ear {
                 if piece.len >= MIN_PIECE {
                     self.hear_piece(&samples[piece.from..piece.from + piece.len], start + piece.from, piece.slot, piece.also, utterance, heard);
                 }
+            }
+        }
+        if behind {
+            if let Some(turns) = self.turns.as_mut() {
+                turns.catch_up();
             }
         }
     }

@@ -32,7 +32,7 @@ use alcyo_agent::vision::VisionServer;
 use alcyo_export::Kind as ExportKind;
 use alcyo_import::pdf::NewPage;
 use alcyo_board::spans::{span_at, Unit};
-use alcyo_board::speakers::{by_of_edge, by_of_node, first_seen, initial, said_at};
+use alcyo_board::speakers::{by_of_edge, by_of_node, first_seen, initial, said_at, MOST_SPEAKERS};
 use alcyo_board::steps::{clock, replay_to, sound_times, steps_heard, Player};
 use gpui_kit::base::input::{Textarea, TextareaState};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -129,6 +129,20 @@ fn listen_name(listen: Listen) -> &'static str {
         Listen::Computer => t("device-sound"),
         Listen::Both => t("both"),
     }
+}
+
+/// How many people a meeting is said to have, as its menu says it.
+fn participants_name(n: Option<usize>) -> String {
+    match n {
+        None => ta!("participants-auto", n = MOST_SPEAKERS),
+        Some(n) => ta!("participants-count", n = n),
+    }
+}
+
+/// How many people take part, for the menu beside listening: Auto, then one to [`MOST_SPEAKERS`]. Speakers are told
+/// apart up to that many and no more (`Live::identify_voice`).
+fn participants_choices(chosen: Option<usize>) -> Vec<(String, Option<usize>, bool)> {
+    std::iter::once(None).chain((1..=MOST_SPEAKERS).map(Some)).map(|n| (participants_name(n), n, n == chosen)).collect()
 }
 
 /// What listening this way hears, in a line.
@@ -2790,7 +2804,16 @@ impl Workbench {
                     }
                     eprintln!("model failed: {message}");
                     self.live.model_failed(&spoken(&lines));
-                    self.notice = Some(crate::ta!("the-model-did-not-answer", error = format!("{message}")));
+                    // The local model not being there (stopped, ended, restarting) is said plainly; the details are in
+                    // the log above, not an address and an error number on the board.
+                    self.notice = Some(if alcyo_agent::unavailable(&message) {
+                        t("local-model-missed-lines").to_string()
+                    } else {
+                        crate::ta!("the-model-did-not-answer", error = format!("{message}"))
+                    });
+                }
+                Event::Agent(Update::SlowToStop) => {
+                    self.notice = Some(t("local-model-slow-to-stop").to_string());
                 }
                 Event::Hearing { with, note } => {
                     if let Some(note) = note {
@@ -2946,6 +2969,7 @@ impl Workbench {
             }
             Err(error) => {
                 eprintln!("summary failed: {error}");
+                let error = if alcyo_agent::unavailable(&error) { t("local-model-not-answering").to_string() } else { error };
                 self.summary.note = Some(crate::ta!("could-not-write-the-summary", error = format!("{error}")));
             }
         }
@@ -2958,14 +2982,10 @@ impl Workbench {
         if !self.editable() || self.summary.job.is_some() || self.summary.draft.is_some() {
             return;
         }
-        let provider = match self.session().provider() {
-            Ok(provider) => provider,
-            Err(error) => {
-                self.summary.note = Some(crate::ta!("could-not-write-the-summary", error = format!("{error:#}")));
-                cx.notify();
-                return;
-            }
-        };
+        // A local model that is loading, or was stopped, is waited for (and started) on the summary's own thread rather
+        // than refused as "still loading"; one stopped under a request is asked again once it is back. Marked busy
+        // throughout, so a memory warning does not stop it under the summary.
+        let model = self.session().model();
         let boards = self.live.boards();
         let lines = Line::spoken(&self.live.lines);
         let source = summary::fingerprint(&boards, &lines);
@@ -2973,9 +2993,15 @@ impl Workbench {
         let (tx, updates) = channel();
         let stop = cancel.clone();
         std::thread::spawn(move || {
-            let result = summary::summarize(&provider, &boards, &lines, &stop, &mut |Step::Writing { done, total }| {
-                let _ = tx.send(SummaryUpdate::Step(done, total));
-            });
+            let _busy = model.busy();
+            let (_, result) = model.ask(
+                || !stop.load(Ordering::Relaxed),
+                |provider| {
+                    summary::summarize(provider, &boards, &lines, &stop, &mut |Step::Writing { done, total }| {
+                        let _ = tx.send(SummaryUpdate::Step(done, total));
+                    })
+                },
+            );
             let _ = tx.send(SummaryUpdate::Finished(result.map_err(|e| format!("{e:#}"))));
         });
         self.summary.note = None;
@@ -3282,13 +3308,42 @@ impl Workbench {
         }
     }
 
+    /// iPadOS is short of memory. What can be loaded again cheaply goes first: the meeting search's model. The board
+    /// model goes only if nothing waits for it, as stopping it mid-meeting left lines undrawn and a summary failing
+    /// (2026-11-26): not while listening, with lines on their way, or with a summary being written. The session
+    /// checks again that no request is under way (`Session::shed_local`).
+    fn memory_warning(&mut self) {
+        eprintln!("memory warning: {:?} bytes left to the app", alcyo_llama::available_memory());
+        if let Some(search) = &self.search {
+            let _ = search.jobs.send(alcyo_search::service::Job::Unload);
+        }
+        if self.pipeline.listening() || self.lines_waiting() > 0 || self.summary.job.is_some() {
+            return;
+        }
+        self.session().shed_local(t("ipad-model-unloaded-memory").to_string());
+    }
+
+    /// Say how many people take part in this meeting (`None`: Auto), kept with it: no more speakers are told apart.
+    pub(crate) fn set_participants(&mut self, participants: Option<usize>, cx: &mut Context<Self>) {
+        if self.editable() {
+            self.live.set_participants(participants);
+            cx.notify();
+        }
+    }
+
+    /// Lines heard and on their way to the board: neither drawn, nor failed, nor typed by hand.
+    fn lines_waiting(&self) -> usize {
+        self.live.lines.iter().filter(|l| l["ms"].is_null() && !l["manual"].as_bool().unwrap_or(false)).count()
+    }
+
     fn start_replay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.replay.is_some() {
             return;
         }
-        let waiting = self.live.lines.iter().any(|l| l["ms"].is_null() && !l["manual"].as_bool().unwrap_or(false));
-        if self.pipeline.listening() || waiting {
-            self.notice = Some(t("can-t-replay-while-listening").into());
+        // Said plainly which it is: listening, or lines the model has still to draw, which a replay would be cut short by.
+        let waiting = self.lines_waiting();
+        if self.pipeline.listening() || waiting > 0 {
+            self.notice = Some(if self.pipeline.listening() { t("can-t-replay-while-listening").to_string() } else { ta!("can-t-replay-while-drawing", n = waiting) });
             cx.notify();
             return;
         }
@@ -8320,6 +8375,7 @@ impl Render for Workbench {
                 // Where the sound comes from, beside the button that starts hearing it; the devices are in Settings.
                 .child({
                     let listen = Listen::from_setting(&self.form.saved.listen);
+                    let participants = self.live.participants();
                     let workbench = cx.entity().downgrade();
                     Button::new("listen-to")
                         .map(|b| if listening { b.danger() } else { b.primary() })
@@ -8339,6 +8395,13 @@ impl Render for Workbench {
                                 let workbench = workbench.clone();
                                 menu.item(PopupMenuItem::new(listen_name(choice_of)).checked(listen == choice_of).on_click(move |_, _, cx| {
                                     let _ = workbench.update(cx, |this, cx| this.choose_listening(move |s| s.listen = choice_of.setting().into(), cx));
+                                }))
+                            });
+                            // How many people take part, chosen as listening starts: no more speakers are told apart.
+                            let menu = participants_choices(participants).into_iter().fold(menu.separator().label(t("participants")), |menu, (label, n, on)| {
+                                let workbench = workbench.clone();
+                                menu.item(PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                                    let _ = workbench.update(cx, |this, cx| this.set_participants(n, cx));
                                 }))
                             });
                             let workbench = workbench.clone();
@@ -10980,7 +11043,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     .detach();
                     let memory = cx.entity().downgrade();
                     cx.on_memory_warning(move |cx| {
-                        let _ = memory.update(cx, |this, _| this.session().shed_local(t("ipad-model-unloaded-memory").to_string()));
+                        let _ = memory.update(cx, |this, _| this.memory_warning());
                     })
                     .detach();
                     #[cfg(target_os = "ios")]

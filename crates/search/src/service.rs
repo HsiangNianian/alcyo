@@ -56,6 +56,8 @@ pub enum Job {
     /// Hold indexing, as while the app listens, when the CPU is for hearing; or go on from where it stopped.
     /// A meeting already being indexed is finished first. Questions are still answered meanwhile.
     Hold(bool),
+    /// Let the model go now, as when the system is short of memory: the next question or meeting loads it again.
+    Unload,
 }
 
 /// A passage found, with what the interface needs to show it and open the meeting there.
@@ -366,6 +368,10 @@ fn run(data: &Path, model: PathBuf, backend: Backend, idle: Duration) -> (Sender
                         held = hold;
                         continue;
                     }
+                    Some(Job::Unload) => {
+                        worker.loaded = None;
+                        continue;
+                    }
                     None => {
                         let id = todo.pop_front().expect("there is a meeting to index");
                         let _ = outbox.send(Event::Indexing { done, total });
@@ -528,6 +534,35 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1, "let go once idle");
         jobs.send(find(3)).unwrap();
         wait(&events, &|e| matches!(e, Event::Found { ticket: 3, .. }));
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "loaded again when asked");
+        drop(jobs);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_model_inside_the_app_is_let_go_when_memory_runs_short() {
+        let data = folder("in-process-unload");
+        let (loads, drops) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let load: Load = {
+            let (loads, drops) = (loads.clone(), drops.clone());
+            Box::new(move |_| {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(Fake { dropped: drops.clone() }))
+            })
+        };
+        // Kept for a minute when idle, but let go at once when asked.
+        let (jobs, events) = run(&data, data.join("model.gguf"), Backend::InProcess(load), Duration::from_secs(60));
+        let find = |ticket| Job::Find { text: "ship date".into(), meetings: vec![], limit: 3, ticket };
+        jobs.send(find(1)).unwrap();
+        wait(&events, &|e| matches!(e, Event::Found { ticket: 1, .. }));
+        jobs.send(Job::Unload).unwrap();
+        let since = Instant::now();
+        while drops.load(Ordering::SeqCst) == 0 && since.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 1, "let go when asked");
+        jobs.send(find(2)).unwrap();
+        wait(&events, &|e| matches!(e, Event::Found { ticket: 2, .. }));
         assert_eq!(loads.load(Ordering::SeqCst), 2, "loaded again when asked");
         drop(jobs);
         let _ = std::fs::remove_dir_all(&data);

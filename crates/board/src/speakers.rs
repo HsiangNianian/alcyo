@@ -91,20 +91,45 @@ pub fn identify_sentence_at(voices: &mut Vec<Voice>, voiceprint: &[f64], seconds
 /// a name. A voiceprint like none heard so far would start a new voice; the slot says who it is instead,
 /// and the voice joins that person's. Short pieces cut where the speaker changes have unsteady
 /// voiceprints, and without this each odd one becomes someone new.
-pub fn identify_in_slot(voices: &mut Vec<Voice>, voiceprint: &[f64], seconds: f64, taken: &[&str], slot_name: Option<&str>) -> Option<String> {
-    identify_in_slot_at(voices, voiceprint, seconds, taken, slot_name, SAME, NEW_VOICE_SECONDS)
+///
+/// At most `most` voices are told apart ([`MOST_SPEAKERS`] when the meeting does not say how many take part): once
+/// there are that many, a voice like none of them joins the closest rather than becoming someone new. A long meeting
+/// on the iPad grew seven one-line speakers A to G beside its four people (2026-11-26).
+pub fn identify_in_slot(voices: &mut Vec<Voice>, voiceprint: &[f64], seconds: f64, taken: &[&str], slot_name: Option<&str>, most: usize) -> Option<String> {
+    identify_in_slot_within(voices, voiceprint, seconds, taken, slot_name, SAME, NEW_VOICE_SECONDS, most)
 }
 
-/// As [`identify_in_slot`], with the threshold and the shortest new voice given, for measuring others.
+/// The most speakers a meeting tells apart, as many as the diarization model has slots, and the most a meeting can be
+/// said to have.
+pub const MOST_SPEAKERS: usize = 8;
+
+/// As [`identify_in_slot`], with the threshold and the shortest new voice given, for measuring others, and no more
+/// voices than the model has slots.
 pub fn identify_in_slot_at(voices: &mut Vec<Voice>, voiceprint: &[f64], seconds: f64, taken: &[&str], slot_name: Option<&str>, same: f64, new_voice: f64) -> Option<String> {
+    identify_in_slot_within(voices, voiceprint, seconds, taken, slot_name, same, new_voice, MOST_SPEAKERS)
+}
+
+/// Join a voiceprint to `voice`, weighing its earlier sentences at most [`MEMORY`] times.
+fn join(voice: &mut Voice, voiceprint: &[f64]) -> String {
+    let weight = f64::from(voice.n.min(MEMORY));
+    let merged: Vec<f64> = voice.centroid.iter().enumerate().map(|(k, x)| x * weight + voiceprint.get(k).copied().unwrap_or(0.0)).collect();
+    voice.centroid = unit(&merged);
+    voice.n += 1;
+    voice.name.clone()
+}
+
+/// As [`identify_in_slot_at`], telling at most `most` voices apart (at least one).
+#[allow(clippy::too_many_arguments)]
+pub fn identify_in_slot_within(voices: &mut Vec<Voice>, voiceprint: &[f64], seconds: f64, taken: &[&str], slot_name: Option<&str>, same: f64, new_voice: f64, most: usize) -> Option<String> {
     let known = voices.iter().any(|voice| dot(&voice.centroid, voiceprint) >= same);
     if !known {
         if let Some(voice) = slot_name.and_then(|name| voices.iter_mut().find(|v| v.name == name)) {
-            let weight = f64::from(voice.n.min(MEMORY));
-            let merged: Vec<f64> = voice.centroid.iter().enumerate().map(|(k, x)| x * weight + voiceprint.get(k).copied().unwrap_or(0.0)).collect();
-            voice.centroid = unit(&merged);
-            voice.n += 1;
-            return Some(voice.name.clone());
+            return Some(join(voice, voiceprint));
+        }
+        // As many voices as the meeting has people: this one is the closest of them, however unlike it sounds.
+        if voices.len() >= most.max(1) && seconds >= new_voice {
+            let closest = voices.iter_mut().max_by(|a, b| dot(&a.centroid, voiceprint).total_cmp(&dot(&b.centroid, voiceprint)))?;
+            return Some(join(closest, voiceprint));
         }
     }
     (known || seconds >= new_voice).then(|| identify_at(voices, voiceprint, taken, same))
@@ -324,20 +349,66 @@ mod slot_tests {
     #[test]
     fn a_strange_voice_in_a_named_slot_joins_that_person() {
         let mut voices = vec![];
-        assert_eq!(identify_in_slot(&mut voices, &print(0.0), 3.0, &[], None).as_deref(), Some("A"));
+        assert_eq!(identify_in_slot(&mut voices, &print(0.0), 3.0, &[], None, MOST_SPEAKERS).as_deref(), Some("A"));
         // At right angles to A: alone it would be someone new.
-        assert_eq!(identify_in_slot(&mut voices, &print(1.5), 3.0, &[], Some("A")).as_deref(), Some("A"));
+        assert_eq!(identify_in_slot(&mut voices, &print(1.5), 3.0, &[], Some("A"), MOST_SPEAKERS).as_deref(), Some("A"));
         assert_eq!((voices.len(), voices[0].n), (1, 2));
-        assert_eq!(identify_in_slot(&mut voices, &print(-1.6), 3.0, &[], None).as_deref(), Some("B"));
+        assert_eq!(identify_in_slot(&mut voices, &print(-1.6), 3.0, &[], None, MOST_SPEAKERS).as_deref(), Some("B"));
     }
 
     #[test]
     fn a_known_voice_wins_over_its_slot() {
         let mut voices = vec![];
-        identify_in_slot(&mut voices, &print(0.0), 3.0, &[], None);
-        identify_in_slot(&mut voices, &print(1.5), 3.0, &[], None);
+        identify_in_slot(&mut voices, &print(0.0), 3.0, &[], None, MOST_SPEAKERS);
+        identify_in_slot(&mut voices, &print(1.5), 3.0, &[], None, MOST_SPEAKERS);
         // The slot says A, but the voice is plainly B's.
-        assert_eq!(identify_in_slot(&mut voices, &print(1.5), 3.0, &[], Some("A")).as_deref(), Some("B"));
+        assert_eq!(identify_in_slot(&mut voices, &print(1.5), 3.0, &[], Some("A"), MOST_SPEAKERS).as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn no_more_voices_than_the_meeting_has_people() {
+        // Four people said to be in the meeting: a fifth voice, like none of them, joins the closest.
+        // Each person along an axis of their own; a stranger mostly along a fifth, leaning towards one of them.
+        let axis = |i: usize, lean: Option<usize>| {
+            let mut v = vec![0.0; 8];
+            v[i] = 1.0;
+            if let Some(j) = lean {
+                v[j] = 0.35;
+            }
+            unit(&v)
+        };
+        let mut voices = vec![];
+        for i in 0..4 {
+            assert_eq!(identify_in_slot(&mut voices, &axis(i, None), 3.0, &[], None, 4), Some(["A", "B", "C", "D"][i].to_string()));
+        }
+        assert_eq!(identify_in_slot(&mut voices, &axis(4, Some(0)), 3.0, &[], None, 4).as_deref(), Some("A"), "closest to A");
+        assert_eq!(identify_in_slot(&mut voices, &axis(5, Some(2)), 3.0, &[], None, 4).as_deref(), Some("C"));
+        assert_eq!(voices.len(), 4);
+        // A sentence too short to name anyone still names nobody.
+        assert_eq!(identify_in_slot(&mut voices, &axis(6, None), 0.5, &[], None, 4), None);
+        // Its slot's person comes first.
+        assert_eq!(identify_in_slot(&mut voices, &axis(7, Some(2)), 3.0, &[], Some("B"), 4).as_deref(), Some("B"));
+        assert_eq!(voices.len(), 4);
+        // Without a cap the same stranger would have been someone new.
+        let mut free: Vec<Voice> = (0..4).map(|i| Voice { name: ["A", "B", "C", "D"][i].into(), centroid: axis(i, None), n: 1 }).collect();
+        assert_eq!(identify_in_slot(&mut free, &axis(4, Some(0)), 3.0, &[], None, MOST_SPEAKERS).as_deref(), Some("E"));
+    }
+
+    #[test]
+    fn a_long_meeting_left_to_itself_stops_at_eight_voices() {
+        // Voiceprints all unlike one another, as unsteady short pieces can be.
+        let mut voices = vec![];
+        for i in 0..40 {
+            let mut print = vec![0.0; 64];
+            print[i % 64] = 1.0;
+            identify_in_slot(&mut voices, &print, 3.0, &[], None, MOST_SPEAKERS);
+        }
+        assert_eq!(voices.len(), MOST_SPEAKERS);
+        // One person said to be there: everyone is them.
+        let mut voices = vec![];
+        for angle in [0.0, 2.0, 4.0] {
+            assert_eq!(identify_in_slot(&mut voices, &print(angle), 3.0, &[], None, 1).as_deref(), Some("A"));
+        }
     }
 }
 

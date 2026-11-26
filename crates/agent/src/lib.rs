@@ -261,6 +261,12 @@ impl Provider {
                 Err(ureq::Error::Status(code, reply)) if code != 429 && code < 500 => {
                     return Err(anyhow!("model answered {code}: {}", self.excerpt(&reply.into_string().unwrap_or_default())));
                 }
+                // The model inside this app being stopped (503), not there (refused), or out of time: asking it again
+                // here only waits longer. The session asks again once the model is back (`Model::ask`).
+                Err(ureq::Error::Status(code, reply)) if code == 503 && matches!(self, Self::Local { .. }) => {
+                    return Err(anyhow!("model answered {code}: {}", self.excerpt(&reply.into_string().unwrap_or_default())));
+                }
+                Err(e @ ureq::Error::Transport(_)) if matches!(self, Self::Local { .. }) => return Err(anyhow!("model request failed: {e}")),
                 Err(e) => last = anyhow!("model request failed: {e}"),
             }
             if attempt + 1 < attempts {
@@ -647,6 +653,9 @@ pub enum Update {
     Failed { meeting: u64, message: String, lines: Vec<Utterance> },
     /// Something went wrong outside any line, like the local model failing to start.
     Broken(String),
+    /// The local model did not stop in time when it was asked to. It is waited for, and started again when a line
+    /// needs it; lines wait meanwhile rather than fail.
+    SlowToStop,
 }
 
 pub struct LocalServer {
@@ -818,15 +827,15 @@ fn end_with_this_process(child: u32) {
 
 /// A running model server: a program of its own on the desktop, a thread of this app on the iPad.
 enum Running {
-    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    #[cfg_attr(any(target_os = "ios", feature = "embedded"), allow(dead_code))]
     Child(Child),
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", feature = "embedded"))]
     Embedded(alcyo_llama::Server),
 }
 
 impl Running {
     /// Stop it and give back its memory. A server inside the app that does not stop in time is an error, as its
-    /// memory stays taken.
+    /// memory stays taken until its thread ends; the next start waits for that.
     fn stop(self) -> Result<()> {
         match self {
             Running::Child(mut child) => {
@@ -834,23 +843,247 @@ impl Running {
                 let _ = child.wait();
                 Ok(())
             }
-            #[cfg(target_os = "ios")]
+            #[cfg(any(target_os = "ios", feature = "embedded"))]
             Running::Embedded(server) => server.stop().map(drop),
         }
     }
+
+    /// Whether it has ended by itself, as a server that failed does.
+    fn ended(&mut self) -> bool {
+        match self {
+            Running::Child(child) => child.try_wait().ok().flatten().is_some(),
+            #[cfg(any(target_os = "ios", feature = "embedded"))]
+            Running::Embedded(server) => server.exited().is_some(),
+        }
+    }
+}
+
+/// Wait for a server inside the app whose stop was given up on to end after all, at most `limit`. Whether none is left.
+fn wait_stopped(limit: Duration) -> bool {
+    #[cfg(any(target_os = "ios", feature = "embedded"))]
+    return alcyo_llama::wait_stopped(limit);
+    #[cfg(not(any(target_os = "ios", feature = "embedded")))]
+    {
+        let _ = limit;
+        true
+    }
+}
+
+/// Whether an error is a start refused because the last server is still stopping: worth waiting for, not reporting.
+fn still_stopping(e: &anyhow::Error) -> bool {
+    #[cfg(any(target_os = "ios", feature = "embedded"))]
+    if e.chain().any(|c| c.is::<alcyo_llama::StillStopping>()) {
+        return true;
+    }
+    e.to_string().contains("still stopping")
 }
 
 /// The local server that is up: how it runs, where it answers, and which model it holds.
 type Held = Option<(Running, String, PathBuf)>;
 
-/// Stop the local server whatever is chosen, as when the iPad goes to the background. Whether one was running.
-fn release_now(server: &Mutex<Held>, local_base: &Mutex<Option<String>>, updates: &Sender<Update>) -> bool {
-    let Some((running, _, _)) = server.lock().expect("server lock").take() else { return false };
-    *local_base.lock().expect("base lock") = None;
-    if let Err(e) = running.stop() {
-        let _ = updates.send(Update::Broken(format!("{e:#}")));
+/// Whether a failed request means the local model is not there to answer, rather than that it answered badly: it was
+/// stopped under the request, ended, or is being restarted. Such a line is asked again once the model is back.
+pub fn unavailable(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    ["connection refused", "connection reset", "connection failed", "unexpected eof", "shutting down", "broke off", "answered 503", "status code 503", "decoding was aborted", "still stopping", "os error 61", "os error 54", "os error 111"]
+        .iter()
+        .any(|sign| lower.contains(sign))
+}
+
+/// How many times a line is asked again when the local model was not there to answer it ([`unavailable`]).
+const UNAVAILABLE_RETRIES: u32 = 3;
+/// How long a line waits before it is asked again while the last local server is still stopping.
+const STOPPING_PAUSE: Duration = Duration::from_secs(3);
+
+/// What starts, holds and stops the local model, shared by the session's thread, a summary being written, and the
+/// window's handlers (the background, memory warnings, a switch of model). One server at a time, under `server`'s lock.
+#[derive(Clone)]
+pub struct Model {
+    server: Arc<Mutex<Held>>,
+    backend: Arc<Mutex<Backend>>,
+    /// Where the local model is answering, once it has started.
+    local_base: Arc<Mutex<Option<String>>>,
+    /// Held back while the iPad is in the background (`Session::pause_local`).
+    pause: Arc<Pause>,
+    /// Requests to the model under way, or about to be sent, so a memory warning leaves a busy model alone.
+    busy: Arc<std::sync::atomic::AtomicUsize>,
+    updates: Sender<Update>,
+    /// The session's thread, the one that starts the desktop's server ([`Model::may_start_here`]).
+    starter: Arc<Mutex<Option<thread::ThreadId>>>,
+}
+
+/// A request to the model under way, from [`Model::busy`] until it is dropped.
+pub struct Busy(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
-    true
+}
+
+/// How long a thread other than the session's waits for the desktop's local model to come up ([`Model::provider`]).
+const START_ELSEWHERE_WAIT: Duration = Duration::from_secs(180);
+
+impl Model {
+    /// Whether this thread may start the local server. A server inside the app, as on the iPad, may be started from
+    /// any thread; the desktop's program is tied to the thread that starts it (PR_SET_PDEATHSIG), the session's.
+    fn may_start_here(&self) -> bool {
+        cfg!(any(target_os = "ios", feature = "embedded")) || *self.starter.lock().expect("starter lock") == Some(thread::current().id())
+    }
+
+    /// Mark the model busy until the guard goes: a memory warning does not stop it meanwhile.
+    pub fn busy(&self) -> Busy {
+        self.busy.fetch_add(1, Ordering::SeqCst);
+        Busy(self.busy.clone())
+    }
+
+    /// Stop a server taken out of `server`. One that does not stop in time is told about once, plainly: the next start
+    /// waits for it, and lines wait meanwhile.
+    fn stop(&self, running: Running) {
+        if let Err(e) = running.stop() {
+            eprintln!("stopping the local model: {e:#}");
+            let _ = self.updates.send(Update::SlowToStop);
+        }
+    }
+
+    /// The model that answers now, starting the local one if it is chosen and not up: it blocks while the model loads,
+    /// and while the iPad is in the background. Any thread may ask; one start happens at a time.
+    pub fn provider(&self) -> Result<Provider> {
+        let mut waited = Duration::ZERO;
+        loop {
+            // Whatever is chosen now, a server it does not want goes first: another model, or none.
+            self.release_unwanted();
+            let choice = self.backend.lock().expect("backend lock").clone();
+            return match choice {
+                Backend::Ready(provider) => Ok(provider),
+                Backend::NoModel => bail!("{NO_MODEL}"),
+                Backend::ManagedLocal(local) => {
+                    // In the background the model may not run: the line waits, and those after it queue.
+                    self.pause.wait();
+                    let mut server = self.server.lock().expect("server lock");
+                    // The choice changed while this waited, as a restart onto another model does (Switcher): look again.
+                    if !matches!(&*self.backend.lock().expect("backend lock"), Backend::ManagedLocal(now) if now.model == local.model) {
+                        continue;
+                    }
+                    // Another model chosen since the check above, which the running server cannot switch to; or the
+                    // server ended by itself.
+                    let stale = server.as_mut().is_some_and(|(running, _, model)| model != &local.model || running.ended());
+                    if stale {
+                        *self.local_base.lock().expect("base lock") = None;
+                        if let Some((running, _, _)) = server.take() {
+                            self.stop(running);
+                        }
+                    }
+                    if server.is_none() && !self.may_start_here() {
+                        // The desktop's server dies with the thread that started it, so only the session's thread
+                        // starts it; another waits for it to (the session starts it at once, and for its next line).
+                        drop(server);
+                        if waited >= START_ELSEWHERE_WAIT {
+                            bail!("The local model is still loading. Try again in a moment.");
+                        }
+                        thread::sleep(Duration::from_millis(250));
+                        waited += Duration::from_millis(250);
+                        continue;
+                    }
+                    if server.is_none() {
+                        let _ = self.updates.send(Update::Loading);
+                        let (running, base) = start_llama(&local)?;
+                        prepare_prompt(&base, &self.updates);
+                        let _ = self.updates.send(Update::Ready);
+                        *self.local_base.lock().expect("base lock") = Some(base.clone());
+                        *server = Some((running, base, local.model.clone()));
+                    }
+                    Ok(Provider::Local { base: server.as_ref().map(|(_, b, _)| b.clone()).expect("just set") })
+                }
+            };
+        }
+    }
+
+    /// Stop the local server unless the chosen backend still wants it, so leaving the local model for a remote one, or
+    /// another local one, gives its memory back at once rather than when the session ends.
+    fn release_unwanted(&self) {
+        let mut held = self.server.lock().expect("server lock");
+        let wanted = match &*self.backend.lock().expect("backend lock") {
+            Backend::ManagedLocal(local) => held.as_ref().is_some_and(|(_, _, model)| model == &local.model),
+            Backend::Ready(_) | Backend::NoModel => false,
+        };
+        if wanted {
+            return;
+        }
+        if let Some((running, _, _)) = held.take() {
+            *self.local_base.lock().expect("base lock") = None;
+            self.stop(running);
+        }
+    }
+
+    /// Stop the local server whatever is chosen, as when the iPad goes to the background. Whether one was running.
+    fn release_now(&self) -> bool {
+        let mut held = self.server.lock().expect("server lock");
+        let Some((running, _, _)) = held.take() else { return false };
+        *self.local_base.lock().expect("base lock") = None;
+        self.stop(running);
+        true
+    }
+
+    /// Stop the local server if nothing is asking it anything: a memory warning's last resort. Whether it stopped.
+    fn shed_if_idle(&self) -> bool {
+        // Checked under the server's lock, which a request takes (in `provider`) after it is counted busy and before it
+        // is sent: no request can start between the check and the stop.
+        let mut held = self.server.lock().expect("server lock");
+        if self.busy.load(Ordering::SeqCst) > 0 {
+            return false;
+        }
+        let Some((running, _, _)) = held.take() else { return false };
+        *self.local_base.lock().expect("base lock") = None;
+        self.stop(running);
+        true
+    }
+
+    /// A request to `base` found nobody answering: if that server is still held and has ended or does not answer, let
+    /// it go, so the next request starts the model again.
+    fn forget_if_dead(&self, base: &str) {
+        let mut held = self.server.lock().expect("server lock");
+        let dead = match held.as_mut() {
+            Some((running, at, _)) if at == base => running.ended() || http(base).get(&format!("{base}/health")).timeout(Duration::from_secs(3)).call().is_err(),
+            _ => false,
+        };
+        if dead {
+            *self.local_base.lock().expect("base lock") = None;
+            if let Some((running, _, _)) = held.take() {
+                self.stop(running);
+            }
+        }
+    }
+
+    /// Ask with `ask` and the model that answers now, again when the local model was not there to answer (stopped under
+    /// the request, ended, being restarted), up to [`UNAVAILABLE_RETRIES`] times, while `still_wanted` holds. Gives
+    /// the provider last used, and the answer.
+    pub fn ask<T>(&self, still_wanted: impl Fn() -> bool, mut ask: impl FnMut(&Provider) -> Result<T>) -> (Result<Provider>, Result<T>) {
+        let mut tries = 0;
+        loop {
+            let provider = self.provider();
+            let result = match &provider {
+                Ok(provider) => ask(provider),
+                Err(e) => Err(anyhow!("{e:#}")),
+            };
+            let again = match (&provider, &result) {
+                (Ok(Provider::Local { base }), Err(e)) if unavailable(&format!("{e:#}")) => {
+                    self.forget_if_dead(base);
+                    true
+                }
+                (Err(e), _) if still_stopping(e) => {
+                    thread::sleep(STOPPING_PAUSE);
+                    true
+                }
+                _ => false,
+            };
+            if !again || tries >= UNAVAILABLE_RETRIES || !still_wanted() {
+                return (provider, result);
+            }
+            tries += 1;
+            eprintln!("the local model was not there to answer; asking again ({tries} of {UNAVAILABLE_RETRIES})");
+        }
+    }
 }
 
 /// What iPadOS still lets the app use, in bytes; unknown elsewhere.
@@ -887,13 +1120,23 @@ pub struct Switcher {
     local_base: Arc<Mutex<Option<String>>>,
 }
 
+/// How long a switch waits, beyond the stop's own wait, for an old model whose stop was given up on to end after all.
+const SWITCH_LINGER: Duration = Duration::from_secs(60);
+
 impl Switcher {
     pub fn switch(&self, to: Backend) -> Result<()> {
         // Held throughout, so no line starts the old model again in between.
         let mut held = self.server.lock().expect("server lock");
         if let Some((running, _, _)) = held.take() {
             *self.local_base.lock().expect("base lock") = None;
-            running.stop().context(NOT_FREED)?;
+            // A line being drawn is cut short and asked again of the new model. A stop given up on is waited for a
+            // while longer: its thread ends once what held it lets go.
+            if let Err(e) = running.stop() {
+                eprintln!("stopping the old model: {e:#}");
+                if !wait_stopped(SWITCH_LINGER) {
+                    return Err(e).context(NOT_FREED);
+                }
+            }
         }
         let needed = match &to {
             Backend::ManagedLocal(local) => memory_needed(&local.model),
@@ -929,25 +1172,6 @@ impl Pause {
     }
 }
 
-/// Stop the local server unless the chosen backend still wants it, so leaving the local model for a remote one, or
-/// another local one, gives its memory back at once rather than when the session ends.
-fn release_unwanted(server: &Mutex<Held>, backend: &Mutex<Backend>, local_base: &Mutex<Option<String>>, updates: &Sender<Update>) {
-    let mut held = server.lock().expect("server lock");
-    let wanted = match &*backend.lock().expect("backend lock") {
-        Backend::ManagedLocal(local) => held.as_ref().is_some_and(|(_, _, model)| model == &local.model),
-        Backend::Ready(_) | Backend::NoModel => false,
-    };
-    if wanted {
-        return;
-    }
-    if let Some((running, _, _)) = held.take() {
-        *local_base.lock().expect("base lock") = None;
-        if let Err(e) = running.stop() {
-            let _ = updates.send(Update::Broken(format!("{e:#}")));
-        }
-    }
-}
-
 /// Whether a server that was started has ended since, and how.
 trait Ended {
     fn ended(&mut self) -> Result<Option<String>>;
@@ -959,7 +1183,7 @@ impl Ended for Child {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "embedded"))]
 impl Ended for alcyo_llama::Server {
     fn ended(&mut self) -> Result<Option<String>> {
         Ok(self.exited().map(|code| format!("exit code {code}")))
@@ -967,7 +1191,7 @@ impl Ended for alcyo_llama::Server {
 }
 
 /// Start the server on the best device, falling back to the CPU if that fails to come up.
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", feature = "embedded")))]
 fn start_llama(server: &LocalServer) -> Result<(Running, String)> {
     let base = format!("http://127.0.0.1:{LLAMA_PORT}");
     let health = format!("{base}/health");
@@ -990,7 +1214,7 @@ fn start_llama(server: &LocalServer) -> Result<(Running, String)> {
 
 /// On the iPad the server runs inside the app (alcyo-llama), as iPadOS lets an app start no other program. It
 /// has the graphics only: the CPU would be no fallback, too slow and short of memory just the same.
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "embedded"))]
 fn start_llama(server: &LocalServer) -> Result<(Running, String)> {
     let base = format!("http://127.0.0.1:{LLAMA_PORT}");
     let health = format!("{base}/health");
@@ -1016,7 +1240,7 @@ const EMBEDDED_OVERHEAD: u64 = 5 << 28;
 
 /// Say plainly when the model will not fit in what iPadOS lets the app use, rather than start it and have the
 /// system end the app. `available` is unknown off the iPad, where this lets it start.
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", feature = "embedded")), allow(dead_code))]
 fn fits_in_memory(model_bytes: u64, available: Option<u64>) -> Result<()> {
     let Some(available) = available else { return Ok(()) };
     let needed = model_bytes + EMBEDDED_OVERHEAD;
@@ -1034,7 +1258,7 @@ fn fits_in_memory(model_bytes: u64, available: Option<u64>) -> Result<()> {
 /// The iPad's built-in server's arguments: the desktop's, on the graphics, with the keys and values kept at 8
 /// bits rather than 16 (about 0.45 GB less for Qwen3-4B, for little loss) and fewer prompts kept aside, as every
 /// byte counts against what iPadOS lets the app use. `--fit` lets as many layers as fit go to the graphics.
-#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "ios", feature = "embedded")), allow(dead_code))]
 fn embedded_args(model: &std::path::Path, port: u16) -> Vec<String> {
     let mut args: Vec<String> = vec!["-m".into(), model.to_string_lossy().into_owned(), "--host".into(), "127.0.0.1".into(), "--port".into(), port.to_string()];
     args.extend(["-c", "6144", "-np", "1", "--jinja", "--cache-ram", "256", "-ngl", "auto", "--fit", "on", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0"].map(String::from));
@@ -1162,14 +1386,9 @@ pub struct Session {
     backend: Arc<Mutex<Backend>>,
     guidance: Arc<Mutex<Option<Guidance>>>,
     meeting: Arc<AtomicU64>,
-    /// Where the local model is answering, once it has started.
-    local_base: Arc<Mutex<Option<String>>>,
-    /// The local server, shared so choosing another backend stops it at once (`set_backend`).
-    server: Arc<Mutex<Held>>,
-    /// Held back while the iPad is in the background (`pause_local`).
-    pause: Arc<Pause>,
-    /// Whether a line is being drawn now, so a memory warning leaves a busy model alone.
-    asking: Arc<std::sync::atomic::AtomicBool>,
+    /// The model and its local server, shared so choosing another backend stops it at once (`set_backend`), and so a
+    /// summary can ask it too (`Session::model`).
+    model: Model,
     /// Speakers renamed in this meeting, in order, for lines that were on their way at the time.
     renames: Arc<Mutex<Vec<(String, String)>>>,
     /// When speech was last heard, from the drafts, so a turn is held while its speaker goes on.
@@ -1190,75 +1409,43 @@ fn rename_line(line: &mut Utterance, renames: &[(String, String)]) {
 
 impl Session {
     pub fn start(backend: Backend, guidance: Option<Guidance>, said: Receiver<Said>, ready: Sender<()>, drained: Sender<()>, updates: Sender<Update>) -> Self {
+        let backend = Arc::new(Mutex::new(backend));
+        let model = Model {
+            server: Arc::new(Mutex::new(None)),
+            backend: backend.clone(),
+            local_base: Arc::new(Mutex::new(None)),
+            pause: Arc::new(Pause::default()),
+            busy: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            updates: updates.clone(),
+            starter: Arc::new(Mutex::new(None)),
+        };
         let session = Self {
             graph: Arc::new(Mutex::new(Graph::default())),
             history: Arc::new(Mutex::new(vec![])),
             hint: Arc::new(Mutex::new(None)),
             glossary: Arc::new(Mutex::new(sound::Glossary::default())),
             references: Arc::new(Mutex::new(vec![])),
-            backend: Arc::new(Mutex::new(backend)),
+            backend,
             guidance: Arc::new(Mutex::new(guidance)),
             meeting: Arc::new(AtomicU64::new(0)),
-            local_base: Arc::new(Mutex::new(None)),
-            server: Arc::new(Mutex::new(None)),
-            pause: Arc::new(Pause::default()),
-            asking: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            model,
             renames: Arc::new(Mutex::new(vec![])),
             speaking: Arc::new(Mutex::new(None)),
             consolidating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             updates: updates.clone(),
         };
-        let (graph, history, hint, backend, guidance, meeting) =
-            (session.graph.clone(), session.history.clone(), session.hint.clone(), session.backend.clone(), session.guidance.clone(), session.meeting.clone());
+        let (graph, history, hint, guidance, meeting) = (session.graph.clone(), session.history.clone(), session.hint.clone(), session.guidance.clone(), session.meeting.clone());
         let glossary = session.glossary.clone();
         let references = session.references.clone();
-        let local_base = session.local_base.clone();
-        let server = session.server.clone();
-        let (pause, asking) = (session.pause.clone(), session.asking.clone());
+        let model = session.model.clone();
         let renames = session.renames.clone();
         let speaking = session.speaking.clone();
         let consolidating = session.consolidating.clone();
         thread::spawn(move || {
             // A child's death signal is tied to this thread, which starts it; a server inside the app stops when the
             // last of the session goes.
-            let provider_now = |updates: &Sender<Update>| -> Result<Provider> {
-                loop {
-                    // Whatever is chosen now, a server it does not want goes first: another model, or none.
-                    release_unwanted(&server, &backend, &local_base, updates);
-                    let choice = backend.lock().expect("backend lock").clone();
-                    return match choice {
-                        Backend::Ready(provider) => Ok(provider),
-                        Backend::NoModel => bail!("{NO_MODEL}"),
-                        Backend::ManagedLocal(local) => {
-                            // In the background the model may not run: the line waits, and those after it queue.
-                            pause.wait();
-                            let mut server = server.lock().expect("server lock");
-                            // The choice changed while this waited, as a restart onto another model does (Switcher):
-                            // look again.
-                            if !matches!(&*backend.lock().expect("backend lock"), Backend::ManagedLocal(now) if now.model == local.model) {
-                                continue;
-                            }
-                            // Another model chosen since the check above: the running server cannot switch.
-                            if server.as_ref().is_some_and(|(_, _, model)| model != &local.model) {
-                                *local_base.lock().expect("base lock") = None;
-                                if let Some((running, _, _)) = server.take() {
-                                    running.stop()?;
-                                }
-                            }
-                            if server.is_none() {
-                                let _ = updates.send(Update::Loading);
-                                let (running, base) = start_llama(&local)?;
-                                prepare_prompt(&base, updates);
-                                let _ = updates.send(Update::Ready);
-                                *local_base.lock().expect("base lock") = Some(base.clone());
-                                *server = Some((running, base, local.model.clone()));
-                            }
-                            Ok(Provider::Local { base: server.as_ref().map(|(_, b, _)| b.clone()).expect("just set") })
-                        }
-                    };
-                }
-            };
-            let first_use = provider_now(&updates);
+            *model.starter.lock().expect("starter lock") = Some(thread::current().id());
+            let first_use = model.provider();
             match &first_use {
                 Ok(Provider::Local { .. }) => {}
                 Ok(_) => {
@@ -1362,20 +1549,23 @@ impl Session {
                 };
                 let seen = graph.lock().expect("graph lock").clone();
                 let note = hint.lock().expect("hint lock").take();
-                asking.store(true, Ordering::SeqCst);
-                let provider = provider_now(&updates);
-                let result = match (&provider, &next) {
-                    // Nothing to draw: the lines only join the discussion.
-                    (_, None) => Ok(Reply::default()),
-                    (Ok(provider), Some(next)) => {
-                        let chosen = guidance.lock().expect("guidance lock").unwrap_or_else(|| provider.default_guidance());
-                        let terms = glossary.lock().expect("glossary lock").clone();
-                        let cited = references.lock().expect("references lock").clone();
-                        propose_with(provider, &seen, &recent, next, chosen, note.as_deref(), &terms, &cited)
-                    }
-                    (Err(e), Some(_)) => Err(anyhow!("{e:#}")),
-                };
-                asking.store(false, Ordering::SeqCst);
+                let busy = model.busy();
+                // A line the local model was not there to answer, as when it was stopped under the request or ended, is
+                // asked again once it is back, rather than failing: the lines wait meanwhile.
+                let (provider, result) = model.ask(
+                    || meeting.load(Ordering::SeqCst) == current,
+                    |provider| match &next {
+                        // Nothing to draw: the lines only join the discussion.
+                        None => Ok(Reply::default()),
+                        Some(next) => {
+                            let chosen = guidance.lock().expect("guidance lock").unwrap_or_else(|| provider.default_guidance());
+                            let terms = glossary.lock().expect("glossary lock").clone();
+                            let cited = references.lock().expect("references lock").clone();
+                            propose_with(provider, &seen, &recent, next, chosen, note.as_deref(), &terms, &cited)
+                        }
+                    },
+                );
+                drop(busy);
                 // The lock is held across the check, so a meeting cannot open between it and the write.
                 let mut board = graph.lock().expect("graph lock");
                 if meeting.load(Ordering::SeqCst) != current {
@@ -1579,24 +1769,30 @@ impl Session {
         *self.hint.lock().expect("hint lock") = Some(hint);
     }
 
-    /// The model to ask for a summary: the one drawing the board, without starting anything new.
+    /// The model drawing the board, as far as can be told without starting anything: for saying where a summary goes.
     pub fn provider(&self) -> Result<Provider> {
         let choice = self.backend.lock().expect("backend lock").clone();
         match choice {
             Backend::Ready(provider) => Ok(provider),
             Backend::NoModel => bail!("{NO_MODEL}"),
             Backend::ManagedLocal(_) => {
-                let base = self.local_base.lock().expect("base lock").clone();
+                let base = self.model.local_base.lock().expect("base lock").clone();
                 base.map(|base| Provider::Local { base }).context("The local model is still loading. Try again in a moment.")
             }
         }
+    }
+
+    /// The model, for asking it from another thread, as a summary does: [`Model::provider`] waits for the local model
+    /// to load, starting it if it has to, and [`Model::busy`] keeps a memory warning from stopping it meanwhile.
+    pub fn model(&self) -> Model {
+        self.model.clone()
     }
 
     /// Which model the local server holds, if one is up: `Err(())` while it is starting or stopping, when that cannot
     /// be told without waiting. What it compiled for the graphics must not be cleared from under it.
     #[allow(clippy::result_unit_err)]
     pub fn local_model_up(&self) -> Result<Option<PathBuf>, ()> {
-        match self.server.try_lock() {
+        match self.model.server.try_lock() {
             Ok(held) => Ok(held.as_ref().map(|(_, _, model)| model.clone())),
             Err(std::sync::TryLockError::Poisoned(held)) => Ok(held.into_inner().as_ref().map(|(_, _, model)| model.clone())),
             Err(std::sync::TryLockError::WouldBlock) => Err(()),
@@ -1605,33 +1801,32 @@ impl Session {
 
     /// What switches the board model as a restart would, off the window's thread (the iPad).
     pub fn switcher(&self) -> Switcher {
-        Switcher { server: self.server.clone(), backend: self.backend.clone(), local_base: self.local_base.clone() }
+        Switcher { server: self.model.server.clone(), backend: self.backend.clone(), local_base: self.model.local_base.clone() }
     }
 
     /// The iPad went to the background, where iPadOS allows no work on the graphics and ends an app holding gigabytes
     /// soonest: the local model stops now, and lines that need it wait, queued, until [`Session::resume_local`]. A
     /// line being drawn as it stops fails with an error rather than taking the app with it. A remote model goes on.
     pub fn pause_local(&self) {
-        self.pause.set(true);
-        let (server, local_base, updates) = (self.server.clone(), self.local_base.clone(), self.updates.clone());
-        thread::spawn(move || release_now(&server, &local_base, &updates));
+        self.model.pause.set(true);
+        let model = self.model.clone();
+        thread::spawn(move || model.release_now());
     }
 
     /// Back in the foreground: the local model starts again when a line next needs it, showing it loading.
     pub fn resume_local(&self) {
-        self.pause.set(false);
+        self.model.pause.set(false);
     }
 
-    /// iPadOS is short of memory: stop the local model if it is up and not drawing a line, and say why in `notice`.
-    /// It starts again when a line next needs it.
+    /// iPadOS is short of memory, and the window found nothing waiting for the model (no listening, no line waiting, no
+    /// summary being written): stop the local model if nothing is asking it anything either, and say why in `notice`.
+    /// It starts again when a line next needs it. A model with work under way is left alone: stopping it mid-meeting
+    /// left lines undrawn (2026-11-26).
     pub fn shed_local(&self, notice: String) {
-        if self.asking.load(Ordering::SeqCst) {
-            return;
-        }
-        let (server, local_base, updates) = (self.server.clone(), self.local_base.clone(), self.updates.clone());
+        let model = self.model.clone();
         thread::spawn(move || {
-            if release_now(&server, &local_base, &updates) {
-                let _ = updates.send(Update::Broken(notice));
+            if model.shed_if_idle() {
+                let _ = model.updates.send(Update::Broken(notice));
             }
         });
     }
@@ -1640,8 +1835,8 @@ impl Session {
     /// on a thread of its own, rather than on the next line: a server still starting is waited for first.
     pub fn set_backend(&self, backend: Backend) {
         *self.backend.lock().expect("backend lock") = backend;
-        let (server, choice, local_base, updates) = (self.server.clone(), self.backend.clone(), self.local_base.clone(), self.updates.clone());
-        thread::spawn(move || release_unwanted(&server, &choice, &local_base, &updates));
+        let model = self.model.clone();
+        thread::spawn(move || model.release_unwanted());
     }
 }
 
@@ -1768,34 +1963,150 @@ mod tests {
         assert_eq!(value(&ipad, "-fa").as_deref(), Some("on"));
     }
 
+    /// A model holding `held` with `backend` chosen, and what it reports.
+    fn model_with(held: Held, backend: Backend) -> (Model, Receiver<Update>) {
+        let (updates, heard) = std::sync::mpsc::channel();
+        let base = held.as_ref().map(|(_, base, _)| base.clone());
+        let model = Model {
+            server: Arc::new(Mutex::new(held)),
+            backend: Arc::new(Mutex::new(backend)),
+            local_base: Arc::new(Mutex::new(base)),
+            pause: Arc::new(Pause::default()),
+            busy: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            updates,
+            starter: Arc::new(Mutex::new(Some(thread::current().id()))),
+        };
+        (model, heard)
+    }
+
+    #[cfg(unix)]
+    fn sleeping_server(model: &str) -> (Held, u32) {
+        let child = Command::new("sleep").arg("30").spawn().expect("sleep");
+        let pid = child.id();
+        (Some((Running::Child(child), "http://127.0.0.1:1".to_string(), PathBuf::from(model))), pid)
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: u32) -> bool {
+        Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success())
+    }
+
+    fn local(model: &str) -> Backend {
+        Backend::ManagedLocal(Arc::new(LocalServer { binaries: "bin".into(), model: model.into(), shaders: None }))
+    }
+
     #[cfg(unix)]
     #[test]
     fn leaving_the_local_model_stops_its_server_at_once() {
-        let started = || {
-            let child = Command::new("sleep").arg("30").spawn().expect("sleep");
-            let pid = child.id();
-            (Mutex::new(Some((Running::Child(child), "http://127.0.0.1:1".to_string(), PathBuf::from("a.gguf")))), pid)
-        };
-        let alive = |pid: u32| Command::new("kill").args(["-0", &pid.to_string()]).status().is_ok_and(|s| s.success());
-        let local = |model: &str| Backend::ManagedLocal(Arc::new(LocalServer { binaries: "bin".into(), model: model.into(), shaders: None }));
-        let (updates, heard) = std::sync::mpsc::channel();
-        let base = Mutex::new(Some("http://127.0.0.1:1".to_string()));
-
         // The same model still wanted: kept.
-        let (server, pid) = started();
-        release_unwanted(&server, &Mutex::new(local("a.gguf")), &base, &updates);
-        assert!(server.lock().unwrap().is_some() && alive(pid));
+        let (held, pid) = sleeping_server("a.gguf");
+        let (model, heard) = model_with(held, local("a.gguf"));
+        model.release_unwanted();
+        assert!(model.server.lock().unwrap().is_some() && alive(pid));
 
         // A remote model, no model, or another local one: stopped, and its address forgotten.
         for backend in [Backend::Ready(Provider::Remote { base_url: "https://x".into(), key: "k".into(), model: "m".into() }), Backend::NoModel, local("b.gguf")] {
-            let (server, pid) = started();
-            *base.lock().unwrap() = Some("http://127.0.0.1:1".into());
-            release_unwanted(&server, &Mutex::new(backend), &base, &updates);
-            assert!(server.lock().unwrap().is_none());
-            assert!(base.lock().unwrap().is_none());
+            let (held, pid) = sleeping_server("a.gguf");
+            let (model, _) = model_with(held, backend);
+            model.release_unwanted();
+            assert!(model.server.lock().unwrap().is_none());
+            assert!(model.local_base.lock().unwrap().is_none());
             assert!(!alive(pid), "the server's process is gone");
         }
         assert!(heard.try_recv().is_err(), "a clean stop reports nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_memory_warning_leaves_a_model_with_work_under_way_alone() {
+        let (held, pid) = sleeping_server("a.gguf");
+        let (model, _) = model_with(held, local("a.gguf"));
+        // A line, or a summary, is being asked: the model stays.
+        let asking = model.busy();
+        let summary = model.busy();
+        assert!(!model.shed_if_idle());
+        drop(asking);
+        assert!(!model.shed_if_idle(), "the summary still is");
+        assert!(alive(pid) && model.server.lock().unwrap().is_some());
+        // Nothing under way: it goes, and gives its memory back.
+        drop(summary);
+        assert!(model.shed_if_idle());
+        assert!(!alive(pid));
+        assert!(model.local_base.lock().unwrap().is_none());
+        assert!(!model.shed_if_idle(), "nothing left to stop");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_server_that_ended_by_itself_is_let_go_and_started_again() {
+        let child = Command::new("true").spawn().expect("true");
+        let held = Some((Running::Child(child), "http://127.0.0.1:1".to_string(), PathBuf::from("a.gguf")));
+        let (model, heard) = model_with(held, local("a.gguf"));
+        thread::sleep(Duration::from_millis(200));
+        // Its start fails here (there is no server program), but only after the dead one was let go and Loading said.
+        let _ = model.provider();
+        assert!(model.server.lock().unwrap().is_none(), "the ended server is not kept as if it were up");
+        assert!(heard.try_iter().any(|u| matches!(u, Update::Loading)), "the start was tried again");
+    }
+
+    #[test]
+    fn a_line_the_local_model_was_not_there_for_is_asked_again() {
+        let (model, _) = model_with(None, Backend::Ready(Provider::Local { base: "http://127.0.0.1:1".into() }));
+        // Stopped under the request, then refused while it restarts, then answered.
+        let failures = ["model answered 503: the server is shutting down", "model request failed: http://127.0.0.1:18765/v1/chat/completions: Connection Failed: Connect error: Connection refused (os error 61)"];
+        let mut asked = 0;
+        let (provider, result) = model.ask(
+            || true,
+            |_| {
+                asked += 1;
+                failures.get(asked - 1).map_or(Ok("drawn"), |e| Err(anyhow!("{e}")))
+            },
+        );
+        assert!(provider.is_ok());
+        assert_eq!(result.unwrap(), "drawn");
+        assert_eq!(asked, 3);
+
+        // A model that answered badly is not asked again, nor one that keeps not answering past the retries.
+        let mut asked = 0;
+        let (_, result) = model.ask(
+            || true,
+            |_| -> Result<()> {
+                asked += 1;
+                Err(anyhow!("model answered 400: bad grammar"))
+            },
+        );
+        assert!(result.is_err() && asked == 1);
+        let mut asked = 0;
+        let (_, result) = model.ask(
+            || true,
+            |_| -> Result<()> {
+                asked += 1;
+                Err(anyhow!("Connection refused"))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(asked, 1 + UNAVAILABLE_RETRIES as usize);
+
+        // Not asked again for a meeting that was left meanwhile.
+        let mut asked = 0;
+        let _ = model.ask(
+            || false,
+            |_| -> Result<()> {
+                asked += 1;
+                Err(anyhow!("Connection refused"))
+            },
+        );
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn failures_that_mean_the_model_was_not_there_are_told_apart() {
+        assert!(unavailable("model request failed: http://127.0.0.1:18765/v1/chat/completions: Connection Failed: Connect error: Connection refused (os error 61)"));
+        assert!(unavailable("model answered 503: {\"error\":{\"message\":\"the server is shutting down\"}}"));
+        assert!(unavailable("the local model is still stopping"));
+        assert!(unavailable("model request failed: http://127.0.0.1:18765/v1/chat/completions: Network Error: Unexpected EOF"));
+        assert!(!unavailable("model answered 400: bad request"));
+        assert!(!unavailable("the model's reply is not JSON"));
     }
 
     #[cfg(unix)]
@@ -2232,5 +2543,171 @@ mod tests {
         assert_eq!(lines[0].text, "这句没画上");
         assert!(message.contains("offline"));
         assert!(h.session.board().nodes.is_empty());
+    }
+}
+
+/// The board model's server inside the app, as the iPad runs it, started, stopped and restarted under a session with
+/// lines on their way: built with `--features embedded`, ALCYO_LLAMA_LIB_DIR naming a build of the fork, and
+/// ALCYO_TEST_MODEL a small chat model (MiniCPM5-1B was used), as
+///
+///   ALCYO_LLAMA_LIB_DIR=… ALCYO_TEST_MODEL=… cargo test -p alcyo-agent --features embedded -- --ignored --test-threads 1 embedded
+///
+/// One at a time: they share the server's port and its globals.
+#[cfg(all(test, feature = "embedded"))]
+mod embedded {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    struct Meeting {
+        session: Session,
+        said: Sender<Said>,
+        updates: Receiver<Update>,
+    }
+
+    fn model_file() -> PathBuf {
+        PathBuf::from(std::env::var("ALCYO_TEST_MODEL").expect("ALCYO_TEST_MODEL names a small chat model"))
+    }
+
+    fn local(model: PathBuf) -> Backend {
+        Backend::ManagedLocal(Arc::new(LocalServer { binaries: "unused".into(), model, shaders: None }))
+    }
+
+    fn meeting() -> Meeting {
+        let (said, said_rx) = channel();
+        let (ready_tx, ready_rx) = channel();
+        let (drained_tx, _drained) = channel();
+        let (updates_tx, updates) = channel();
+        let session = Session::start(local(model_file()), None, said_rx, ready_tx, drained_tx, updates_tx);
+        ready_rx.recv_timeout(Duration::from_secs(300)).expect("the model came up");
+        let m = Meeting { session, said, updates };
+        m.until(Duration::from_secs(60), |u| matches!(u, Update::Ready)).expect("ready");
+        m
+    }
+
+    impl Drop for Meeting {
+        /// The server stopped before the next test starts one: the session's thread lets go of it only later.
+        fn drop(&mut self) {
+            self.session.model().release_now();
+        }
+    }
+
+    impl Meeting {
+        fn say(&self, text: &str) {
+            let line = Utterance { speaker: None, text: text.into(), pointing: vec![] };
+            self.said.send(Said { line, ended: Instant::now(), asr_ms: None, meeting: self.session.meeting(), renames: 0, span: None }).unwrap();
+        }
+
+        /// Updates until one `wanted` matches, failing on a failed line or a stop given up on.
+        fn until(&self, limit: Duration, wanted: impl Fn(&Update) -> bool) -> Result<Update> {
+            let started = Instant::now();
+            while let Some(left) = limit.checked_sub(started.elapsed()) {
+                let Ok(update) = self.updates.recv_timeout(left) else { break };
+                match &update {
+                    Update::Failed { message, .. } => bail!("a line failed: {message}"),
+                    Update::SlowToStop => bail!("a stop was given up on"),
+                    Update::Broken(message) => bail!("broken: {message}"),
+                    _ if wanted(&update) => return Ok(update),
+                    _ => {}
+                }
+            }
+            bail!("nothing wanted within {limit:?}")
+        }
+
+        fn drawn(&self) -> Result<Vec<String>> {
+            match self.until(Duration::from_secs(300), |u| matches!(u, Update::Drawn { .. }))? {
+                Update::Drawn { lines, .. } => Ok(lines.into_iter().map(|l| l.text).collect()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// Long enough that the model is still reading it when it is stopped.
+    fn long_line(n: usize) -> String {
+        format!("第{n}项：我们把客户端、服务端、标准输入输出协议、HTTP 流式传输、进程间通信、工具调用、渐进式披露和上下文缺失这些问题都过一遍，然后决定下周先做哪一个，谁负责，什么时候交付。")
+    }
+
+    /// Longer still, so a fast model is surely still at it a second and a half later.
+    fn very_long_line(n: usize) -> String {
+        (0..6).map(|_| long_line(n)).collect()
+    }
+
+    #[test]
+    #[ignore = "needs the embedded server's libraries and a model"]
+    fn embedded_background_while_drawing_keeps_the_line() {
+        let m = meeting();
+        m.say(&very_long_line(1));
+        thread::sleep(Duration::from_millis(1500));
+        let stopping = Instant::now();
+        m.session.pause_local();
+        thread::sleep(Duration::from_secs(2));
+        assert!(m.session.local_model_up().is_ok_and(|up| up.is_none()), "stopped in the background");
+        assert!(stopping.elapsed() < Duration::from_secs(5));
+        m.session.resume_local();
+        let drawn = m.drawn().expect("drawn once back");
+        assert_eq!(drawn, vec![very_long_line(1)]);
+    }
+
+    #[test]
+    #[ignore = "needs the embedded server's libraries and a model"]
+    fn embedded_memory_warning_with_work_under_way_keeps_the_model() {
+        let m = meeting();
+        m.say(&very_long_line(2));
+        thread::sleep(Duration::from_millis(1500));
+        m.session.shed_local("low on memory".into());
+        let drawn = m.drawn().expect("drawn, not stopped");
+        assert_eq!(drawn, vec![very_long_line(2)]);
+        assert!(m.session.local_model_up().is_ok_and(|up| up.is_some()), "still up");
+        // Idle now: a memory warning stops it, and the next line starts it again.
+        m.session.shed_local("low on memory".into());
+        let said = m.updates.recv_timeout(Duration::from_secs(10)).expect("told");
+        assert!(matches!(said, Update::Broken(ref n) if n == "low on memory"));
+        m.say(&long_line(3));
+        assert_eq!(m.drawn().expect("drawn after a restart"), vec![long_line(3)]);
+    }
+
+    #[test]
+    #[ignore = "needs the embedded server's libraries and a model"]
+    fn embedded_switch_while_drawing_is_quick_and_keeps_the_line() {
+        let m = meeting();
+        // Another model file: the same model under another name, so it must be stopped and started anew.
+        let other = std::env::temp_dir().join("alcyo-embedded-test-other.gguf");
+        if !other.is_file() {
+            std::fs::copy(model_file(), &other).unwrap();
+        }
+        m.say(&very_long_line(4));
+        thread::sleep(Duration::from_millis(1500));
+        let switching = Instant::now();
+        m.session.switcher().switch(local(other.clone())).expect("switched");
+        assert!(switching.elapsed() < Duration::from_secs(10), "the switch waited {:?}", switching.elapsed());
+        assert_eq!(m.drawn().expect("drawn by the new model"), vec![very_long_line(4)]);
+        assert_eq!(m.session.local_model_up(), Ok(Some(other)));
+    }
+
+    #[test]
+    #[ignore = "needs the embedded server's libraries and a model"]
+    fn embedded_stop_while_loading_then_lines_are_drawn() {
+        let m = meeting();
+        m.session.shed_local("low on memory".into());
+        m.updates.recv_timeout(Duration::from_secs(10)).expect("stopped");
+        // A line starts the model; the background comes while it loads.
+        m.say(&long_line(5));
+        m.until(Duration::from_secs(10), |u| matches!(u, Update::Loading)).expect("loading");
+        m.session.pause_local();
+        thread::sleep(Duration::from_secs(1));
+        m.session.resume_local();
+        assert_eq!(m.drawn().expect("drawn"), vec![long_line(5)]);
+    }
+
+    #[test]
+    #[ignore = "needs the embedded server's libraries and a model"]
+    fn embedded_summary_waits_for_the_model_rather_than_failing() {
+        let m = meeting();
+        m.session.shed_local("low on memory".into());
+        m.updates.recv_timeout(Duration::from_secs(10)).expect("stopped");
+        // A summary asked while the model is down starts it, and is answered.
+        let model = m.session.model();
+        let _busy = model.busy();
+        let (_, reply) = model.ask(|| true, |provider| provider.chat(&[json!({ "role": "user", "content": "用一句话总结：我们决定下周交付。" })], 64));
+        assert!(!reply.expect("answered").is_empty());
     }
 }

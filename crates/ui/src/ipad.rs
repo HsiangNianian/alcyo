@@ -1576,7 +1576,7 @@ impl Workbench {
                 })))
             })
             .when(listening || !recorded.is_zero(), |d| d.child(div().font_family(theme::MONO).text_size(px(if big { 15. } else { 13. })).font_weight(FontWeight::MEDIUM).child(clock(recorded.as_secs_f64() * 1000.0))));
-        div()
+        let capsule = div()
             .id("ipad-listen")
             .flex_none()
             .h(px(height))
@@ -1608,8 +1608,29 @@ impl Workbench {
                 cx.notify();
             }))
             // Ink glides to red as listening starts, and back.
-            .with_spring("ipad-listen-fill", SpringAnimation::new(motion::SETTLE).to(listening), move |d, v| d.bg(motion::mix(p.button, p.recording, v.0.clamp(0., 1.))))
-            .into_any_element()
+            .with_spring("ipad-listen-fill", SpringAnimation::new(motion::SETTLE).to(listening), move |d, v| d.bg(motion::mix(p.button, p.recording, v.0.clamp(0., 1.))));
+        if listening {
+            return capsule.into_any_element();
+        }
+        // Beside it before listening starts: how many people take part, Auto or a number, so no more speakers are told
+        // apart than are in the room. The choice is kept with the meeting.
+        let chosen = self.live.participants();
+        let workbench = cx.entity().downgrade();
+        let people = Button::new("ipad-people")
+            .ghost()
+            .h(px(height))
+            .px(px(12.))
+            .rounded_full()
+            .child(div().flex().items_center().gap(px(6.)).child(icon("users").size(px(18.))).when_some(chosen, |d, n| d.child(div().text_size(px(text)).child(n.to_string()))))
+            .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomLeft, move |menu, _, _| {
+                participants_choices(chosen).into_iter().fold(menu.min_w(px(220.)).label(t("participants")), |menu, (label, n, on)| {
+                    let workbench = workbench.clone();
+                    menu.item(PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                        let _ = workbench.update(cx, |this, cx| this.set_participants(n, cx));
+                    }))
+                })
+            });
+        div().flex().items_center().gap(px(4.)).child(capsule).child(people).into_any_element()
     }
 
     /// The dock in reach of a thumb: listening, undo, redo and tidy, and the boards. Upright it rides the
