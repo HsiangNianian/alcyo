@@ -8,7 +8,7 @@
 //! (onboarding.rs) is laid over the screen from here too.
 
 use super::*;
-use gpui_kit::{AnyElement, BoxShadow, ElementId, FontWeight, Image, ImageFormat, SpringConfig, Stateful};
+use gpui_kit::{AnyElement, BoxShadow, ElementId, FontWeight, SpringConfig, Stateful};
 
 /// The remote provider an address is for, by its host, however much of the address was typed: `api.deepseek.com`,
 /// `https://api.deepseek.com/v1` and the preset's own all name DeepSeek.
@@ -322,32 +322,6 @@ fn menu_row<T: Clone + PartialEq + 'static>(id: &'static str, open: bool, shown:
     trigger.child(div().absolute().top_full().right_0().child(gpui_kit::deferred(gpui_kit::anchored().anchor(gpui_kit::Anchor::TopRight).snap_to_window_with_margin(px(12.)).child(card)).with_priority(1)))
 }
 
-/// The kingfisher, in its colours, `w` wide: the app's mark.
-pub(super) fn kingfisher(w: f32) -> impl IntoElement {
-    thread_local! {
-        static MARKS: RefCell<HashMap<(bool, u32), Arc<Image>>> = RefCell::new(HashMap::new());
-    }
-    let dark = theme::is_dark();
-    let h = w * 380.0 / 480.0;
-    // Drawn at three times its size, so it stays sharp on a dense screen: GPUI rasterizes an SVG once, at 1x.
-    let at = (w * 3.0).round() as u32;
-    let mark = MARKS.with(|marks| {
-        marks
-            .borrow_mut()
-            .entry((dark, at))
-            .or_insert_with(|| {
-                let cut = if dark { "#0e0e0e" } else { "#f3f3f1" };
-                let svg = format!(
-                    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 100 480 380" width="{at}" height="{}"><path d="M48 430 C120 392 168 300 214 236 C240 182 280 134 334 132 C370 131 394 150 398 172 L480 194 L390 204 C374 226 348 244 316 262 C262 292 214 330 168 372 C134 402 102 426 70 448 L84 429 Z" fill="#0a7ea4"/><path d="M372 236 C350 274 300 318 246 352 C214 372 182 390 148 402 C196 404 252 386 298 352 C336 324 362 284 372 236 Z" fill="#f07a2b"/><path d="M318 176 C330 167 352 163 370 168 C354 175 336 179 318 176 Z" fill="{cut}"/><path d="M150 372 C190 318 232 262 290 222 C246 270 206 320 168 370 Z" fill="{cut}"/></svg>"##,
-                    (at as f32 * 380.0 / 480.0).round() as u32
-                );
-                Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()))
-            })
-            .clone()
-    });
-    gpui_kit::img(mark).w(px(w)).h(px(h)).flex_none()
-}
-
 /// What can be chosen for the Pencil's double tap and squeeze, as saved and as said.
 fn pencil_actions() -> Vec<(String, String)> {
     alcyo_agent::settings::PENCIL_ACTIONS
@@ -618,56 +592,7 @@ impl Workbench {
             .child(behind)
             .child(sheet)
             .child(self.sheet_pull(cx))
-            .when(open && self.switch.asking, |d| d.child(self.restart_dialog(w, h, cx)))
             .into_any_element()
-    }
-
-    /// Over Settings, when another board model was chosen on the iPad: it is used after a restart, now or at the next
-    /// launch. Put away by either answer, or a tap beside it, which is "later".
-    fn restart_dialog(&self, w: f32, h: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = pal();
-        let dark = theme::is_dark();
-        let card_w = 340.0_f32.min(w - 48.0);
-        let later = |this: &mut Self, cx: &mut Context<Self>| {
-            this.switch.asking = false;
-            cx.notify();
-        };
-        let card = div()
-            .id("ipad-restart-dialog")
-            .occlude()
-            .w(px(card_w))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .p(px(22.))
-            .rounded(px(22.))
-            .bg(rgb(p.surface))
-            .shadow(vec![shade(if dark { 0.6 } else { 0.28 }, 20., 60.), ring(if dark { tint(0xff_ff_ff, 0.1) } else { tint(0, 0.08) }, 0.5)])
-            .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.text)).child(t("ipad-restart-title")))
-            .child(div().text_size(px(13.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(p.muted)).child(t("ipad-restart-body")))
-            .child(
-                div()
-                    .pt(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(pill_button("ipad-restart-now", t("ipad-restart-now"), true, None).h(px(40.)).justify_center().on_click(cx.listener(|this, _, _, cx| this.restart_board_model(cx))))
-                    .child(pill_button("ipad-restart-later", t("ipad-restart-later"), false, None).h(px(40.)).justify_center().on_click(cx.listener(move |this, _, _, cx| later(this, cx)))),
-            )
-            .with_spring("ipad-restart-in", SpringAnimation::new(motion::SETTLE).to(true).from(false), |d, v| d.opacity(v.0.clamp(0., 1.)));
-        div()
-            .id("ipad-restart-scrim")
-            .absolute()
-            .top_0()
-            .left_0()
-            .w(px(w))
-            .h(px(h))
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(tint(0x0a_0a_0a, if dark { 0.35 } else { 0.2 }))
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| later(this, cx)))
-            .child(card)
     }
 
     /// Pulled down by its top or its tabs, the sheet follows the finger, and goes once it is far enough. The
@@ -721,10 +646,11 @@ impl Workbench {
 
     /// The tabs down the left, under the sheet's name, with the version at the foot.
     fn sheet_nav(&self, sheet_h: f32, cx: &mut Context<Self>) -> AnyElement {
-        let tabs: [(SettingsTab, &str, u32, &str); 5] = [
+        let tabs: [(SettingsTab, &str, u32, &str); 6] = [
             (SettingsTab::Model, "sparkle", 0x3b_5b_db, t("board-model")),
             (SettingsTab::Speech, "waveform", 0xe8_43_2a, t("speech")),
             (SettingsTab::General, "sliders", 0x63_63_66, t("general")),
+            (SettingsTab::Storage, "import", 0x34_a8_53, t("storage")),
             (SettingsTab::Shortcuts, "keyboard", 0x8e_8e_93, t("shortcuts")),
             (SettingsTab::About, "info", 0x0a_7e_a4, t("about")),
         ];
@@ -786,7 +712,7 @@ impl Workbench {
                     .px(px(12.))
                     .text_size(px(12.))
                     .text_color(rgb(pal().faint))
-                    .child(kingfisher(22.))
+                    .child(theme::app_icon(22.))
                     .child(ta!("ipad-version", version = alcyo_update::VERSION)),
             );
         self.grip(nav, cx).into_any_element()
@@ -801,6 +727,7 @@ impl Workbench {
             SettingsTab::Model => t("board-model"),
             SettingsTab::Speech => t("speech"),
             SettingsTab::General => t("general"),
+            SettingsTab::Storage => t("storage"),
             SettingsTab::Shortcuts => t("shortcuts"),
             SettingsTab::About => t("about"),
         };
@@ -860,6 +787,7 @@ impl Workbench {
             SettingsTab::Model => self.sheet_model(cx),
             SettingsTab::Speech => self.sheet_speech(cx),
             SettingsTab::General => self.sheet_general(cx),
+            SettingsTab::Storage => self.sheet_storage(cx),
             SettingsTab::Shortcuts => self.sheet_shortcuts(cx),
             SettingsTab::About => self.sheet_about(cx),
         };
@@ -942,16 +870,6 @@ impl Workbench {
             div().text_size(px(14.)).line_height(gpui_kit::relative(1.5)).text_color(rgb(p.muted)).child(t("ipad-model-intro")).into_any_element(),
             options.into_any_element(),
         ];
-        // Another model chosen, waiting for a restart: the one in use draws until then.
-        if let Some(model) = self.switch.pending.clone() {
-            let right: AnyElement = if self.switch.restarting {
-                div().flex_none().text_size(px(13.5)).text_color(rgb(p.faint)).child(t("ipad-restarting")).with_animation("ipad-restarting", motion::pulse(), |d, v| d.opacity(v)).into_any_element()
-            } else {
-                pill_button("ipad-restart-pending", t("ipad-restart-now"), true, None).on_click(cx.listener(|this, _, _, cx| this.restart_board_model(cx))).into_any_element()
-            };
-            out.push(group(vec![row().child(div().flex_1().min_w_0().text_color(rgb(p.text)).child(ta!("ipad-restart-to-use", model = model))).child(right).into_any_element()]).into_any_element());
-        }
-
         // Remote: the provider and its address, model and key, and whether it answers.
         let saved = &self.form.saved;
         let probe_key = format!("{}|{}|{}", saved.base_url, saved.model, saved.key_hint().unwrap_or_default());
@@ -1130,6 +1048,50 @@ impl Workbench {
                 .child(group(models.collect()))
                 .into_any_element(),
         );
+        // What the graphics compiled, model by model as found on disk, each to clear by itself, or all at once.
+        let entries = self.compile_cache_view();
+        let clearable = entries.iter().any(|(_, _, used)| !used);
+        let rows: Vec<AnyElement> = if entries.is_empty() {
+            vec![row().min_h(px(52.)).child(div().flex_1().text_size(px(13.5)).text_color(rgb(p.faint)).child(t("compile-cache-empty"))).into_any_element()]
+        } else {
+            entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, (entry, title, used))| {
+                    let kind = entry.kind.clone();
+                    let right: AnyElement = if used {
+                        div().flex_none().text_size(px(13.5)).text_color(rgb(p.faint)).child(t("compile-cache-in-use")).into_any_element()
+                    } else {
+                        pill_button(name("ipad-clear-cache", i), t("compile-cache-clear"), false, None).on_click(cx.listener(move |this, _, _, cx| this.clear_compile_cache(Some(kind.clone()), cx))).into_any_element()
+                    };
+                    row()
+                        .min_h(px(58.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(div().font_weight(FontWeight::MEDIUM).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
+                                .child(div().text_size(px(12.5)).text_color(rgb(p.faint)).child(Self::compile_cache_detail(&entry))),
+                        )
+                        .child(right)
+                        .into_any_element()
+                })
+                .collect()
+        };
+        let clear_all = clearable.then(|| pill_button("ipad-clear-cache-all", t("compile-cache-clear-all"), false, None).h(px(28.)).font(theme::interface_font()).on_click(cx.listener(|this, _, _, cx| this.clear_compile_cache(None, cx))).into_any_element());
+        out.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(label(t("compile-cache"), clear_all))
+                .child(group(rows))
+                .child(div().px(px(4.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.4)).text_color(rgb(p.faint)).child(t("compile-cache-hint")))
+                .into_any_element(),
+        );
         if let Some(note) = self.form.note.clone().filter(|_| self.sheet.probing.is_none()) {
             out.push(div().px(px(4.)).mt(px(-8.)).text_size(px(12.5)).text_color(rgb(p.faint)).child(note).into_any_element());
         }
@@ -1292,23 +1254,24 @@ impl Workbench {
                 }, cx))
                 .into_any_element(),
         ]);
+        let (search_said, search_failed) = self.search_status().unwrap_or_else(|| (t("ipad-search-off").to_string(), false));
         vec![
             look_group.into_any_element(),
             listening.into_any_element(),
             div().flex().flex_col().gap(px(8.)).child(label(t("ipad-pencil-touch"), None)).child(pencil).into_any_element(),
-            // Search: by the words themselves here, as search by meaning needs a server of its own, which iPadOS does
-            // not let an app start.
+            // Search: by meaning, with its model running inside the app, or by the words themselves when it is off or
+            // cannot run; the line under it says which, and why.
             div()
                 .flex()
                 .flex_col()
                 .gap(px(8.))
                 .child(label(t("search"), None))
-                .child(group(vec![row()
-                    .min_h(px(64.))
-                    .child(div().flex_none().size(px(30.)).flex().items_center().justify_center().rounded(px(8.)).bg(rgb(0x8e_8e_93)).text_color(rgb(0xff_ff_ff)).child(icon("ipad/search").size(px(17.))))
-                    .child(titled(t("ipad-search-by-words"), Some(t("ipad-search-by-words-hint").to_string())))
-                    .into_any_element()]))
-                .child(div().px(px(4.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(pal().faint)).child(t("ipad-search-meaning-later")))
+                .child(group(vec![setting("ipad-search-meaning", t("ipad-search-by-meaning"), t("ipad-search-by-meaning-hint"), saved.meeting_search, |this, cx| {
+                    let on = !this.form.saved.meeting_search;
+                    this.set_meeting_search(on, cx);
+                }, cx)
+                .into_any_element()]))
+                .child(div().px(px(4.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(if search_failed { pal().danger } else { pal().faint })).child(search_said))
                 .into_any_element(),
         ]
     }
@@ -1525,7 +1488,7 @@ impl Workbench {
         let app = row()
             .min_h(px(84.))
             .gap(px(16.))
-            .child(div().flex_none().size(px(56.)).flex().items_center().justify_center().rounded(px(14.)).bg(rgb(p.surface)).shadow(vec![ring(rgb(p.line).into(), 1.)]).child(kingfisher(40.)))
+            .child(div().flex_none().size(px(60.)).rounded(px(14.)).shadow(vec![shade(0.12, 2., 8.)]).child(theme::app_icon(60.)))
             .child(
                 div()
                     .flex_1()

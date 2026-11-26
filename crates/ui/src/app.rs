@@ -17,6 +17,7 @@ use crate::i18n::t;
 use crate::ta;
 use crate::theme::{self, icon, pal, Type as _};
 use crate::motion;
+use crate::compile_cache;
 use crate::quiet::Quiet;
 use gpui_kit::{AnimationExt as _, AppLifecyclePhase, SpringAnimation};
 use crate::pipeline::{Event, Pipeline, Script, Speech};
@@ -66,6 +67,11 @@ use std::time::{Duration, Instant};
 mod ipad;
 #[path = "ipad_card.rs"]
 mod ipad_card;
+#[path = "ipad_dialogs.rs"]
+mod ipad_dialogs;
+// Settings › Storage, on the iPad and the desktop.
+#[path = "storage_page.rs"]
+mod storage_page;
 // The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
 #[path = "home.rs"]
 mod home;
@@ -359,6 +365,21 @@ struct View {
     k: f32,
 }
 
+/// A touch moving the board (`Ink::touch_pan`).
+struct TouchPan {
+    from: Point<Pixels>,
+    view: View,
+    /// Recent positions and when, for the speed it is let go at.
+    trail: VecDeque<(Instant, Point<Pixels>)>,
+    /// It went further than a tap's slop: it is a pan, not a tap.
+    moved: bool,
+}
+
+/// How far a touch may wander and still be a tap, as GPUI's own recognizer has it.
+const TAP_SLOP: f32 = 8.0;
+/// How quickly a thrown board slows, as UIScrollView's normal rate: the speed kept after a millisecond.
+const FLING_DECAY: f32 = 0.998;
+
 struct Rebuilt {
     tier: Tier,
     /// The part of the board a detail tier covers; None for the whole-board base.
@@ -436,6 +457,15 @@ struct Ink {
     generation: u64,
     rebuilding: Option<Receiver<Rebuilt>>,
     drag: Option<(Point<Pixels>, View)>,
+    /// Where two fingers on the iPad last had their centroid, while they pan and pinch the board.
+    pinch_at: Option<Point<Pixels>>,
+    /// One finger or the Pencil moving the board on the iPad, freely in any direction (GPUI's own touch pan keeps to
+    /// one axis): where it began, the view then, and where it has been lately, for the throw when it lets go.
+    touch_pan: Option<TouchPan>,
+    /// The board coasting after a throw: its speed in screen points a second, and when it last moved.
+    fling: Option<([f32; 2], Instant)>,
+    /// The last tap on the board that a touch pan let through, to count a double tap.
+    last_tap: Option<(Instant, Point<Pixels>, usize)>,
     /// Dragging draws a circle around things rather than moving the board.
     circling: bool,
     /// Circles drawn so far, and the one being drawn, in board coordinates.
@@ -468,6 +498,8 @@ struct Ink {
     page_src: Option<String>,
     zoom_test: Option<ZoomTest>,
     instant: bool,
+    /// How fast the pen writes relative to its own pace: a replay's speed while one plays, 1 otherwise.
+    pace: f32,
     /// When the last circle closed, for the iPad's circle to settle and what it caught to tint in.
     closed_at: Option<Instant>,
 }
@@ -606,6 +638,27 @@ impl Ink {
                 continue;
             }
             let mut r = Rng::new(&piece.seed);
+            // What a hand drew joins the board at once, exactly as it was drawn: it is not written out again. It slides
+            // only when it is the same stroke moved, as with the thing it is anchored to; a stroke that only took over
+            // another's place in the list (one before it was rubbed out) is put down where it is.
+            if !piece.lines.is_empty() && piece.lines.iter().all(|l| l.hand) {
+                let shapes: Vec<Vec<Pt>> = piece.lines.iter().map(|l| outline(&l.inked(&mut r), 1.0)).collect();
+                let before = gone.remove(&piece.seed).filter(|b| b.len() == shapes.len());
+                let shift = |old: &Stroke, new: &[Pt]| -> Option<[f32; 2]> {
+                    let (a, b) = (old.shape.first()?, new.first()?);
+                    let d = [a[0] - b[0], a[1] - b[1]];
+                    (old.shape.len() == new.len() && old.shape.iter().zip(new).all(|(o, n)| (o[0] - n[0] - d[0]).abs() < 0.01 && (o[1] - n[1] - d[1]).abs() < 0.01)).then_some(d)
+                };
+                for (i, (line, shape)) in piece.lines.iter().zip(shapes).enumerate() {
+                    let stroke = Arc::new(Stroke { key: piece.key.clone(), area: area_of(&shape), shape, style: line.style });
+                    match before.as_ref().and_then(|b| shift(&b[i], &stroke.shape)).filter(|d| !self.jump && (d[0] != 0.0 || d[1] != 0.0)) {
+                        Some(from) => moved.push((stroke, from)),
+                        None => self.bake(stroke),
+                    }
+                }
+                self.drawn.insert(piece.key);
+                continue;
+            }
             if let Some(before) = gone.remove(&piece.seed).filter(|b| b.len() == piece.lines.len()) {
                 for (line, old) in piece.lines.iter().zip(before) {
                     let shape = outline(&line.inked(&mut r), 1.0);
@@ -720,6 +773,34 @@ impl Ink {
             return false;
         }
         true
+    }
+
+    /// Move the view by a touch's travel, `d` in screen points, from the view `from`.
+    fn pan_from(&mut self, from: View, d: Point<Pixels>) {
+        self.view = Some(View { x: from.x - f32::from(d.x) / from.k, y: from.y - f32::from(d.y) / from.k, k: from.k });
+        self.reading = true;
+        self.glide = None;
+        self.touched = Instant::now();
+    }
+
+    /// A thrown board coasts on, slowing as a list in iPadOS does. True while it still moves.
+    fn coast(&mut self) -> bool {
+        let Some((v, last)) = self.fling else { return false };
+        let now = Instant::now();
+        let dt = (now - last).as_secs_f32().min(0.05);
+        let keep = FLING_DECAY.powf(dt * 1000.0);
+        let next = [v[0] * keep, v[1] * keep];
+        let from = self.shown();
+        self.pan_from(from, point(px((v[0] + next[0]) / 2.0 * dt), px((v[1] + next[1]) / 2.0 * dt)));
+        self.fling = (next[0].hypot(next[1]) > 20.0).then_some((next, now));
+        self.fling.is_some()
+    }
+
+    /// Forget the stroke a tool had begun, without putting it down.
+    fn drop_stroke(&mut self) {
+        self.scribble = None;
+        self.crop = None;
+        self.drawing = None;
     }
 
     /// Close the circle being drawn, and take in whatever has its middle inside it.
@@ -1173,7 +1254,7 @@ impl Ink {
         }
         let dt = self.last.replace(now).map_or(0.016, |l| (now - l).as_secs_f32()).min(0.1);
         // Time to spend this frame, and the pen's speed for what is waiting.
-        let mut budget = if self.instant { f32::MAX } else { dt };
+        let mut budget = if self.instant { f32::MAX } else { dt * self.pace };
         let waiting: f32 = self.queue.iter().map(|q| q.inked.length).sum::<f32>() - self.queue.front().map_or(0.0, |q| q.inked.length * self.live);
         let speed = PEN_PX_PER_SECOND.max(waiting / PEN_BACKLOG);
         while budget > 0.0 {
@@ -1338,6 +1419,7 @@ enum SettingsTab {
     Model,
     Speech,
     General,
+    Storage,
     Shortcuts,
     About,
 }
@@ -1406,6 +1488,17 @@ struct Replaying {
     sound: Option<Sound>,
     /// The sound is still being read, and the replay waits for it.
     hearing: bool,
+    /// The tool that was in hand when it began, put down for the replay and taken up again after.
+    tools: Tools,
+}
+
+/// Which tool is in hand on the board: marking with which marker, circling, or cropping.
+#[derive(Clone, Copy)]
+struct Tools {
+    marking: bool,
+    mark_tool: &'static str,
+    circling: bool,
+    cropping: bool,
 }
 
 /// A replay's sound, and where each of its steps falls in it.
@@ -1663,6 +1756,10 @@ struct Workbench {
     /// Which of its addresses the QR code shows.
     share_address: usize,
     share_note: Option<String>,
+    /// When the share link was last copied, for the button to say so a moment.
+    share_copied: Option<Instant>,
+    /// The replay speed last chosen, kept for the next replay while the app runs.
+    replay_speed: f64,
     import: ImportState,
     arxiv_input: Entity<InputState>,
     /// Which of a read document's pages to import, as "1-5, 8"; empty for all.
@@ -1741,6 +1838,10 @@ struct Workbench {
     models: PathBuf,
     /// Where the package keeps the meeting search model.
     search_dir: PathBuf,
+    /// Where the speech models that came with the app are.
+    voice_dir: PathBuf,
+    /// Settings › Storage.
+    storage: storage_page::StorageState,
     binaries: PathBuf,
     download: Option<Download>,
     /// Counts proxy changes, so a download restarts once typing stops rather than at every key.
@@ -1808,77 +1909,83 @@ fn engine_of(backend: &Backend) -> Engine {
     }
 }
 
-/// Whether going from the board model in use to the one chosen waits for a restart, on the iPad: between two that
-/// hold a model, local or remote, but not from none to the first, nor from one remote model's settings to another's.
-fn waits_for_restart(active: &Engine, chosen: &Engine) -> bool {
+/// Whether going from the board model in use to the one chosen means stopping the one in use first, on the iPad:
+/// between two that hold a model, local or remote, but not from none to the first, nor from one remote model's
+/// settings to another's.
+fn needs_swap(active: &Engine, chosen: &Engine) -> bool {
     active != chosen && *active != Engine::None && *chosen != Engine::None
 }
 
-/// The iPad's board model in use, and one chosen to take over after a restart.
+/// The iPad's board model in use, and a switch to another.
 #[derive(Default)]
 pub(crate) struct ModelSwitch {
     /// What the settings in use chose, once applied.
     active: Option<Engine>,
-    /// What to call the model chosen but waiting for a restart.
-    pub(crate) pending: Option<String>,
-    /// The dialog asking to restart now or later is up.
-    pub(crate) asking: bool,
-    /// A restart is under way: the old model stopping.
-    pub(crate) restarting: bool,
+    /// Another model was chosen: the one in use is to stop for it.
+    wanted: bool,
+    /// The model in use is stopping, for the one chosen to take over.
+    swapping: bool,
+    /// A switch that could not free the old model's memory: the choice is kept for the next launch, and not tried
+    /// again in this one, as the person has been told to restart the app.
+    failed: Option<Engine>,
 }
 
-/// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
-fn shader_dir(models: &std::path::Path) -> PathBuf {
-    models.parent().unwrap_or(models).join("shader-cache")
+/// The model whose start the preparing page is about: the one chosen in Settings.
+fn preparing_model(models: &std::path::Path) -> Option<PathBuf> {
+    alcyo_models::current(models)
 }
 
-/// Left beside the shaders once a start has got all the way through. The driver writes into the folder
-/// from the moment it starts, so what is there says nothing about whether it finished.
-const SHADERS_READY: &str = "ready";
-
-/// What a finished start is noted under. The desktop's driver keeps its shaders across versions, so one start
-/// anywhere counts. The iPad's model runs inside the app, whose graphics code comes with each version, so it
-/// counts for that model and version.
-fn shaders_key(models: &std::path::Path) -> String {
-    if !cfg!(target_os = "ios") {
-        return String::new();
-    }
-    let model = alcyo_models::current(models).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-    format!("{} {model}", alcyo_update::VERSION)
+/// The version a finished start is noted under (compile_cache). The desktop's driver keeps its shaders across
+/// versions, so one start of a model counts for every version. The iPad's model runs inside the app, whose graphics
+/// code comes with each version, so it counts for that version only.
+fn shaders_version() -> Option<&'static str> {
+    cfg!(target_os = "ios").then_some(alcyo_update::VERSION)
 }
 
 /// Whether the local model has started all the way here before, so its next start is not its first.
 fn shaders_ready(models: &std::path::Path) -> bool {
-    let key = shaders_key(models);
-    std::fs::read_to_string(shader_dir(models).join(SHADERS_READY)).is_ok_and(|noted| key.is_empty() || noted.lines().any(|l| l == key))
+    let root = compile_cache::root(models);
+    compile_cache::adopt_older_note(&root);
+    preparing_model(models).is_some_and(|model| compile_cache::ready(&root, &model, shaders_version()))
 }
 
-/// Note that the local model started all the way. The folder is made here too: on the iPad no server program
-/// makes it first (the model runs inside the app), so the note was never kept there and every start, after the
-/// app came back from the background or opened another meeting, looked like the first.
+/// Note that the local model started all the way, so its next start, after the app came back from the background
+/// or opened another meeting, is not taken for the first.
 fn note_shaders_ready(models: &std::path::Path) {
-    let dir = shader_dir(models);
-    let key = shaders_key(models);
-    let noted = std::fs::read_to_string(dir.join(SHADERS_READY)).unwrap_or_default();
-    if noted.lines().any(|l| l == key) && !key.is_empty() {
-        return;
-    }
-    let kept = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(SHADERS_READY), if key.is_empty() { noted } else { format!("{noted}{key}\n") }));
-    if let Err(e) = kept {
-        eprintln!("could not note the model as ready in {}: {e}", dir.display());
+    let Some(model) = preparing_model(models) else { return };
+    if let Err(e) = compile_cache::note_ready(&compile_cache::root(models), &model, shaders_version().unwrap_or(alcyo_update::VERSION)) {
+        eprintln!("could not note the model as ready: {e}");
     }
 }
 
-fn dir_size(dir: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    entries
-        .flatten()
-        .map(|entry| match entry.metadata() {
-            Ok(meta) if meta.is_dir() => dir_size(&entry.path()),
-            Ok(meta) => meta.len(),
-            Err(_) => 0,
-        })
-        .sum()
+/// Where the graphics driver keeps what it compiles for `model`'s server: a folder of its own, beside the models.
+fn shader_dir_for(model: &std::path::Path) -> Option<PathBuf> {
+    let models = model.parent()?;
+    Some(compile_cache::model_dir(&compile_cache::root(models), model))
+}
+
+/// Whether meetings are searched by what they mean, or why by their words instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ByMeaning {
+    On,
+    /// Turned off in Settings.
+    Off,
+    /// No search model in this build, or no llama.cpp to run it inside the app.
+    NoModel,
+    /// Not memory enough left to the app for the model beside what it holds already, the board model among it.
+    NoMemory,
+}
+
+/// Search by meaning, decided from the switch, where the model runs (`in_app`, the iPad, where it needs llama.cpp
+/// `built_in` and the memory for it), the model's size if it is here and how much memory the app has left.
+fn by_meaning(switch: bool, in_app: bool, built_in: bool, model_bytes: Option<u64>, available: Option<u64>) -> ByMeaning {
+    match model_bytes {
+        _ if !switch => ByMeaning::Off,
+        None => ByMeaning::NoModel,
+        Some(_) if in_app && !built_in => ByMeaning::NoModel,
+        Some(bytes) if in_app && !alcyo_llama::embed::fits(bytes, available) => ByMeaning::NoMemory,
+        Some(_) => ByMeaning::On,
+    }
 }
 
 /// The local model getting ready: a page says so, as a first start can take half a minute.
@@ -1918,7 +2025,7 @@ fn backend_from(settings: &Settings, local_only: bool, binaries: &std::path::Pat
         return Backend::NoModel;
     }
     match alcyo_models::current(models) {
-        Some(model) => Backend::ManagedLocal(Arc::new(LocalServer { binaries: binaries.to_path_buf(), model, shaders: Some(shader_dir(models)) })),
+        Some(model) => Backend::ManagedLocal(Arc::new(LocalServer { binaries: binaries.to_path_buf(), shaders: shader_dir_for(&model), model })),
         None => Backend::NoModel,
     }
 }
@@ -2044,7 +2151,7 @@ fn read_image(path: &std::path::Path, binaries: &std::path::Path, model: &std::p
     let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let _ = tx.send(ImportUpdate::Progress(t("import-starting-vision-image").to_string()));
-    let shaders = model.parent().map(shader_dir);
+    let shaders = shader_dir_for(model);
     let server = VisionServer::start(binaries, model, projector, shaders.as_deref())?;
     let imported = alcyo_import::image::import_image(&bytes, english, cancel, &mut |png| server.read(png), &mut |done, total| {
         let _ = tx.send(ImportUpdate::Progress(ta!("import-reading-image-block", name = name.clone(), done = done, total = total)));
@@ -2083,7 +2190,7 @@ fn read_import(source: ImportSource, vision: Option<Vision>, library: &std::path
     let mut read_scanned = 0;
     if let Some(vision) = vision.filter(|_| !imported.scanned_pages.is_empty()) {
         let _ = tx.send(ImportUpdate::Progress(t("import-starting-vision-scans").to_string()));
-        let shaders = vision.model.parent().map(shader_dir);
+        let shaders = shader_dir_for(&vision.model);
         let server = VisionServer::start(&vision.binaries, &vision.model, &vision.projector, shaders.as_deref())?;
         let count = imported.scanned_pages.len();
         for (k, &i) in imported.scanned_pages.clone().iter().enumerate() {
@@ -2776,6 +2883,10 @@ impl Workbench {
         self.pump_download(&mut changed);
         self.pump_search(&mut changed);
         self.pump_update(&mut changed);
+        if self.switch.wanted && !self.switch.swapping {
+            self.swap_board_model(cx);
+            changed = true;
+        }
         // Where the map was dragged to is remembered once it is let go, not at every step of the way.
         if self.map_moved && !cx.has_active_drag() {
             self.map_moved = false;
@@ -3008,6 +3119,9 @@ impl Workbench {
     }
 
     fn share_panel(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        if crate::platform::ipad_layout() {
+            return self.ipad_share_body(cx);
+        }
         // Who can see what, and that the network carries it in the clear.
         let privacy = div().w_full().flex().flex_col().gap_1().p_3().rounded(px(6.)).bg(rgb(pal().danger_soft)).text_small().text_color(rgb(pal().text)).child(t("share-privacy")).child(div().font_weight(gpui_kit::FontWeight::MEDIUM).child(t("share-unencrypted")));
         let Some(sharing) = &self.sharing else {
@@ -3134,7 +3248,8 @@ impl Workbench {
                 div()
                     .flex()
                     .gap_2()
-                    .child(button("share-copy", t("share-copy-link")).on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copied.clone())))))
+                    // Says so for a moment once the link is on the clipboard.
+                    .child(button("share-copy", if self.share_just_copied() { t("share-copied") } else { t("share-copy-link") }).on_click(cx.listener(move |this, _, _, cx| this.copy_share_link(copied.clone(), cx))))
                     .child(Quiet::new("share-stop").danger().label(t("share-stop")).on_click(cx.listener(|this, _, _, cx| this.stop_sharing(cx)))),
             )
     }
@@ -3187,6 +3302,10 @@ impl Workbench {
         }
         let mut ink = self.ink.borrow_mut();
         let (memory, view) = (ink.board.snapshot(), (ink.view, ink.reading));
+        // A replay is watched, not drawn on: whatever was in hand (the circle, a pen, the eraser) is put down for it.
+        let tools = Tools { marking: ink.marking, mark_tool: ink.mark_tool, circling: ink.circling, cropping: ink.cropping };
+        ink.put_tools_down();
+        ink.pace = self.replay_speed as f32;
         ink.open(&Graph::default(), &serde_json::Value::Null);
         drop(ink);
         self.notice = None;
@@ -3195,8 +3314,9 @@ impl Workbench {
         let audio = self.live.audio();
         let mut player = Player::new(total);
         player.playing = audio.is_empty();
+        player.speed = self.replay_speed;
         let track: Rc<std::cell::Cell<Bounds<Pixels>>> = Rc::default();
-        self.replay = Some(Replaying { player, timeline, steps, shown, memory, view, next_at: Instant::now(), track: track.clone(), held: false, sound: None, hearing: !audio.is_empty() });
+        self.replay = Some(Replaying { player, timeline, steps, shown, memory, view, next_at: Instant::now(), track: track.clone(), held: false, sound: None, hearing: !audio.is_empty(), tools });
         self.show_board_image(shown);
         self.wait_for_next_step();
         if !audio.is_empty() {
@@ -3225,6 +3345,7 @@ impl Workbench {
                     Ok((samples, pieces, peaks)) => {
                         let times = sound_times(&replay.steps, &pieces);
                         let mut player = alcyo_audio::play::Player::new(samples);
+                        player.set_speed(this.replay_speed);
                         player.play();
                         replay.sound = Some(Sound { player, times, peaks: Rc::new(peaks) });
                     }
@@ -3318,11 +3439,29 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Play the replay faster or slower, the sound and the board's writing alike, and keep that for the next one.
+    fn set_replay_speed(&mut self, speed: f64, cx: &mut Context<Self>) {
+        self.replay_speed = speed;
+        self.ink.borrow_mut().pace = speed as f32;
+        if let Some(replay) = &mut self.replay {
+            replay.player.speed = speed;
+            if let Some(sound) = &mut replay.sound {
+                sound.player.set_speed(speed);
+            }
+        }
+        self.wait_for_next_step();
+        cx.notify();
+    }
+
     fn exit_replay(&mut self, cx: &mut Context<Self>) {
         let Some(replay) = self.replay.take() else { return };
         let mut ink = self.ink.borrow_mut();
         ink.open(&self.live.graph, &replay.memory);
         (ink.view, ink.reading) = replay.view;
+        ink.pace = 1.0;
+        // The tool in hand before the replay is taken up again.
+        let Tools { marking, mark_tool, circling, cropping } = replay.tools;
+        (ink.marking, ink.mark_tool, ink.circling, ink.cropping) = (marking, mark_tool, circling, cropping);
         drop(ink);
         if replay.shown != self.live.page() {
             self.show_page_image();
@@ -3603,28 +3742,50 @@ impl Workbench {
 
     /// Start meeting search if it is on and its model is here, and bring every meeting's index up to date.
     fn start_search(&mut self) {
-        // The meaning model runs as a program of its own, which the iPad does not allow; there meetings are
-        // searched for their words instead (ipad.rs).
-        if !crate::platform::OWN_PROGRAMS {
-            return;
-        }
         let (Some(store), Some(data)) = (&self.store, self.models.parent()) else { return };
         if self.search.is_some() || !self.form.saved.meeting_search {
             return;
         }
         let Some(model) = self.embedding_file() else { return };
-        let binaries = self.binaries.clone();
-        let spawn: alcyo_search::service::Spawn = Box::new(move |args| alcyo_agent::spawn_tied({
-            let mut cmd = alcyo_agent::server_command(&binaries);
-            cmd.args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-            cmd
-        }));
-        let (jobs, events) = alcyo_search::service::start(data, model, spawn);
+        let backend = if crate::platform::OWN_PROGRAMS {
+            let binaries = self.binaries.clone();
+            alcyo_search::service::Backend::Spawn(Box::new(move |args| {
+                alcyo_agent::spawn_tied({
+                    let mut cmd = alcyo_agent::server_command(&binaries);
+                    cmd.args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                    cmd
+                })
+            }))
+        } else {
+            // The iPad starts no program: the model runs inside the app, through llama.cpp's own library beside the
+            // board model's server, on the CPU. Without memory enough for it now, meetings are searched by their
+            // words (ipad.rs) until there is.
+            if self.search_by_meaning() != ByMeaning::On {
+                return;
+            }
+            alcyo_search::service::Backend::InProcess(Box::new(|path| {
+                let mut model = alcyo_llama::Embedder::load(path)?;
+                Ok(Box::new(move |texts: &[String]| model.embed(texts)))
+            }))
+        };
+        let (jobs, events) = alcyo_search::service::start_with(data, model, backend);
         let all: Vec<String> = store.list().unwrap_or_default().into_iter().filter(|m| m.read_error.is_none()).map(|m| m.id).collect();
         let missing = alcyo_search::service::unindexed(data, &all);
         let building = (missing > 0 && missing * 2 >= all.len()).then_some(all.len());
         let _ = jobs.send(alcyo_search::service::Job::Index(all));
         self.search = Some(MeetingSearch { jobs, events, indexing: None, building, held: false, asked: String::new(), typed_at: None, ticket: 0, asking: false, hits: vec![], saved: HashMap::new(), error: None });
+    }
+
+    /// Whether search by meaning can run here now, or why meetings are searched by their words instead.
+    pub(crate) fn search_by_meaning(&self) -> ByMeaning {
+        let bytes = self.embedding_file().and_then(|path| std::fs::metadata(path).ok()).map(|m| m.len());
+        by_meaning(self.form.saved.meeting_search, !crate::platform::OWN_PROGRAMS, alcyo_llama::BUILT_IN, bytes, alcyo_llama::available_memory())
+    }
+
+    /// Whether the search box finds meetings by meaning now: search is running and has not failed. Otherwise, as when
+    /// the iPad had no memory left for its model, it finds the words themselves.
+    pub(crate) fn searching_by_meaning(&self) -> bool {
+        self.search.as_ref().is_some_and(|s| s.error.is_none())
     }
 
     /// Turn meeting search on or off. On, it downloads its model first if the app came without it.
@@ -3636,7 +3797,7 @@ impl Workbench {
         if on {
             if self.embedding_file().is_some() {
                 self.start_search();
-            } else {
+            } else if crate::platform::OWN_PROGRAMS {
                 self.start_download(alcyo_models::embedding(), cx);
             }
         } else {
@@ -3708,7 +3869,15 @@ impl Workbench {
             return None;
         }
         if !crate::platform::OWN_PROGRAMS {
-            return Some((t("ipad-search-words").to_string(), false));
+            match self.search_by_meaning() {
+                ByMeaning::Off => return None,
+                ByMeaning::NoModel => return Some((t("ipad-search-no-model").to_string(), false)),
+                ByMeaning::NoMemory if self.search.is_none() => return Some((t("ipad-search-no-memory").to_string(), false)),
+                _ => {}
+            }
+            if let Some(error) = self.search.as_ref().and_then(|s| s.error.clone()) {
+                return Some((crate::ta!("ipad-search-failed", error = error), true));
+            }
         }
         let model = alcyo_models::embedding();
         if let Some(download) = self.download.as_ref().filter(|d| d.id == model.id) {
@@ -3730,6 +3899,10 @@ impl Workbench {
 
     /// The library's query changed: ask again once typing pauses, or clear the results.
     fn search_typed(&mut self, text: &str) {
+        // On the iPad search by meaning waits for memory enough for its model: once there is, a query starts it.
+        if self.search.is_none() && !crate::platform::OWN_PROGRAMS && text.trim().chars().count() >= 2 {
+            self.start_search();
+        }
         let Some(search) = &mut self.search else { return };
         let text = text.trim();
         if text == search.asked {
@@ -3928,14 +4101,16 @@ impl Workbench {
 
     fn apply_backend(&mut self) {
         if !self.forced_backend {
-            // On the iPad another board model waits for a restart, which the person is asked for (sheet.rs): the
-            // model in use keeps drawing meanwhile, and the new one is used from the next launch either way.
+            // On the iPad another board model takes over at once, without asking: the one in use stops and gives its
+            // memory back first (swap_board_model, from the next pump), and the new one loads when a line needs it,
+            // as at launch. Until then the one in use is left as it is.
             let chosen = engine_of(&backend_from(&self.form.saved, false, &self.binaries, &self.models));
             if cfg!(target_os = "ios") {
-                if self.switch.active.as_ref().is_some_and(|active| waits_for_restart(active, &chosen)) {
-                    let name = self.engine_name(&chosen);
-                    self.switch.asking |= self.switch.pending.as_ref() != Some(&name);
-                    self.switch.pending = Some(name);
+                if self.switch.failed.as_ref() == Some(&chosen) {
+                    return;
+                }
+                if self.switch.swapping || self.switch.active.as_ref().is_some_and(|active| needs_swap(active, &chosen)) {
+                    self.switch.wanted = true;
                     return;
                 }
             }
@@ -3948,25 +4123,16 @@ impl Workbench {
         }
     }
 
-    /// What to call a board model in "Restart to use …".
-    fn engine_name(&self, engine: &Engine) -> String {
-        match engine {
-            Engine::Local(path) => alcyo_models::catalog().into_iter().find(|m| path.ends_with(&m.file)).map_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), |m| m.label.to_string()),
-            Engine::Remote if !self.form.saved.model.trim().is_empty() => self.form.saved.model.trim().to_string(),
-            Engine::Remote => t("remote").to_string(),
-            Engine::None => String::new(),
-        }
-    }
-
-    /// "Restart now", on the iPad: the model in use stops and gives its memory back, and then the one chosen takes
-    /// over, starting as at launch when a line needs it. If the old one would not stop, or iPadOS has not given back
-    /// memory enough, the choice stays waiting for the next launch and the person is told how to get there.
-    pub(crate) fn restart_board_model(&mut self, cx: &mut Context<Self>) {
-        if self.switch.restarting || self.forced_backend {
+    /// Switch the iPad's board model to the one now chosen, without asking: the model in use stops and gives its memory
+    /// back, and then the one chosen takes over, loading when a line next needs it with the status pill saying so. If
+    /// the old one would not stop, or iPadOS has not given memory enough back (`os_proc_available_memory`, checked by
+    /// the switcher), the choice stays for the next launch and the person is told how to get there.
+    fn swap_board_model(&mut self, cx: &mut Context<Self>) {
+        if self.switch.swapping || self.forced_backend {
             return;
         }
-        self.switch.asking = false;
-        self.switch.restarting = true;
+        self.switch.wanted = false;
+        self.switch.swapping = true;
         let backend = backend_from(&self.form.saved, self.live.local_only(), &self.binaries, &self.models);
         let chosen = engine_of(&backend_from(&self.form.saved, false, &self.binaries, &self.models));
         let switcher = self.session().switcher();
@@ -3975,16 +4141,22 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let done = done.await;
             let _ = this.update(cx, |this, cx| {
-                this.switch.restarting = false;
+                this.switch.swapping = false;
                 match done {
                     Ok(()) => {
+                        let again = this.switch.wanted;
                         this.switch = ModelSwitch { active: Some(chosen), ..ModelSwitch::default() };
                         this.needs_model = matches!(backend, Backend::NoModel);
-                        // The new model loads as at launch: the next line shows it loading.
                         this.notice = None;
+                        // Chosen again while this one was stopping: that choice goes next.
+                        if again {
+                            this.apply_backend();
+                        }
                     }
                     Err(error) => {
-                        eprintln!("restarting the board model: {error}");
+                        eprintln!("switching the board model: {error}");
+                        this.switch.wanted = false;
+                        this.switch.failed = Some(chosen);
                         this.notice = Some(t("ipad-restart-failed").to_string());
                     }
                 }
@@ -3992,6 +4164,72 @@ impl Workbench {
             });
         })
         .detach();
+    }
+
+    /// The compile cache as Settings lists it: each entry found on disk, what to call it, and whether it is in use by
+    /// the model running now, so it is not cleared from under it.
+    pub(crate) fn compile_cache_view(&self) -> Vec<(compile_cache::Entry, String, bool)> {
+        let data = self.models.parent().unwrap_or(&self.models);
+        let (running, busy) = match self.session().local_model_up() {
+            Ok(model) => (model, false),
+            Err(()) => (None, true),
+        };
+        let catalog = alcyo_models::catalog();
+        compile_cache::entries(&compile_cache::root(&self.models), &compile_cache::system_dirs(data))
+            .into_iter()
+            .map(|entry| {
+                let name = match &entry.kind {
+                    compile_cache::Kind::Model(file) => catalog.iter().find(|m| m.file == *file).map_or_else(|| file.trim_end_matches(".gguf").to_string(), |m| m.label.to_string()),
+                    compile_cache::Kind::Older => t("compile-cache-older").to_string(),
+                    compile_cache::Kind::System => t("compile-cache-system").to_string(),
+                };
+                let used = compile_cache::in_use(&entry, running.as_deref(), busy);
+                (entry, name, used)
+            })
+            .collect()
+    }
+
+    /// How big an entry is and when it was built, for its row.
+    /// A model's own folder holding no more than the note that it was built (as on the iPad, where Metal keeps what it
+    /// compiled for every model in one place) says when, and no size that would mislead.
+    pub(crate) fn compile_cache_detail(entry: &compile_cache::Entry) -> String {
+        const NOTE_ONLY: u64 = 16 * 1024;
+        let size = if entry.bytes < 1_000_000 { format!("{:.0} KB", (entry.bytes as f64 / 1e3).ceil()) } else { format!("{:.1} MB", entry.bytes as f64 / 1e6) };
+        let when = entry.built.map(|at| {
+            let when: chrono::DateTime<chrono::Local> = at.into();
+            when.format("%Y-%m-%d %H:%M").to_string()
+        });
+        match (when, cfg!(target_os = "ios") && matches!(entry.kind, compile_cache::Kind::Model(_)) && entry.bytes < NOTE_ONLY) {
+            (Some(when), true) => ta!("compile-cache-built-when", when = when),
+            (Some(when), false) => ta!("compile-cache-built", size = size, when = when),
+            (None, true) => t("compile-cache-noted").to_string(),
+            (None, false) => size,
+        }
+    }
+
+    /// Clear one entry of the compile cache, or all of them (`None`), leaving what the running model uses: a model's
+    /// next start compiles again what was cleared.
+    pub(crate) fn clear_compile_cache(&mut self, which: Option<compile_cache::Kind>, cx: &mut Context<Self>) {
+        let mut kept = vec![];
+        for (entry, name, used) in self.compile_cache_view() {
+            if which.as_ref().is_some_and(|kind| *kind != entry.kind) {
+                continue;
+            }
+            if used {
+                kept.push(name);
+                continue;
+            }
+            if let Err(e) = compile_cache::clear(&entry) {
+                self.form.note = Some(format!("{e:#}"));
+                cx.notify();
+                return;
+            }
+        }
+        self.form.note = match kept.first() {
+            Some(_) if self.session().local_model_up().is_err() => Some(t("compile-cache-busy").to_string()),
+            Some(name) => Some(ta!("compile-cache-kept", model = name.clone())),
+            None => None,
+        };
         cx.notify();
     }
 
@@ -5686,6 +5924,26 @@ impl Workbench {
                 ta!(id, from = from.to_string(), to = to.to_string())
             });
             let next = from.clone();
+            // On the iPad: a rounded field and pill buttons (#341).
+            if crate::platform::ipad_layout() {
+                let rename = ipad_dialogs::pill("rename-speaker", if merging { t("merge-speakers") } else { t("rename") }, ipad_dialogs::Look::Main, None);
+                let rename = if to.is_empty() || to == from { rename.opacity(0.4).into_any_element() } else { rename.on_click(cx.listener(|this, _, window, cx| this.rename_speaker(window, cx))).into_any_element() };
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .pt(px(6.))
+                    .child(div().px(px(4.)).text_size(px(13.)).text_color(rgb(pal().muted)).child(t("new-name")))
+                    .child(div().h(px(44.)).flex().items_center().px(px(14.)).rounded(px(14.)).bg(ipad_dialogs::well()).child(div().flex_1().min_w_0().child(Input::new(&self.speaker_name).appearance(false))))
+                    .child(div().px(px(4.)).text_size(px(12.5)).text_color(rgb(pal().muted)).child(affects))
+                    .when_some(notice, |d, text| d.child(div().px(px(4.)).text_size(px(12.5)).text_color(rgb(if merging { pal().warning } else { pal().muted })).child(text)))
+                    .child(
+                        div().flex().flex_wrap().gap(px(8.)).pt(px(2.)).child(rename).child(ipad_dialogs::pill("use-speaker", t("use-for-next-line"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(move |this, _, _, cx| {
+                            this.speaker = Some(next.clone());
+                            cx.notify();
+                        }))),
+                    );
+            }
             div()
                 .flex()
                 .flex_col()
@@ -5971,29 +6229,39 @@ impl Workbench {
                 .pr(px(4.))
                 .w_full()
                 .h_full()
-                // Play and pause: a round button, the one solid thing on the bar.
-                .child(
-                    Quiet::new("replay-toggle")
-                        .solid()
-                        .square(px(30.))
-                        .icon(if playing { "pause" } else { "play" }, 12.)
-                        .disabled(hearing)
-                        .tooltip(if playing { t("pause-space") } else { t("play-space") })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_replay(cx))),
-                )
+                // Play and pause: a round button, the one solid thing on the bar; on the iPad a plain round icon button.
+                .map(|d| {
+                    if crate::platform::ipad_layout() {
+                        let button = ipad_dialogs::round_icon("replay-toggle", if playing { "pause" } else { "play" });
+                        return d.child(if hearing { button.opacity(0.4).into_any_element() } else { button.on_click(cx.listener(|this, _, _, cx| this.toggle_replay(cx))).into_any_element() });
+                    }
+                    d.child(
+                        Quiet::new("replay-toggle")
+                            .solid()
+                            .square(px(30.))
+                            .icon(if playing { "pause" } else { "play" }, 12.)
+                            .disabled(hearing)
+                            .tooltip(if playing { t("pause-space") } else { t("play-space") })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_replay(cx))),
+                    )
+                })
                 .child(div().w(px(2.)))
                 .child(div().font_family(theme::MONO).text_meta().whitespace_nowrap().text_color(rgb(pal().text)).child(now))
                 .child(track)
                 .child(div().font_family(theme::MONO).text_meta().whitespace_nowrap().text_color(rgb(pal().faint)).child(whole))
                 .child(Separator::vertical().h(px(18.)).mx_1())
-                // With sound the replay runs in real time, so there is no speed to choose.
-                .when(sound.is_none() && !hearing, |d| {
-                    d.child(Quiet::new("replay-speed").label(format!("{}×", player.speed)).tooltip(t("speed")).on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(replay) = &mut this.replay {
-                            replay.player.next_speed();
-                        }
-                        this.wait_for_next_step();
-                        cx.notify();
+                // How fast: the sound and the board's writing together, kept for the next replay.
+                .map(|d| {
+                    let speed = self.replay_speed;
+                    if crate::platform::ipad_layout() {
+                        let rows = alcyo_board::steps::SPEEDS.iter().map(|&each| ipad_dialogs::MenuRow::new(speed_label(each), move |w, _, cx| w.set_replay_speed(each, cx)).checked(each == speed)).collect();
+                        let trigger = div().id("replay-speed").h(px(44.)).min_w(px(52.)).px(px(12.)).flex().items_center().justify_center().rounded_full().cursor_pointer().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).hover(|d| d.bg(ipad_dialogs::well())).child(speed_label(speed));
+                        return d.child(self.ipad_menu("replay-speed", trigger, rows, true, cx));
+                    }
+                    d.child(Quiet::new("replay-speed").label(speed_label(speed)).tooltip(t("speed")).on_click(cx.listener(move |this, _, _, cx| {
+                        let speeds = alcyo_board::steps::SPEEDS;
+                        let next = speeds[(speeds.iter().position(|s| *s == speed).unwrap_or(0) + 1) % speeds.len()];
+                        this.set_replay_speed(next, cx);
                     })))
                 })
                 .when(self.live.read_only.is_none(), |d| {
@@ -6316,6 +6584,9 @@ impl Workbench {
     }
 
     fn import_panel(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        if crate::platform::ipad_layout() {
+            return self.ipad_import_body(cx);
+        }
         let hint = |text: &'static str| div().text_small().text_color(rgb(pal().muted)).child(text);
         let panel = div().id("import-panel").flex_1().overflow_y_scroll().flex().flex_col().gap_2();
         let can_add_here = self.live.read_only.is_none();
@@ -6538,6 +6809,97 @@ impl Workbench {
             None if stale => (Some(t("the-meeting-has-moved-on").to_string()), pal().warning),
             None => (self.summary.note.clone(), pal().muted),
         };
+        let ipad = crate::platform::ipad_layout();
+        // On the iPad, the same things as the iPad does them (#341): pills, and round icon buttons a finger's size.
+        // While the summary is being written, on the iPad: a calm row with what it is doing and how far, a thin
+        // line filling under it (or drifting while it cannot tell), and Stop as a quiet pill at its end.
+        let step = self.summary.job.as_ref().and_then(|job| job.step).filter(|(_, total)| *total > 1).map(|(done, total)| ((done as f32 + 0.5) / total as f32).clamp(0.05, 1.0));
+        let ipad_progress = (ipad && busy.is_some()).then(|| {
+            let p = pal();
+            let line = div().h(px(3.)).w_full().rounded(px(2.)).bg(ipad_dialogs::well()).overflow_hidden().child(match step {
+                Some(share) => div().h_full().rounded(px(2.)).bg(rgb(p.accent)).with_spring("summary-progress", SpringAnimation::new(motion::GLIDE).to(share), |d, v| d.w(gpui_kit::relative(v.clamp(0., 1.)))).into_any_element(),
+                None => div().h_full().w(gpui_kit::relative(0.3)).rounded(px(2.)).bg(rgb(p.accent)).with_animation("summary-drift", gpui_kit::Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.ml(gpui_kit::relative(-0.3 + 1.3 * t))).into_any_element(),
+            });
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .px(px(16.))
+                .pt(px(12.))
+                .pb(px(14.))
+                .border_b_1()
+                .border_color(rgb(p.line))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(p.accent)).with_animation("summary-busy", motion::pulse(), |d, t| d.opacity(t)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(div().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).text_color(rgb(p.text)).child(t("ipad-summary-writing")))
+                                .child(div().text_size(px(13.)).text_color(rgb(p.muted)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(busy.clone().unwrap_or_default())),
+                        )
+                        .when(editable, |d| d.child(ipad_dialogs::pill("stop-summary", t("stop"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))))),
+                )
+                .child(line)
+        });
+        let ipad_bar = ipad.then(|| {
+            let mut left: Vec<gpui_kit::AnyElement> = vec![];
+            if editable && busy.is_some() {
+                left.push(ipad_dialogs::pill("stop-summary", t("stop"), ipad_dialogs::Look::Ending, None).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))).into_any_element());
+            }
+            if editable && busy.is_none() && has_text && !editing {
+                let again = ipad_dialogs::pill("make-summary", t("write-again"), ipad_dialogs::Look::Plain, Some("ipad/sparkle"));
+                left.push(if can_make { again.on_click(cx.listener(|this, _, _, cx| this.make_summary(cx))).into_any_element() } else { again.opacity(0.4).into_any_element() });
+            }
+            let mut right: Vec<gpui_kit::AnyElement> = vec![];
+            if has_text && !editing {
+                let (markdown, plain) = (text.clone(), summary::plain_text(&text));
+                let rows = vec![
+                    ipad_dialogs::MenuRow::new(t("copy-as-plain-text"), move |this, _, cx| this.copy_summary(plain.clone(), t("copied-as-plain-text"), cx)).glyph("ipad/copy"),
+                    ipad_dialogs::MenuRow::new(t("copy-the-markdown-source"), move |this, _, cx| this.copy_summary(markdown.clone(), t("copied-the-markdown-source"), cx)).glyph("ipad/export"),
+                ];
+                right.push(self.ipad_menu("copy-summary", ipad_dialogs::round_icon("copy-summary", "ipad/copy"), rows, false, cx).into_any_element());
+            }
+            if editable && has_text && !editing {
+                right.push(ipad_dialogs::round_icon("edit-summary", "ipad/pen").on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
+                right.push(ipad_dialogs::round_icon("clear-summary", "ipad/trash").on_click(cx.listener(|this, _, window, cx| this.clear_summary(window, cx))).into_any_element());
+            }
+            if editing {
+                right.push(ipad_dialogs::pill("edit-summary", t("done"), ipad_dialogs::Look::Main, None).on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
+            }
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px(px(12.))
+                .min_h(px(56.))
+                .flex_none()
+                .border_b_1()
+                .border_color(rgb(pal().line))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .text_size(px(13.))
+                        .text_color(rgb(state_color))
+                        .children(left)
+                        .when_some(state.clone(), |d, state| {
+                            d.when(busy.is_some() || stale, |d| d.child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(state_color)))).child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(state))
+                        }),
+                )
+                .child(div().flex().items_center().gap(px(2.)).flex_none().children(right))
+        });
         let bar = div()
             .flex()
             .items_center()
@@ -6611,6 +6973,23 @@ impl Workbench {
             .flex()
             .flex_col()
             .when(self.summary.cleared.is_some(), |d| {
+                if ipad {
+                    return d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .mb_3()
+                            .pl(px(16.))
+                            .pr(px(4.))
+                            .py(px(4.))
+                            .rounded(px(16.))
+                            .bg(rgb(pal().selected))
+                            .child(div().text_size(px(14.)).child(t("summary-deleted")))
+                            .child(ipad_dialogs::pill("undo-clear", t("undo"), ipad_dialogs::Look::Plain, Some("ipad/undo")).on_click(cx.listener(|this, _, _, cx| this.undo_clear(cx)))),
+                    );
+                }
                 d.child(div().flex().items_center().justify_between().gap_2().mb_3().px_3().py_2().bg(rgb(pal().selected)).child(div().text_small().child(t("summary-deleted"))).child(button("undo-clear", t("undo")).on_click(cx.listener(|this, _, _, cx| this.undo_clear(cx)))))
             })
             .when(busy.is_some() && has_text, |d| d.child(div().mb_3().text_small().text_color(rgb(pal().muted)).child(t("your-current-text-stays-here"))))
@@ -6627,6 +7006,10 @@ impl Workbench {
                         .child(div().text_ui().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(t("no-summary-yet")))
                         .child(div().max_w(px(240.)).text_small().text_center().text_color(rgb(pal().muted)).child(t("a-draft-from-what-was")))
                         .when(editable, |d| {
+                            if ipad {
+                                let write = ipad_dialogs::pill("make-summary", t("write-summary"), ipad_dialogs::Look::Main, Some("ipad/sparkle"));
+                                return d.child(if can_make { write.on_click(cx.listener(|this, _, _, cx| this.make_summary(cx))).into_any_element() } else { write.opacity(0.4).into_any_element() });
+                            }
                             d.child(
                                 Quiet::new("make-summary")
                                     .solid()
@@ -6638,7 +7021,7 @@ impl Workbench {
                         .when_some(destination.clone().filter(|_| editable), |d, text| d.child(div().max_w(px(260.)).text_small().text_center().text_color(rgb(pal().faint)).child(text))),
                 )
             })
-            .when(editing, |d| d.child(div().flex_1().min_h(px(320.)).border_1().border_color(rgb(pal().line)).p_2().text_ui().child(Textarea::new(&self.summary.editor))))
+            .when(editing, |d| d.child(div().flex_1().min_h(px(320.)).border_1().border_color(rgb(pal().line)).p_2().when(ipad, |d| d.rounded(px(14.)).p_3()).text_ui().child(Textarea::new(&self.summary.editor))))
             .children(reading)
             .when_some(proposed, |d, proposed| {
                 d.child(
@@ -6646,6 +7029,7 @@ impl Workbench {
                         .mt_5()
                         .border_1()
                         .border_color(rgb(pal().strong))
+                        .when(ipad, |d| d.rounded(px(16.)).overflow_hidden())
                         .flex()
                         .flex_col()
                         .child(
@@ -6668,15 +7052,27 @@ impl Workbench {
                                 .gap_2()
                                 .px_3()
                                 .pb_3()
-                                .child(Quiet::new("use-draft").solid().label(t("replace-current")).on_click(cx.listener(|this, _, _, cx| this.use_draft(cx))))
-                                .child(button("keep-current", t("keep-current")).on_click(cx.listener(|this, _, _, cx| {
-                                    this.summary.draft = None;
-                                    cx.notify();
-                                }))),
+                                .map(|d| {
+                                    let keep = |this: &mut Self, cx: &mut Context<Self>| {
+                                        this.summary.draft = None;
+                                        cx.notify();
+                                    };
+                                    if ipad {
+                                        d.child(ipad_dialogs::pill("use-draft", t("replace-current"), ipad_dialogs::Look::Main, None).on_click(cx.listener(|this, _, _, cx| this.use_draft(cx))))
+                                            .child(ipad_dialogs::pill("keep-current", t("keep-current"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(move |this, _, _, cx| keep(this, cx))))
+                                    } else {
+                                        d.child(Quiet::new("use-draft").solid().label(t("replace-current")).on_click(cx.listener(|this, _, _, cx| this.use_draft(cx))))
+                                            .child(button("keep-current", t("keep-current")).on_click(cx.listener(move |this, _, _, cx| keep(this, cx))))
+                                    }
+                                }),
                         ),
                 )
             });
-        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().child(bar).child(body)
+        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().map(|d| match (ipad_progress, ipad_bar) {
+            (Some(progress), _) => d.child(progress),
+            (None, Some(ipad_bar)) => d.child(ipad_bar),
+            (None, None) => d.child(bar),
+        }).child(body)
     }
 }
 
@@ -6757,6 +7153,11 @@ fn button(id: impl Into<gpui_kit::ElementId>, label: impl Into<gpui_kit::SharedS
 }
 
 /// An icon that does something, named in a tooltip.
+/// A replay speed as the bar says it: "0.5×", "1×", "1.5×".
+fn speed_label(speed: f64) -> String {
+    format!("{speed}×")
+}
+
 fn icon_button(id: &'static str, name: &'static str, tooltip: impl Into<gpui_kit::SharedString>) -> Quiet {
     Quiet::new(id).icon(name, 14.).square(px(28.)).tooltip(tooltip)
 }
@@ -6956,14 +7357,35 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .when(on_ipad, |d| {
+                // Two fingers pan and pinch at once, as in Freeform: the board follows their centroid as it moves,
+                // and zooms about it as they spread. The iPad sends a pan's steps as pinches that do not zoom.
                 d.on_pinch(cx.listener(move |_, e: &gpui_kit::PinchEvent, _, cx| {
-                    pinch.borrow_mut().zoom_at(e.position, (1.0 + e.delta).max(0.2));
+                    let mut b = pinch.borrow_mut();
+                    b.fling = None;
+                    match e.phase {
+                        gpui_kit::TouchPhase::Started => b.pinch_at = Some(e.position),
+                        gpui_kit::TouchPhase::Moved => {
+                            if let Some(from) = b.pinch_at.replace(e.position) {
+                                let d = e.position - from;
+                                let v = b.shown();
+                                b.view = Some(View { x: v.x - f32::from(d.x) / v.k, y: v.y - f32::from(d.y) / v.k, k: v.k });
+                                b.reading = true;
+                                b.glide = None;
+                                b.touched = Instant::now();
+                            }
+                        }
+                        gpui_kit::TouchPhase::Ended | gpui_kit::TouchPhase::Cancelled => b.pinch_at = None,
+                    }
+                    if e.delta != 0.0 {
+                        b.zoom_at(e.position, (1.0 + e.delta).max(0.2));
+                    }
                     cx.notify();
                 }))
             })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                 window.focus(&this.focus, cx);
                 let mut b = press.borrow_mut();
+                b.fling = None;
                 // On the iPad only the Pencil draws with the tool in hand, unless fingers may mark too.
                 let may_draw = !pencil_only || crate::platform::touch_is_pencil();
                 if may_draw && b.tool_down(e.position) {
@@ -7076,26 +7498,103 @@ impl Render for Workbench {
                             match e.phase {
                                 gpui_kit::TouchPhase::Started => {
                                     let mut b = touch_ink.borrow_mut();
+                                    b.fling = None;
+                                    // Only a drag that starts on the board itself, not on what floats over it.
+                                    if !(bounds.contains(&e.start_position) && hitbox.is_hovered_at(e.start_position, window)) {
+                                        return;
+                                    }
                                     // A finger pans unless fingers may mark; the Pencil always draws the tool in hand.
                                     let may_draw = !pencil_only || crate::platform::touch_is_pencil();
-                                    // Only a drag that starts on the board itself, not on what floats over it.
-                                    if may_draw && bounds.contains(&e.start_position) && hitbox.is_hovered_at(e.start_position, window) && b.tool_down(e.start_position) {
+                                    if may_draw && b.tool_down(e.start_position) {
                                         b.tool_drag(e.position);
                                         window.prevent_default();
                                         window.refresh();
+                                        return;
                                     }
+                                    // Nothing to draw with: the touch moves the board, in any direction, rather than
+                                    // being left to GPUI's pan, which keeps to one axis. A touch that never goes
+                                    // further than a tap is handed back as a tap when it lifts.
+                                    let view = b.shown();
+                                    b.touch_pan = Some(TouchPan { from: e.start_position, view, trail: VecDeque::from([(Instant::now(), e.position)]), moved: false });
+                                    window.prevent_default();
                                 }
                                 gpui_kit::TouchPhase::Moved => {
-                                    if touch_ink.borrow_mut().tool_drag(e.position) {
+                                    let mut b = touch_ink.borrow_mut();
+                                    if let Some(pan) = b.touch_pan.as_mut() {
+                                        let d = e.position - pan.from;
+                                        pan.moved |= f32::from(d.x).hypot(f32::from(d.y)) > TAP_SLOP;
+                                        pan.trail.push_back((Instant::now(), e.position));
+                                        while pan.trail.len() > 2 && pan.trail.front().is_some_and(|(t, _)| t.elapsed() > Duration::from_millis(100)) {
+                                            pan.trail.pop_front();
+                                        }
+                                        let (moved, from) = (pan.moved, pan.view);
+                                        if moved {
+                                            b.pan_from(from, d);
+                                            window.refresh();
+                                        }
+                                        return;
+                                    }
+                                    if b.tool_drag(e.position) {
                                         window.refresh();
                                     }
                                 }
-                                gpui_kit::TouchPhase::Ended | gpui_kit::TouchPhase::Cancelled => {
-                                    let _ = touch_this.update(cx, |this, cx| this.tool_up(cx));
+                                gpui_kit::TouchPhase::Ended => {
+                                    let pan = touch_ink.borrow_mut().touch_pan.take();
+                                    match pan {
+                                        Some(pan) if pan.moved => {
+                                            // Let go moving: the board is thrown on, unless the touch had stopped first.
+                                            let (first, last) = (pan.trail.front().copied(), pan.trail.back().copied());
+                                            if let (Some((t0, p0)), Some((t1, p1))) = (first, last) {
+                                                let dt = (t1 - t0).as_secs_f32();
+                                                if dt > 0.005 && t1.elapsed() < Duration::from_millis(60) {
+                                                    let v = [f32::from(p1.x - p0.x) / dt, f32::from(p1.y - p0.y) / dt];
+                                                    let speed = v[0].hypot(v[1]).min(6000.0);
+                                                    if speed > 150.0 {
+                                                        let k = speed / v[0].hypot(v[1]);
+                                                        touch_ink.borrow_mut().fling = Some(([v[0] * k, v[1] * k], Instant::now()));
+                                                    }
+                                                }
+                                            }
+                                            window.refresh();
+                                        }
+                                        Some(_) => {
+                                            // A tap: handed to the board as the press and release GPUI would have made
+                                            // of it, once this event is through, counting a second tap close by.
+                                            let at = e.position;
+                                            let count = {
+                                                let mut b = touch_ink.borrow_mut();
+                                                let count = match b.last_tap {
+                                                    Some((when, where_, n)) if when.elapsed() < Duration::from_millis(400) && f32::from((at - where_).x).hypot(f32::from((at - where_).y)) < 16.0 => n + 1,
+                                                    _ => 1,
+                                                };
+                                                b.last_tap = Some((Instant::now(), at, count));
+                                                count
+                                            };
+                                            window.defer(cx, move |window, cx| {
+                                                let modifiers = gpui_kit::Modifiers::default();
+                                                window.dispatch_event(gpui_kit::PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: count, first_mouse: false }), cx);
+                                                window.dispatch_event(gpui_kit::PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: count }), cx);
+                                            });
+                                        }
+                                        None => {
+                                            let _ = touch_this.update(cx, |this, cx| this.tool_up(cx));
+                                        }
+                                    }
+                                }
+                                // Taken over, as by a second finger that pans and pinches: what the first had begun
+                                // to draw goes, rather than a stray mark staying behind.
+                                gpui_kit::TouchPhase::Cancelled => {
+                                    let mut b = touch_ink.borrow_mut();
+                                    b.touch_pan = None;
+                                    b.drop_stroke();
+                                    window.refresh();
                                 }
                             }
                         });
                         let mut b = ink.borrow_mut();
+                        if b.coast() {
+                            window.request_animation_frame();
+                        }
                         // What floats over the board is sized by it: a new size is drawn once more to fit it.
                         if b.canvas.size != bounds.size {
                             window.request_animation_frame();
@@ -7269,13 +7768,26 @@ impl Render for Workbench {
                                 edge.a = 0.9;
                                 window.paint_quad(gpui_kit::fill(area, tint).border_widths(px(2.)).border_color(edge));
                             }
-                            // The line being drawn, in its tool's colour, until it joins the board.
+                            // The line being drawn, in its tool's colour, until it joins the board: the very shape it
+                            // will have there (pen::hand), so lifting the pen changes nothing.
                             if let Some(line) = b.scribble.as_ref().filter(|l| l.len() > 1) {
-                                let (color, alpha, width) = if b.mark_tool == ERASER { (0x8a_8a_8a, 0.3, ERASER_W) } else { annotation_look(b.mark_tool) };
-                                let mut pb = PathBuilder::stroke(px(width * v.k));
                                 let at = |p: &[f32; 2]| origin + point(px(p[0] * v.k), px(p[1] * v.k));
-                                pb.move_to(at(&line[0]));
-                                line[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                let (pb, color, alpha) = if b.mark_tool == ERASER {
+                                    let mut pb = PathBuilder::stroke(px(ERASER_W * v.k));
+                                    pb.move_to(at(&line[0]));
+                                    line[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                    (pb, 0x8a_8a_8a, 0.3)
+                                } else {
+                                    let (color, alpha, width) = annotation_look(b.mark_tool);
+                                    let shape = outline(&alcyo_board::pen::hand(line, width, !alcyo_board::graph::is_pen(b.mark_tool)), 1.0);
+                                    let mut pb = fill_builder();
+                                    if let Some(first) = shape.first() {
+                                        pb.move_to(at(first));
+                                        shape[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                        pb.close();
+                                    }
+                                    (pb, color, alpha)
+                                };
                                 if let Ok(path) = pb.build() {
                                     let mut ink: Hsla = rgb(pal().ink(color)).into();
                                     ink.a = alpha;
@@ -7972,6 +8484,8 @@ impl Render for Workbench {
         let topic_offer = self.topic_hint.clone().filter(|_| self.replay.is_none() && self.editable());
         let offering = offers_latest || page_offer.is_some() || topic_offer.is_some();
         let offers = div()
+            .id("offers")
+            .occlude()
             .flex()
             .items_center()
             .gap_2()
@@ -8120,6 +8634,9 @@ impl Render for Workbench {
                         d.child(div().text_small().text_color(rgb(if l["failed"].as_bool().unwrap_or(false) { pal().danger } else { pal().faint })).child(note))
                     })
                     .when(l["failed"].as_bool().unwrap_or(false) && editable, |d| {
+                        if crate::platform::ipad_layout() {
+                            return d.child(div().mt_1().flex().child(ipad_dialogs::pill(("retry-line", i), t("draw-it-again"), ipad_dialogs::Look::Plain, Some("ipad/redo")).h(px(36.)).px(px(14.)).text_size(px(13.5)).on_click(cx.listener(move |this, _, _, cx| this.retry_line(i, cx)))));
+                        }
                         d.child(div().mt_1().child(button(("retry-line", i), t("draw-it-again")).on_click(cx.listener(move |this, _, _, cx| this.retry_line(i, cx)))))
                     })
                     // The newest line rises a little into place as it arrives. Every line keeps the same wrapper, so
@@ -8993,6 +9510,7 @@ impl Render for Workbench {
                     })
                     .into_any_element()
             }
+            SettingsTab::Storage => self.desktop_storage(cx),
             SettingsTab::About => {
                 let update: gpui_kit::AnyElement = match &self.update {
                     _ if self.prefix.is_none() => div().text_small().text_color(rgb(pal().muted)).child(t("installed-copies-update")).into_any_element(),
@@ -9069,27 +9587,6 @@ impl Render for Workbench {
                             .into_any_element(),
                     );
                 }
-                // Metal keeps its own shaders, so there is nothing here for a Mac to manage.
-                if cfg!(not(target_os = "macos")) {
-                    let size = dir_size(&shader_dir(&self.models));
-                    storage.push(
-                        row(t("graphics-cache"), Some(t("safe-to-delete-the-model")))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(div().font_family(theme::MONO).text_small().text_color(rgb(pal().muted)).child(format!("{:.1} MB", size as f64 / 1e6)))
-                                    .child(button("clear-shaders", t("delete")).disabled(size == 0).on_click(cx.listener(|this, _, _, cx| {
-                                        if let Err(e) = std::fs::remove_dir_all(shader_dir(&this.models)) {
-                                            this.form.note = Some(format!("{e:#}"));
-                                        }
-                                        cx.notify();
-                                    }))),
-                            )
-                            .into_any_element(),
-                    );
-                }
                 div()
                     .flex()
                     .flex_col()
@@ -9103,6 +9600,7 @@ impl Render for Workbench {
             (SettingsTab::Model, "chip", t("board-model")),
             (SettingsTab::Speech, "mic", t("speech")),
             (SettingsTab::General, "settings", t("general")),
+            (SettingsTab::Storage, "folder", t("storage")),
             (SettingsTab::Shortcuts, "keyboard", t("shortcuts")),
             (SettingsTab::About, "info", t("about")),
         ];
@@ -9380,7 +9878,10 @@ impl Render for Workbench {
             let card_w = (WELCOME_W - (per_row - 1.0) * 8.0) / per_row;
             let rule = || div().flex_1().h(px(1.)).bg(rgb(pal().line));
             div().absolute().size_full().flex().items_center().justify_center().pb(px(TOOLS_H + TOOLS_GAP)).child(
+                // Its buttons are tapped with the Pencil too: the board under it must not take the touch for a stroke.
                 div()
+                    .id("welcome")
+                    .occlude()
                     .w(px(WELCOME_W))
                     .max_w(gpui_kit::relative(0.92))
                     .flex()
@@ -9925,10 +10426,15 @@ impl Render for Shell {
         // Clear of what the system draws over the window: the iPad's status bar, its home indicator, the
         // corners of a rounded screen. Nothing on a desktop window.
         // Laid out for the iPad, the board runs under them and what floats over it keeps clear (ipad.rs).
-        let safe = if crate::platform::ipad_layout() && self.workbench.is_some() { gpui_kit::Edges::default() } else { window.insets().safe_area };
+        let ipad = crate::platform::ipad_layout();
+        let safe = if ipad { gpui_kit::Edges::default() } else { window.insets().safe_area };
         div().size_full().font(theme::interface_font()).bg(rgb(pal().paper)).pt(safe.top).pb(safe.bottom).pl(safe.left).pr(safe.right).map(|d| match &self.workbench {
             // The app comes up through the written name rather than cutting to it.
             Some(workbench) => d.child(div().size_full().child(workbench.clone()).with_animation("hand-off", motion::ease(Duration::from_millis(360)), |d, t| d.opacity(t))).into_any_element(),
+            // On the iPad the name is written on one sheet of paper from edge to edge, under the status bar too, as
+            // the system's launch screen before it (packaging/ios): a bar of its own there was a white band with a
+            // line under it.
+            None if ipad => d.child(crate::splash::splash(&self.word, self.started, window)).into_any_element(),
             // The bar is there from the start, so the window can be moved while the app gets ready.
             None => d.flex().flex_col().child(title_bar()).child(div().flex_1().min_h_0().child(crate::splash::splash(&self.word, self.started, window))).into_any_element(),
         })
@@ -10038,6 +10544,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     let hanzi = resources.hanzi.clone();
     let pdfium = resources.pdfium.clone();
     let search_dir = resources.search.clone();
+    let voice_dir = resources.voice.clone();
     let start_board = match &demo {
         Some(name) => Some(demo_board(root.as_ref().context("--demo needs --root <checkout>")?, name)?),
         None => synthetic.map(synthetic_board),
@@ -10111,6 +10618,10 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 generation: 0,
                 rebuilding: None,
                 drag: None,
+                pinch_at: None,
+                touch_pan: None,
+                fling: None,
+                last_tap: None,
                 circling: false,
                 loops: vec![],
                 drawing: None,
@@ -10129,6 +10640,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 zoom_test: zoom_test.then_some(ZoomTest { started: None, frames: vec![], last: None, base: 0.0, rebuilds: vec![], peak_rss: 0 }),
                 closed_at: None,
                 instant: start_board.is_some(),
+                pace: 1.0,
             };
             let mut live = start_meeting.unwrap_or_default();
             if start_board.is_none() {
@@ -10339,6 +10851,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     watching: 0,
                     share_address: 0,
                     share_note: None,
+                    share_copied: None,
+                    replay_speed: 1.0,
                     inbox,
                     save: SaveState::Idle,
                     saving: None,
@@ -10406,6 +10920,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     forced_backend,
                     models,
                     search_dir,
+                    voice_dir,
+                    storage: Default::default(),
                     binaries,
                     download: None,
                     proxy_generation: 0,
@@ -10580,13 +11096,26 @@ mod switch_tests {
     #[test]
     fn only_a_switch_between_two_models_waits_for_a_restart() {
         let local = |f: &str| Engine::Local(PathBuf::from(f));
-        assert!(waits_for_restart(&local("a"), &local("b")), "local to local");
-        assert!(waits_for_restart(&local("a"), &Engine::Remote), "local to remote");
-        assert!(waits_for_restart(&Engine::Remote, &local("a")), "remote to local");
-        assert!(!waits_for_restart(&Engine::Remote, &Engine::Remote), "a remote model's settings apply at once");
-        assert!(!waits_for_restart(&local("a"), &local("a")));
-        assert!(!waits_for_restart(&Engine::None, &local("a")), "the first model is used at once");
-        assert!(!waits_for_restart(&local("a"), &Engine::None));
+        assert!(needs_swap(&local("a"), &local("b")), "local to local");
+        assert!(needs_swap(&local("a"), &Engine::Remote), "local to remote");
+        assert!(needs_swap(&Engine::Remote, &local("a")), "remote to local");
+        assert!(!needs_swap(&Engine::Remote, &Engine::Remote), "a remote model's settings apply at once");
+        assert!(!needs_swap(&local("a"), &local("a")));
+        assert!(!needs_swap(&Engine::None, &local("a")), "the first model is used at once");
+        assert!(!needs_swap(&local("a"), &Engine::None));
+    }
+
+    /// Search by meaning runs where it can, and says why not where it cannot: then the search box finds words.
+    #[test]
+    fn search_by_meaning_falls_back_to_words() {
+        let mb = |n: u64| n << 20;
+        assert_eq!(by_meaning(false, true, true, Some(mb(320)), Some(mb(4000))), ByMeaning::Off);
+        assert_eq!(by_meaning(true, true, true, None, Some(mb(4000))), ByMeaning::NoModel);
+        assert_eq!(by_meaning(true, true, false, Some(mb(320)), Some(mb(4000))), ByMeaning::NoModel, "no llama.cpp in the app");
+        assert_eq!(by_meaning(true, true, true, Some(mb(320)), Some(mb(300))), ByMeaning::NoMemory, "the board model holds the rest");
+        assert_eq!(by_meaning(true, true, true, Some(mb(320)), Some(mb(4000))), ByMeaning::On);
+        assert_eq!(by_meaning(true, true, true, Some(mb(320)), None), ByMeaning::On, "unknown off the iPad");
+        assert_eq!(by_meaning(true, false, false, Some(mb(320)), Some(mb(1))), ByMeaning::On, "a desktop's server is a program of its own");
     }
 }
 

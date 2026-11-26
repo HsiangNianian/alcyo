@@ -1592,6 +1592,17 @@ impl Session {
         }
     }
 
+    /// Which model the local server holds, if one is up: `Err(())` while it is starting or stopping, when that cannot
+    /// be told without waiting. What it compiled for the graphics must not be cleared from under it.
+    #[allow(clippy::result_unit_err)]
+    pub fn local_model_up(&self) -> Result<Option<PathBuf>, ()> {
+        match self.server.try_lock() {
+            Ok(held) => Ok(held.as_ref().map(|(_, _, model)| model.clone())),
+            Err(std::sync::TryLockError::Poisoned(held)) => Ok(held.into_inner().as_ref().map(|(_, _, model)| model.clone())),
+            Err(std::sync::TryLockError::WouldBlock) => Err(()),
+        }
+    }
+
     /// What switches the board model as a restart would, off the window's thread (the iPad).
     pub fn switcher(&self) -> Switcher {
         Switcher { server: self.server.clone(), backend: self.backend.clone(), local_base: self.local_base.clone() }

@@ -25,6 +25,9 @@ fn soft(strength: f32) -> Hsla {
 }
 
 /// What glass the card is: the same as the card's own fill, for the fade over its scrolled lines.
+/// How tall a tab of the transcript's segmented control is: a whole finger's (or the Pencil's) target.
+const TAB_H: f32 = 44.0;
+
 fn card_fill() -> Hsla {
     if theme::is_dark() { alpha(0x18_18_1a, 0.88) } else { alpha(0xff_ff_ff, 0.88) }
 }
@@ -76,7 +79,9 @@ impl Workbench {
         }
     }
 
-    /// Transcript, Summary and Speakers as the system's segmented control.
+    /// Transcript, Summary and Speakers as the system's segmented control. Each part is a full 44 pt for a finger or
+    /// the Pencil, edge to edge of its share of the control, and nothing that moves the card listens there: a tap on
+    /// a part always switches to it (the card is moved by its grip, `ipad_grip`).
     fn ipad_tabs(&self, wide: bool, cx: &mut Context<Self>) -> gpui_kit::Div {
         let side_panel = if self.panel.beside_board() { self.panel } else { Panel::Transcript };
         let dark = theme::is_dark();
@@ -84,25 +89,20 @@ impl Workbench {
         div()
             .flex_1()
             .flex()
-            .p(px(2.))
+            .px(px(3.))
             .gap(px(2.))
-            .rounded(px(9.))
+            .rounded(px(12.))
             .bg(alpha(0x76_76_80, if dark { 0.24 } else { 0.12 }))
             .children([(Panel::Transcript, "ipad-tab-transcript", t("transcript-2").to_string()), (Panel::Summary, "ipad-tab-summary", t("summary-2").to_string()), (Panel::Speakers, "ipad-tab-speakers", if wide && count > 0 { format!("{} {count}", t("speakers")) } else { t("speakers").to_string() })].map(|(panel, id, label)| {
                 let on = side_panel == panel;
-                div()
-                    .id(id)
-                    .flex_1()
-                    .h(px(30.))
+                // The part as it is touched, the whole height of the control; what shows it chosen sits inside.
+                let face = div()
+                    .size_full()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .px(px(12.))
-                    .rounded(px(7.))
-                    .text_ui()
-                    .font_weight(FontWeight::MEDIUM)
-                    .whitespace_nowrap()
-                    .cursor_pointer()
+                    .px(px(10.))
+                    .rounded(px(9.))
                     .when(on, |d| {
                         if dark {
                             d.bg(rgb(0x5a_5a_5e))
@@ -113,13 +113,40 @@ impl Workbench {
                             ])
                         }
                     })
-                    .child(label)
+                    .child(label);
+                div()
+                    .id(id)
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(TAB_H))
+                    .py(px(4.))
+                    .text_ui()
+                    .font_weight(FontWeight::MEDIUM)
+                    .whitespace_nowrap()
+                    .cursor_pointer()
+                    .child(face)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.panel = panel;
                         this.transcript_open = true;
                         cx.notify();
                     }))
             }))
+    }
+
+    /// The grip along the top of the transcript card or sheet: the one place a drag moves it. A strip the width of the
+    /// card, with the system's grabber in its middle, so the tabs under it are only ever tapped.
+    fn ipad_grip(&self, grab: Grab, h: f32, cx: &mut Context<Self>) -> gpui_kit::Div {
+        div()
+            .relative()
+            .flex_none()
+            .w_full()
+            .h(px(h))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_grab()
+            .child(div().w(px(40.)).h(px(5.)).rounded(px(3.)).bg(soft(2.3)))
+            .child(self.ipad_drag_area(grab, cx))
     }
 
     /// The box to type a line for the board, with who it goes in as beside it.
@@ -220,18 +247,14 @@ impl Workbench {
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(rgb(pal().muted)).child(text))
             .child(div().flex_none().child(icon("ipad/chevron-up").size(px(18.))))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx)));
-        let header = div()
-            .relative()
+        let tabs = div()
             .flex_none()
             .flex()
             .items_center()
             .gap(px(8.))
-            .pt(px(12.))
             .pr(px(10.))
             .pb(px(8.))
             .pl(px(14.))
-            // The header carries the card: a drag on it throws the card to a corner.
-            .child(self.ipad_drag_area(Grab::Card, cx))
             .child(self.ipad_tabs(false, cx))
             .child(
                 div()
@@ -247,6 +270,8 @@ impl Workbench {
                     .child(icon("ipad/chevron-down").size(px(18.)))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx))),
             );
+        // The grip carries the card: a drag on it throws the card to a corner. The tabs below only switch.
+        let header = div().flex_none().flex().flex_col().child(self.ipad_grip(Grab::Card, 20., cx)).child(tabs);
         let side_panel = if self.panel.beside_board() { self.panel } else { Panel::Transcript };
         let typing = (side_panel == Panel::Transcript && self.editable()).then(|| div().flex_none().p(px(12.)).child(self.ipad_typing(false, cx)));
         // As tall as the card is open at its corner, shorter at the bottom, so the box to type in is never cut off.
@@ -311,9 +336,9 @@ impl Workbench {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .child(self.ipad_drag_area(Grab::Sheet, cx))
-                    .child(div().mx_auto().mt(px(8.)).w(px(40.)).h(px(5.)).rounded(px(3.)).bg(soft(2.3)))
-                    .child(div().flex().items_center().gap(px(10.)).pt(px(if compact { 14. } else { 30. })).pb(px(4.)).px(px(16.)).child(self.ipad_tabs(true, cx)).when(compact, |d| {
+                    // Moved by its grip only, a strip over the tabs, so a tap on a tab is never taken for a drag.
+                    .child(self.ipad_grip(Grab::Sheet, if compact { 24. } else { 34. }, cx))
+                    .child(div().flex().items_center().gap(px(10.)).pb(px(4.)).px(px(16.)).child(self.ipad_tabs(true, cx)).when(compact, |d| {
                         d.child(
                             div()
                                 .id("ipad-sheet-close")

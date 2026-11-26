@@ -335,8 +335,6 @@ verifying-and-installing = Wird geprüft und installiert…
 save-and-restart = Speichern und neu starten
 try-again = Erneut versuchen
 about = Über
-graphics-cache = Grafik-Cache
-safe-to-delete-the-model = Kann gelöscht werden; das Modell kompiliert ihn in etwa einer halben Minute neu.
 transcript-2 = Mitschrift
 summary-2 = Zusammenfassung
 speakers = Sprecher
@@ -575,6 +573,7 @@ share-watching = { $n ->
     }
 share-none-watching = Noch schaut niemand zu
 share-copy-link = Link kopieren
+share-copied = Kopiert ✓
 share-failed = Teilen konnte nicht starten: { $error }
 share-stopped-other-meeting = Teilen beendet: Eine andere Besprechung wurde geöffnet, und Zuschauer waren nur für die vorige zugelassen.
 share-unencrypted = Nicht verschlüsselt: Wer den Datenverkehr dieses Netzwerks mitlesen kann, könnte Code und Besprechung sehen. Teile nur in einem Netzwerk, dem du vertraust.

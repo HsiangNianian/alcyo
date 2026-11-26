@@ -5,7 +5,7 @@ use crate::board_layout::{Layout, Rect, Row, FONT, TITLE};
 use crate::glyphs::{Glyphs, Pt, Stroke};
 use crate::graph::{Graph, Kind, Node};
 use crate::pen::{
-    around, arrow, circle_mark, ink, line, marker, place, rough_box, star, strike, Inked, Rng,
+    around, arrow, circle_mark, hand, ink, line, marker, place, rough_box, star, strike, Inked, Rng,
 };
 use crate::spans::{rotate_point, SpanBox};
 
@@ -40,11 +40,16 @@ pub struct Line {
     pub style: Style,
     /// Drawn with a highlighter rather than a pen.
     pub flat: bool,
+    /// Drawn by a hand on the board rather than written by the app's pen: kept exactly as it was drawn
+    /// (`crate::pen::hand`), and put down at once rather than written out again.
+    pub hand: bool,
 }
 
 impl Line {
     pub fn inked(&self, r: &mut Rng) -> Inked {
-        if self.flat {
+        if self.hand {
+            hand(&self.points, self.width, self.flat)
+        } else if self.flat {
             marker(&self.points, self.width, self.wobble, r)
         } else {
             ink(&self.points, self.width, self.wobble, r)
@@ -434,6 +439,7 @@ impl Canvas<'_> {
                 wobble: size * (0.12 + 0.5 * messy),
                 style,
                 flat: false,
+                hand: false,
             })
             .collect();
         // The position is in the key: ink that has to move is redrawn in its new place.
@@ -473,6 +479,7 @@ impl Canvas<'_> {
             wobble: height * 0.012,
             style,
             flat: true,
+            hand: false,
         }];
         self.pieces.push(Piece {
             key: format!("{key}@{:.0},{:.0}", at[0], at[1]),
@@ -1153,7 +1160,7 @@ pub fn compose(g: &Graph, l: &Layout, glyphs: &mut Glyphs) -> (Vec<Piece>, Vec<S
         c.pieces.push(Piece {
             key: format!("{key}@{:.0},{:.0}", at[0], at[1]),
             seed: key,
-            lines: vec![Line { points, width, wobble: if flat { 0.2 } else { 0.3 }, style: Style { rgb, alpha, under: flat }, flat }],
+            lines: vec![Line { points, width, wobble: 0.0, style: Style { rgb, alpha, under: flat }, flat, hand: true }],
         });
     }
 
@@ -1440,6 +1447,7 @@ mod tests {
                     under: false,
                 },
                 flat: false,
+                hand: false,
             }],
         };
         let boxes = ink_boxes(&[

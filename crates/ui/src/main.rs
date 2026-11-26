@@ -14,6 +14,8 @@
 
 mod app;
 mod bench;
+mod compile_cache;
+mod storage;
 mod ground;
 mod i18n;
 mod motion;

@@ -27,6 +27,12 @@ pub(super) const DOCK_H: f32 = 60.0;
 pub(super) const CARD_H: f32 = 52.0;
 /// The meetings list's width, past the left margin it shares with the meeting's card.
 const SIDEBAR_PANEL_W: f32 = 296.0;
+/// The meetings drawer's grid: a row's inset, its icon column and the gap after it. Names, section headings and the
+/// drawer's title all start `DRAWER_TEXT` in, the icons and the title's button share one column before them.
+const DRAWER_PAD: f32 = 12.0;
+const DRAWER_ICON: f32 = 22.0;
+const DRAWER_GAP: f32 = 12.0;
+const DRAWER_TEXT: f32 = DRAWER_PAD + DRAWER_ICON + DRAWER_GAP;
 /// The puck the palette folds into, and the same in portrait.
 const PUCK: f32 = 44.0;
 const PUCK_PORTRAIT: f32 = 52.0;
@@ -112,6 +118,8 @@ pub(super) struct Chrome {
     /// The last word search where search by meaning cannot run: the query and the library as it was, and the
     /// meetings it found.
     word_search: (String, Vec<String>),
+    /// Which of the iPad's floating menus is open (ipad_dialogs::ipad_menu), by its id.
+    pub(super) menu: Option<&'static str>,
     /// The corner the board's map sits in while zoomed in.
     map_corner: Corner,
     /// The transcript sheet's height when upright or narrow.
@@ -144,6 +152,7 @@ impl Chrome {
             // Out of the way at first: above the dock, beside the palette, where nothing else sits.
             map_corner: Corner::BottomLeft,
             word_search: (String::new(), vec![]),
+            menu: None,
             newest_for: None,
             touched: Rc::new(Cell::new(Instant::now())),
             faded: Rc::new(Cell::new(false)),
@@ -484,7 +493,10 @@ impl Workbench {
         };
         let snap = dragging.is_some();
         // The map draws itself 4 pt in from the corner it is given.
+        // Over the board, it keeps the board from taking a Pencil's touch on it for a stroke.
         let frame = div()
+            .id("ipad-map")
+            .occlude()
             .relative()
             .w(px(MAP_PANEL_W + 8.0))
             .h(px(MAP_PANEL_H + 8.0))
@@ -865,7 +877,9 @@ impl Workbench {
             .when_some(status, |d, status| d.child(fade("ipad-fade-status", status)))
             .when_some(actions, |d, actions| d.child(fade("ipad-fade-actions", actions)))
             // Meetings and Settings lie over the board and under the meeting's card, which leads back.
-            .when_some(page, |d, page| d.child(div().absolute().inset_0().pt(px(f.top() + 10.0 + CARD_H)).bg(rgb(pal().paper)).child(div().relative().size_full().child(page))))
+            // It takes every touch over it: the board under it, with the Pencil's tool still in hand, would otherwise
+            // claim a Pencil's touch on the page's buttons as the start of a stroke, so the tap never came.
+            .when_some(page, |d, page| d.child(div().id("ipad-page").occlude().absolute().inset_0().pt(px(f.top() + 10.0 + CARD_H)).bg(rgb(pal().paper)).child(div().relative().size_full().child(page))))
             .when_some(sidebar, |d, sidebar| d.child(sidebar))
             .when_some(meeting_card, |d, card| d.child(fade("ipad-fade-meeting", card)))
             .when_some(preparing, |d, page| d.child(page))
@@ -950,6 +964,10 @@ impl Workbench {
             this.ipad.sidebar = None;
             cx.notify();
         });
+        // One grid for the head and the list: the button that puts the list away is where the meeting card had it, its
+        // icon on the column the rows' icons share, and "Meetings" starts where their names do.
+        let icon_centre = f.top_left + 4.0 + TARGET / 2.0;
+        let list_left = icon_centre - DRAWER_PAD - DRAWER_ICON / 2.0;
         let head = div()
             .flex_none()
             .mt(px(f.top() + 10.0))
@@ -958,9 +976,8 @@ impl Workbench {
             .pr(px(12.))
             .flex()
             .items_center()
-            .gap(px(4.))
             .child(round_button("ipad-sidebar-close", "sidebar", false).on_click(close))
-            .child(div().flex_1().min_w_0().pl_1().text_title().font_weight(FontWeight::SEMIBOLD).child(t("meetings")));
+            .child(div().flex_1().min_w_0().pl(px(icon_centre + DRAWER_ICON / 2.0 + DRAWER_GAP - (f.top_left + 4.0 + TARGET))).text_title().font_weight(FontWeight::SEMIBOLD).child(t("meetings")));
         let list = self.ipad_drawer_list(listening, cx);
         let panel = div()
             .id("ipad-sidebar")
@@ -978,7 +995,7 @@ impl Workbench {
             .border_color(rgb(pal().line))
             .shadow(vec![BoxShadow { color: alpha(0, if dark { 0.5 } else { 0.12 }), offset: point(px(0.), px(0.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }])
             .child(head)
-            .child(div().flex_1().min_h_0().flex().flex_col().pl(px((f.top_left - 12.0).max(8.0))).pr(px(8.)).child(list))
+            .child(div().flex_1().min_h_0().flex().flex_col().pl(px(list_left)).pr(px(8.)).child(list))
             .with_animation("ipad-sidebar-in", gpui_kit::Animation::new(Duration::from_millis(320)).with_easing(|t: f32| 1. - (1. - t).powi(4)), move |d, t| d.left(px(-w * (1. - t))));
         // Pinned to the screen's corner: left to its static place it would start below the board, which is in
         // the flow before it, and so it did on the iPad, half way down.
@@ -1014,14 +1031,14 @@ impl Workbench {
                 .h(px(TARGET))
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .px(px(12.))
+                .gap(px(DRAWER_GAP))
+                .px(px(DRAWER_PAD))
                 .rounded(px(12.))
                 .text_size(px(15.))
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
                 .map(|d| if on { d.bg(accent_fill).text_color(rgb(p.accent)) } else { d.text_color(rgb(p.text)).active(|d| d.bg(soft(1.5))) })
-                .child(div().flex_none().w(px(22.)).flex().justify_center().text_color(rgb(if on { p.accent } else { p.muted })).child(icon(glyph).size(px(18.))))
+                .child(div().flex_none().w(px(DRAWER_ICON)).flex().justify_center().text_color(rgb(if on { p.accent } else { p.muted })).child(icon(glyph).size(px(18.))))
                 .child(div().flex_1().min_w_0().child(text))
                 .when_some(aside, |d, aside| d.child(div().text_size(px(13.)).text_color(rgb(p.faint)).child(aside)))
         };
@@ -1065,13 +1082,15 @@ impl Workbench {
                 .min_h(px(TARGET))
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
+                .gap(px(DRAWER_GAP))
+                .px(px(DRAWER_PAD))
                 .rounded(px(12.))
                 .text_size(px(15.))
                 .cursor_pointer()
                 .map(|d| if lit { d.bg(accent_fill).text_color(rgb(p.accent)).font_weight(FontWeight::SEMIBOLD) } else { d.text_color(rgb(p.text)).active(|d| d.bg(soft(1.5))) })
-                .when(live, |d| d.child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(p.recording)).with_animation("drawer-live", motion::pulse(), |d, t| d.opacity(t))))
+                // The icon column, empty but for the dot of a meeting being listened to, so the names line up with
+                // those of the rows above.
+                .child(div().flex_none().w(px(DRAWER_ICON)).flex().justify_center().when(live, |d| d.child(div().size(px(8.)).rounded_full().bg(rgb(p.recording)).with_animation("drawer-live", motion::pulse(), |d, t| d.opacity(t)))))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                 .map(|d| match (live, when) {
                     (true, _) => d.child(div().flex_none().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.recording)).child(t("live"))),
@@ -1081,7 +1100,7 @@ impl Workbench {
                 .on_click(cx.listener(move |this, _, _, cx| this.open_meeting(&id, cx)))
                 .into_any_element()
         };
-        let heading = |text: &'static str| div().flex_none().pt(px(18.)).pb(px(4.)).px(px(12.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.faint)).child(text).into_any_element();
+        let heading = |text: &'static str| div().flex_none().pt(px(18.)).pb(px(4.)).pl(px(DRAWER_TEXT)).pr(px(DRAWER_PAD)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.faint)).child(text).into_any_element();
         let title_of = |m: &Info| if m.id == current { self.live.title().to_string() } else { m.title.clone() };
         let mut rows: Vec<AnyElement> = vec![];
         let pins: Vec<(usize, &Info)> = readable.iter().copied().enumerate().filter(|(_, m)| pinned(&m.id)).collect();
@@ -1102,7 +1121,7 @@ impl Workbench {
             rows.extend(group.iter().map(|(i, m)| row(*i, m.id.clone(), title_of(m), Some(m.updated_at))));
         }
         if self.store.is_none() {
-            rows.push(div().px(px(12.)).pt(px(18.)).text_size(px(13.)).text_color(rgb(p.muted)).child(t("this-is-a-sample-it")).into_any_element());
+            rows.push(div().pl(px(DRAWER_TEXT)).pr(px(DRAWER_PAD)).pt(px(18.)).text_size(px(13.)).text_color(rgb(p.muted)).child(t("this-is-a-sample-it")).into_any_element());
         }
         let meetings = div().id("drawer-meetings").flex_1().min_h_0().overflow_y_scroll().pb(px(12.)).flex().flex_col().gap(px(2.)).children(rows);
         let settings = div()
@@ -1656,46 +1675,36 @@ impl Workbench {
     /// desktop's dock gives way.
     fn ipad_compact_nav(&self, f: &Frame, cx: &mut Context<Self>) -> gpui_kit::Div {
         let circle_in_bar = matches!(f.mode, Mode::Compact { circle: true, .. });
-        let this = cx.entity().downgrade();
-        let more = Button::new("ipad-more").ghost().child(icon("ipad/more").size(px(22.))).w(px(TARGET)).h(px(TARGET)).rounded_full().dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
-            let act = |label: &'static str, f: fn(&mut Workbench, &mut Context<Workbench>)| {
-                let this = this.clone();
-                PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                    let _ = this.update(cx, |w, cx| f(w, cx));
-                })
-            };
-            let menu = menu.min_w(px(220.));
-            let menu = if circle_in_bar {
-                menu
-            } else {
-                menu.item(act(t("circle"), |w, cx| {
-                    let mut ink = w.ink.borrow_mut();
-                    ink.put_tools_down();
-                    ink.circling = true;
-                    drop(ink);
-                    cx.notify();
-                }))
-            };
-            menu.item(act(t("mark"), |w, cx| {
+        // What has no room in the bars, as the iPad's own floating menu.
+        let mut rows = vec![];
+        if !circle_in_bar {
+            rows.push(super::ipad_dialogs::MenuRow::new(t("circle"), |w, _, cx| {
                 let mut ink = w.ink.borrow_mut();
                 ink.put_tools_down();
-                ink.marking = true;
-                ink.mark_tool = w.ipad.pen;
+                ink.circling = true;
                 drop(ink);
                 cx.notify();
-            }))
-            .item(act(t("crop"), |w, cx| {
-                let mut ink = w.ink.borrow_mut();
-                ink.put_tools_down();
-                ink.cropping = true;
-                drop(ink);
-                cx.notify();
-            }))
-            .item(act(t("tidy-the-layout"), |w, cx| w.tidy(cx)))
-            .separator()
-            .item(act(t("export"), |w, cx| w.toggle_panel(Panel::Export, cx)))
-            .item(act(t("share"), |w, cx| w.toggle_panel(Panel::Share, cx)))
-        });
+            }).glyph("ipad/lasso"));
+        }
+        rows.push(super::ipad_dialogs::MenuRow::new(t("mark"), |w, _, cx| {
+            let mut ink = w.ink.borrow_mut();
+            ink.put_tools_down();
+            ink.marking = true;
+            ink.mark_tool = w.ipad.pen;
+            drop(ink);
+            cx.notify();
+        }).glyph("ipad/pen"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("crop"), |w, _, cx| {
+            let mut ink = w.ink.borrow_mut();
+            ink.put_tools_down();
+            ink.cropping = true;
+            drop(ink);
+            cx.notify();
+        }).glyph("ipad/crop"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("tidy-the-layout"), |w, _, cx| w.tidy(cx)).glyph("ipad/tidy"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("export"), |w, _, cx| w.toggle_panel(Panel::Export, cx)).glyph("ipad/export").apart());
+        rows.push(super::ipad_dialogs::MenuRow::new(t("share"), |w, _, cx| w.toggle_panel(Panel::Share, cx)).glyph("ipad/live"));
+        let more = self.ipad_menu("ipad-more", round_button("ipad-more", "more", false), rows, false, cx);
         glass(div(), false)
             .occlude()
             .absolute()

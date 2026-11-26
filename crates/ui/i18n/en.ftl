@@ -106,6 +106,7 @@ add-to-this-meeting = Add to this meeting
 a-pdf-page-or-an = A PDF page or an image becomes a board, with its text in place to circle, link and note on during the meeting.
 choose-a-file = Choose a file…
 or-drop-a-pdf-or = or drop a PDF or an image anywhere in the window
+ipad-import-from-files = Pick a PDF or an image in Files: on this iPad, in iCloud Drive or on a connected drive.
 an-arxiv-paper-by-link = An arXiv paper, by link or ID
 download-and-read = Download and read
 key-points-a-mermaid-flow = Key points, a Mermaid flow chart and the transcript.
@@ -130,6 +131,7 @@ could-not-export = Could not export: { $error }
 free-edit-content-is-not = Free-edit content is not included.
 putting-it-together = Putting it together…
 writing = Writing…
+ipad-summary-writing = Writing the summary
 the-meeting-has-moved-on = The meeting has moved on
 write-again = Write again
 copy-as-plain-text = Copy as plain text
@@ -348,12 +350,6 @@ ipad-remote-card = DeepSeek or any OpenAI-compatible API. Fast; the transcript i
 ipad-on-this-ipad = On this iPad
 ipad-local-card = Runs on the iPad's chip. Private and offline; needs 3 GB free.
 ipad-model-unloaded-memory = The local model was stopped because the iPad is low on memory. It starts again with the next line.
-ipad-restart-title = Restart the board model to switch
-ipad-restart-body = Alcyo applies the new model after a restart.
-ipad-restart-now = Restart now
-ipad-restart-later = I'll restart later
-ipad-restart-to-use = Restart to use { $model }
-ipad-restarting = Restarting…
 ipad-restart-failed = Couldn't free the old model's memory. Swipe Alcyo away in the app switcher and open it again.
 # Over the remote model's fields, once it answered: how long it took.
 ipad-connected = Connected · { $ms } ms
@@ -409,12 +405,6 @@ ob-1-tip = It needs the microphone
 ob-1-tip-hint = Speech is recognized on this iPad. The sound is not uploaded or kept unless you choose to.
 ob-1-allow = Allow the microphone
 # Captions along the foot of each step's picture.
-ob-art-1 = Alcyo
-ob-art-1-2 = listens · draws
-ob-art-2 = The board model
-ob-art-2-2 = draws this
-ob-art-3 = Circle with Pencil
-ob-art-3-2 = then say it
 ob-2-title =
     Who draws
     the board?
@@ -436,8 +426,19 @@ ob-3-tip-2-hint = "Review this next week", "link these two". Pencil marks, finge
 ob-3-tip-3 = Show it on the projector
 ob-3-tip-3-hint = AirPlay or a cable shows a clean board with captions.
 ob-3-past = Open a past meeting
-graphics-cache = Graphics cache
-safe-to-delete-the-model = Safe to delete; the model compiles it again in about half a minute.
+compile-cache = Compile cache
+compile-cache-hint = What the graphics compiled for each model, so its next start is quick. Safe to clear: a model compiles again on its next start, in about half a minute.
+compile-cache-empty = Nothing compiled yet: a model compiles here on its first start.
+compile-cache-older = Older versions, all models
+compile-cache-system = Metal, all models
+compile-cache-built = { $size } · built { $when }
+compile-cache-built-when = built { $when }; compiled code is kept with Metal's, below
+compile-cache-noted = built; compiled code is kept with Metal's, below
+compile-cache-in-use = In use
+compile-cache-clear = Clear
+compile-cache-clear-all = Clear all
+compile-cache-kept = { $model } is running, so what it compiled was kept. Clear it once another model is in use.
+compile-cache-busy = The board model is starting or stopping; clear the rest in a moment.
 transcript-2 = Transcript
 summary-2 = Summary
 speakers = Speakers
@@ -656,6 +657,7 @@ share-watching = { $n ->
     }
 share-none-watching = No one is watching yet
 share-copy-link = Copy link
+share-copied = Copied ✓
 share-failed = Sharing could not start: { $error }
 share-stopped-other-meeting = Sharing stopped: another meeting was opened, and viewers were let in to the last one only.
 share-unencrypted = Not encrypted: anyone who can watch this network’s traffic could see the code and the meeting. Share only on a network you trust.
@@ -719,7 +721,6 @@ presenter-leave = Leave presenter
 presenter-meetings-and-settings = Meetings and settings
 presenter-follow-live = Follow live
 # Meeting search on the iPad, where the meaning model cannot run yet.
-ipad-search-words = On iPad, search matches words for now
 # The iPad's third round of feedback: menus, the glossary page, dialogs, the model's first start, search.
 ipad-model-compiling = The model is being prepared for this iPad's graphics. This takes about half a minute, once for each version of Alcyo. Next time it opens right away.
 ipad-export-ready = Ready: save it to Files or send it from the share sheet.
@@ -730,11 +731,53 @@ ipad-glossary-name = Name
 ipad-glossary-heard = Heard as
 ipad-test-connection = Test connection
 ipad-test-hint = Sends one short request with these settings.
-ipad-search-by-words = Search what was said
-ipad-search-by-words-hint = Finds meetings by the words in their transcript, boards and summary, from the search box on the meetings page.
-ipad-search-meaning-later = Search by meaning, which also finds what was said in other words, needs a model server of its own, and iPadOS does not let an app start one. It is not on iPad yet.
+ipad-search-by-meaning = Search by meaning
+ipad-search-by-meaning-hint = Also finds what was said in other words, or in another language. The search model runs on this iPad; nothing leaves it.
+ipad-search-off = Off: the search box on the meetings page finds the words themselves.
+ipad-search-no-model = This build has no search model: the search box finds the words themselves.
+ipad-search-no-memory = Not memory enough free beside the board model now: the search box finds the words themselves until there is.
+ipad-search-failed = { $error }. Until it runs, the search box finds the words themselves.
+home-found-passages = { $n ->
+        [one] { $n } passage found
+       *[other] { $n } passages found
+    }
 home-word-search = Words in what was said · { $n ->
         [one] { $n } meeting
        *[other] { $n } meetings
     }
 ipad-glossary-empty = No names yet. Add one above, or import a list.
+# Settings › Storage (storage_page.rs).
+storage = Storage
+storage-intro = What Alcyo keeps on this device. Models and caches can always be downloaded or built again.
+storage-models = Models
+storage-your-data = Your meetings
+storage-other = Other
+storage-image-reader = Image reader · { $name }
+storage-search-model = Meeting search model
+storage-unfinished = Unfinished download · { $name }
+storage-compile-cache-of = Compile cache · { $name }
+storage-speech = Speech models
+storage-search-index = Search index
+storage-meetings = Meetings, with their sound
+storage-temporary = Temporary files
+storage-hint-board-model = Board model
+storage-hint-image-reader = Reads imported images and PDFs
+storage-hint-search-model = Downloaded
+storage-hint-unfinished = Starts again from here when downloaded again
+storage-hint-compile-cache = Built again on the model's next start
+storage-hint-search-index = Made again from the meetings
+storage-hint-meetings = Transcripts, boards, summaries, recorded sound, imported pages and the inbox
+storage-hint-temporary = Exports and pictures waiting to be shared
+storage-built-in = Built in
+storage-in-use = In use
+storage-stop-and-delete = Stop and delete
+storage-delete-all = Delete all data
+storage-looking = Looking at what is kept…
+storage-deleting = Deleting…
+storage-freed = { $size } freed.
+storage-confirm-title = Delete all data?
+storage-confirm-models = Downloaded models, compile caches, the search index and temporary files are deleted. The board model stops first.
+storage-confirm-secrets = The API key and the proxy password are removed from the keychain.
+storage-confirm-meetings = Also delete the meetings, with their sound
+storage-confirm-meetings-go = The meetings are deleted too. This cannot be undone.
+storage-confirm-meetings-stay = Your meetings stay.

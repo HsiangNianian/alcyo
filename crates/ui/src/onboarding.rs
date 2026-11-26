@@ -3,7 +3,9 @@
 //! iPad and what Pencil does, then start. A picture beside each, which slides along more slowly than the
 //! words as the steps go by.
 //!
-//! Shown once on the iPad, until it is finished (`onboarded` in the settings). A desktop build laid out as
+//! Shown on the iPad until it is finished in this install: a file in the app's own data folder notes it, which goes
+//! when the app is deleted, so a fresh install shows it again whatever else was kept (the keychain keeps the API key
+//! across a reinstall; `onboarded` in the settings is still written, but not trusted for this). A desktop build laid out as
 //! the iPad shows it when started with `ALCYO_ONBOARDING=1` (or 2 or 3, to start at that step), so it can be
 //! worked on and pictured. A child of `app`, laid over the screen by sheet.rs.
 
@@ -86,6 +88,24 @@ fn ask_for_microphone(answered: std::sync::mpsc::Sender<bool>) {
     let _ = answered.send(true);
 }
 
+/// The note that the first run was finished, in the app's data folder beside its models: inside the app's own
+/// container on the iPad, which is deleted with the app.
+fn intro_marker(models: &std::path::Path) -> PathBuf {
+    models.parent().unwrap_or(models).join("first-run-done")
+}
+
+fn intro_finished(models: &std::path::Path) -> bool {
+    intro_marker(models).is_file()
+}
+
+fn note_intro_finished(models: &std::path::Path) {
+    let marker = intro_marker(models);
+    let written = marker.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&marker, alcyo_update::VERSION));
+    if let Err(e) = written {
+        eprintln!("could not note the first run as done in {}: {e}", marker.display());
+    }
+}
+
 impl Workbench {
     /// The first run over the whole screen, while it is shown.
     pub(super) fn onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -94,7 +114,7 @@ impl Workbench {
             if let Some(step) = asked {
                 self.intro.step = step - 1;
             }
-            crate::platform::ipad_layout() && (asked.is_some() || cfg!(target_os = "ios") && !self.form.saved.onboarded)
+            crate::platform::ipad_layout() && (asked.is_some() || cfg!(target_os = "ios") && !intro_finished(&self.models))
         });
         if !shown {
             return None;
@@ -127,16 +147,20 @@ impl Workbench {
             .top(px(art_top))
             .w(px(art_w))
             .h(px(art_h))
-            .child(gpui_kit::img(art(step)).size_full().object_fit(ObjectFit::Fill))
+            .map(|d| {
+                let image = gpui_kit::img(art(step)).size_full().object_fit(ObjectFit::Fill);
+                // The kingfisher breathes in its pool of light: a slow rise and fall of a few points, not where motion
+                // is turned down.
+                if step == 0 && !motion::reduced(self.form.saved.reduce_motion) {
+                    d.child(div().size_full().child(image).with_animation("ob-art-breathe", gpui_kit::Animation::new(Duration::from_millis(6400)).repeat(), |d, t| d.mt(px(-4.0 * (t * std::f32::consts::TAU).sin()))))
+                } else {
+                    d.child(image)
+                }
+            })
             .with_spring(ElementId::Name(format!("ob-art-{step}").into()), SpringAnimation::new(motion::SETTLE).to(true).from(false), move |d, v| {
                 let v = v.0.clamp(0., 1.);
                 d.opacity(v).left(px(art_left + went * 36. * (1. - v)))
             });
-        let (cap_left, cap_right) = match step {
-            0 => (t("ob-art-1"), t("ob-art-1-2")),
-            1 => (t("ob-art-2"), t("ob-art-2-2")),
-            _ => (t("ob-art-3"), t("ob-art-3-2")),
-        };
         let art_pane = div()
             .relative()
             .flex_none()
@@ -144,21 +168,7 @@ impl Workbench {
             .bg(rgb(if dark_art { 0x0d_0d_0e } else { pal().paper }))
             .w(px(pane_w))
             .h(px(pane_h))
-            .child(picture)
-            .child(
-                div()
-                    .absolute()
-                    .left(px(40.))
-                    .right(px(40.))
-                    .bottom(px(if upright { 24. } else { 40. }))
-                    .flex()
-                    .justify_between()
-                    .font_family(theme::MONO)
-                    .text_size(px(13.))
-                    .text_color(rgb(if dark_art { 0xc4_c4_c4 } else { pal().faint }))
-                    .child(cap_left.to_uppercase())
-                    .child(cap_right.to_uppercase()),
-            );
+            .child(picture);
 
         // Where the steps are: "1 / 3" and a bar a step, filling in as they go.
         let steps = div()
@@ -224,6 +234,7 @@ impl Workbench {
     /// The first run is over: it is not shown again.
     fn intro_done(&mut self, cx: &mut Context<Self>) {
         self.intro.shown = Some(false);
+        note_intro_finished(&self.models);
         self.form.saved.onboarded = true;
         if let Err(e) = self.form.saved.save() {
             self.form.note = Some(format!("{e:#}"));
@@ -525,5 +536,24 @@ impl Workbench {
                         }
                     }))),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first run counts as done only by the note in the app's own folder, which a reinstall starts without.
+    #[test]
+    fn the_first_run_is_noted_in_the_apps_own_folder() {
+        let data = std::env::temp_dir().join(format!("alcyo-first-run-{}", std::process::id()));
+        let models = data.join("models");
+        let _ = std::fs::remove_dir_all(&data);
+        assert!(!intro_finished(&models), "a fresh install shows it");
+        note_intro_finished(&models);
+        assert!(intro_finished(&models));
+        assert!(data.join("first-run-done").is_file());
+        let _ = std::fs::remove_dir_all(&data);
+        assert!(!intro_finished(&models), "the app's folder gone, as with a reinstall: shown again");
     }
 }

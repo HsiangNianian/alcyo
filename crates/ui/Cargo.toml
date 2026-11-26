@@ -21,6 +21,9 @@ alcyo-import.workspace = true
 alcyo-meetings.workspace = true
 alcyo-models.workspace = true
 alcyo-search.workspace = true
+# llama.cpp inside the app: how much memory the iPad has left, and meeting search's model run in the app there. Elsewhere
+# it builds without the library and says so.
+alcyo-llama.workspace = true
 alcyo-update.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 fluent-bundle = "0.15"
@@ -44,8 +47,6 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 # gpui-kit leaves the platform to a mobile app: on the iPad it is Zed's UIKit and Metal one.
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui_ios = { package = "gpui-pre-ios", version = "=0.3.11" }
-# Whether this iPad has memory enough for the board model, which runs inside the app (platform::local_models).
-alcyo-llama.workspace = true
 # Asking for the microphone on the first run, and keeping the screen on while listening.
 objc2 = "0.6"
 block2 = "0.6"

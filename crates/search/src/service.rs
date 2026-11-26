@@ -2,15 +2,16 @@
 //! and answers queries, with every slow and blocking call on its own thread.
 //!
 //! The embedding model runs in its own llama-server on the CPU, apart from the board model so neither
-//! waits for the other or competes for the graphics card. It starts when first needed and stops after a
-//! few idle minutes. Indexes live in `<data>/search/<meeting>.index`, beside the meetings and not in their
-//! files, so the meeting format and the older app are untouched.
+//! waits for the other or competes for the graphics card; on the iPad, which starts no other program, the
+//! app runs it inside itself instead ([`Backend`]). It starts when first needed and stops after a few idle
+//! minutes. Indexes live in `<data>/search/<meeting>.index`, beside the meetings and not in their files, so
+//! the meeting format and the older app are untouched.
 
 use crate::chunk::{self, Chunk, Said, Source};
-use crate::embed::{cut, Embedder};
+use crate::embed::{cut, Embed, Embedder};
 use crate::index::{fingerprint, Index};
 use crate::{rank, DIMS, FAMILY, MIN_SCORE, MODEL, WITHIN_BEST, WORD_WEIGHT};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use alcyo_meetings::{Live, Store};
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -22,12 +23,27 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// The most passages shown from any one meeting.
 const PER_MEETING: usize = 3;
-/// How long the embedding server is kept once nothing has asked for it.
+/// How long the embedding model is kept once nothing has asked for it.
 const IDLE: Duration = Duration::from_secs(180);
+/// How often an idle worker looks whether the model has been unused that long.
+const POLL: Duration = Duration::from_secs(15);
 
 /// Starts llama-server with the given arguments, tied to the app's life. The app passes it in, so this
 /// crate needs nothing of how the app finds and starts its binaries.
 pub type Spawn = Box<dyn Fn(&[String]) -> Result<Child> + Send>;
+
+/// Loads the embedding model from its file inside the app, for where no server may be started (the iPad).
+/// The app passes it in, so this crate needs nothing of how the model is run. It fails where the model cannot
+/// be loaded, as when there is not memory enough, and the app then searches by words alone.
+pub type Load = Box<dyn Fn(&Path) -> Result<Box<dyn Embed + Send>> + Send>;
+
+/// How the worker runs the embedding model.
+pub enum Backend {
+    /// In a llama-server of its own, as on a computer.
+    Spawn(Spawn),
+    /// Inside the app.
+    InProcess(Load),
+}
 
 pub enum Job {
     /// Bring these meetings' indexes up to date, in this order.
@@ -87,16 +103,26 @@ pub fn passages(live: &Live) -> Vec<Chunk> {
     out
 }
 
-struct Server {
-    child: Child,
-    embedder: Embedder,
+/// The embedding model while it is loaded.
+struct Loaded {
+    embed: Box<dyn Embed + Send>,
+    /// The server it is asked through, where it runs in one: stopped when this is dropped.
+    child: Option<Child>,
     last_used: Instant,
 }
 
-impl Drop for Server {
+impl Loaded {
+    fn alive(&mut self) -> bool {
+        self.child.as_mut().is_none_or(|c| matches!(c.try_wait(), Ok(None)))
+    }
+}
+
+impl Drop for Loaded {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -104,8 +130,10 @@ struct Worker {
     store: Store,
     folder: PathBuf,
     model: PathBuf,
-    spawn: Spawn,
-    server: Option<Server>,
+    backend: Backend,
+    loaded: Option<Loaded>,
+    /// How long the model is kept unused: [`IDLE`], but shorter in tests.
+    idle: Duration,
     /// Indexes read from disk, with the time of the file they came from.
     cache: HashMap<String, (SystemTime, Index)>,
 }
@@ -127,43 +155,35 @@ impl Worker {
         index_path(&self.folder, meeting)
     }
 
-    fn embedder(&mut self) -> Result<&Embedder> {
-        if self.server.as_mut().is_some_and(|s| matches!(s.child.try_wait(), Ok(None))) {
-            let server = self.server.as_mut().expect("checked");
-            server.last_used = Instant::now();
-            return Ok(&server.embedder);
+    fn embedder(&mut self) -> Result<&mut Loaded> {
+        if self.loaded.as_mut().is_some_and(Loaded::alive) {
+            let loaded = self.loaded.as_mut().expect("checked");
+            loaded.last_used = Instant::now();
+            return Ok(loaded);
         }
-        self.server = None;
+        self.loaded = None;
         if !self.model.is_file() {
             bail!("the meeting search model is not downloaded");
         }
-        let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
-        let args: Vec<String> = [
-            "-m", &self.model.to_string_lossy(), "--embeddings", "--host", "127.0.0.1", "--port", &port.to_string(),
-            // On the CPU, a few passages at a time, each well within the model's context.
-            "-c", "8192", "-np", "4", "-b", "2048", "-ub", "2048", "--device", "none", "-ngl", "0",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let child = (self.spawn)(&args).context("starting the meeting search model")?;
-        let base = format!("http://127.0.0.1:{port}");
-        let health = format!("{base}/health");
-        let mut server = Server { child, embedder: Embedder::new(&base, FAMILY, DIMS), last_used: Instant::now() };
-        let started = Instant::now();
-        loop {
-            if ureq::get(&health).timeout(Duration::from_secs(2)).call().is_ok_and(|r| r.status() == 200) {
-                break;
-            }
-            if !matches!(server.child.try_wait(), Ok(None)) {
-                bail!("the meeting search model stopped while starting");
-            }
-            if started.elapsed() > Duration::from_secs(60) {
-                bail!("the meeting search model did not start within a minute");
-            }
-            std::thread::sleep(Duration::from_millis(200));
+        let loaded = match &self.backend {
+            Backend::Spawn(spawn) => serve(spawn, &self.model)?,
+            Backend::InProcess(load) => Loaded { embed: load(&self.model).context("loading the meeting search model")?, child: None, last_used: Instant::now() },
+        };
+        Ok(self.loaded.insert(loaded))
+    }
+
+    /// Vectors for these texts, cut to the index's size, whichever way the model runs.
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let vectors = self.embedder()?.embed.embed(texts)?;
+        ensure!(vectors.len() == texts.len(), "asked for {} vectors, got {}", texts.len(), vectors.len());
+        Ok(vectors.iter().map(|v| cut(v, DIMS)).collect())
+    }
+
+    /// Let the model go once it has not been asked for a while, to give its memory back.
+    fn unload_if_idle(&mut self) {
+        if self.loaded.as_ref().is_some_and(|l| l.last_used.elapsed() > self.idle) {
+            self.loaded = None;
         }
-        Ok(&self.server.insert(server).embedder)
     }
 
     /// Make one meeting's index again if what it was made from has changed. Passages it already had, read
@@ -187,7 +207,7 @@ impl Worker {
             .map(|i| i.chunks.iter().enumerate().map(|(n, c)| (FAMILY.passage(&i.title, &c.text), i.vector(n).to_vec())).collect())
             .unwrap_or_default();
         let missing: Vec<String> = texts.iter().filter(|t| !known.contains_key(*t)).cloned().collect();
-        let fresh: HashMap<String, Vec<f32>> = if missing.is_empty() { HashMap::new() } else { missing.iter().cloned().zip(self.embedder()?.embed(&missing)?).collect() };
+        let fresh: HashMap<String, Vec<f32>> = if missing.is_empty() { HashMap::new() } else { missing.iter().cloned().zip(self.embed(&missing)?).collect() };
         let vectors: Vec<Vec<f32>> = texts.iter().map(|t| known.get(t).or_else(|| fresh.get(t)).cloned().expect("every passage has a vector")).collect();
         let (count, embedded) = (chunks.len(), missing.len());
         std::fs::create_dir_all(&self.folder)?;
@@ -209,7 +229,7 @@ impl Worker {
     }
 
     fn find(&mut self, text: &str, meetings: &[String], limit: usize) -> Result<Vec<Found>> {
-        let query = cut(&self.embedder()?.query(text)?, DIMS);
+        let query = self.embed(&[FAMILY.query(text)])?.remove(0);
         let titles: HashMap<String, String> = self.store.list().unwrap_or_default().into_iter().map(|m| (m.id, m.title)).collect();
         let mut indexes = vec![];
         for id in meetings {
@@ -248,12 +268,55 @@ impl Worker {
     }
 }
 
-/// Start the worker. `data` is the app's data folder (the one holding `meetings/`), `model` the
-/// embedding model's file. Dropping the sender stops it, and its server with it.
+/// Start llama-server for the model on a free port and wait until it has loaded it.
+fn serve(spawn: &Spawn, model: &Path) -> Result<Loaded> {
+    let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+    let args: Vec<String> = [
+        "-m", &model.to_string_lossy(), "--embeddings", "--host", "127.0.0.1", "--port", &port.to_string(),
+        // On the CPU, a few passages at a time, each well within the model's context.
+        "-c", "8192", "-np", "4", "-b", "2048", "-ub", "2048", "--device", "none", "-ngl", "0",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let child = spawn(&args).context("starting the meeting search model")?;
+    let base = format!("http://127.0.0.1:{port}");
+    let health = format!("{base}/health");
+    // Dropped on the way out, it stops a server that did not come up.
+    let mut server = Loaded { embed: Box::new(Embedder::new(&base, FAMILY, DIMS)), child: Some(child), last_used: Instant::now() };
+    let started = Instant::now();
+    loop {
+        if ureq::get(&health).timeout(Duration::from_secs(2)).call().is_ok_and(|r| r.status() == 200) {
+            return Ok(server);
+        }
+        if !server.alive() {
+            bail!("the meeting search model stopped while starting");
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            bail!("the meeting search model did not start within a minute");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Start the worker, with the model in a llama-server of its own. `data` is the app's data folder (the one
+/// holding `meetings/`), `model` the embedding model's file. Dropping the sender stops it, and its server
+/// with it.
 pub fn start(data: &Path, model: PathBuf, spawn: Spawn) -> (Sender<Job>, Receiver<Event>) {
+    start_with(data, model, Backend::Spawn(spawn))
+}
+
+/// Start the worker, with the model run either way. Where the model cannot be started or loaded, the job
+/// that needed it is answered with [`Event::Failed`], and the next one tries again.
+pub fn start_with(data: &Path, model: PathBuf, backend: Backend) -> (Sender<Job>, Receiver<Event>) {
+    run(data, model, backend, IDLE)
+}
+
+fn run(data: &Path, model: PathBuf, backend: Backend, idle: Duration) -> (Sender<Job>, Receiver<Event>) {
     let (jobs, inbox) = channel::<Job>();
     let (outbox, events) = channel::<Event>();
-    let mut worker = Worker { store: Store::new(data.to_path_buf()), folder: data.join("search"), model, spawn, server: None, cache: HashMap::new() };
+    let mut worker = Worker { store: Store::new(data.to_path_buf()), folder: data.join("search"), model, backend, loaded: None, idle, cache: HashMap::new() };
+    let poll = POLL.min(idle / 2);
     std::thread::Builder::new()
         .name("meeting search".into())
         .spawn(move || {
@@ -264,12 +327,10 @@ pub fn start(data: &Path, model: PathBuf, spawn: Spawn) -> (Sender<Job>, Receive
             let mut held = false;
             loop {
                 let job = if todo.is_empty() || held {
-                    match inbox.recv_timeout(Duration::from_secs(15)) {
+                    match inbox.recv_timeout(poll) {
                         Ok(job) => Some(job),
                         Err(RecvTimeoutError::Timeout) => {
-                            if worker.server.as_ref().is_some_and(|s| s.last_used.elapsed() > IDLE) {
-                                worker.server = None;
-                            }
+                            worker.unload_if_idle();
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => return,
@@ -359,6 +420,139 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
+    /// A stand-in for the model: each word of a text, after the family's prefix, adds to one of the first
+    /// `DIMS` values of a vector of the model's full size, so texts that share words are near and the rest of
+    /// the vector is left for the cut to drop.
+    fn fake_vector(text: &str) -> Vec<f32> {
+        let body = text.rsplit(" | ").next().unwrap_or(text);
+        let body = body.split_once(": ").map_or(body, |(_, rest)| rest);
+        let mut v = vec![0.0; 768];
+        for word in crate::rank::words(body) {
+            let hash = word.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b.into()));
+            v[hash as usize % DIMS] += 1.0;
+        }
+        v
+    }
+
+    /// A model inside the app that counts how often it is let go.
+    struct Fake {
+        dropped: Arc<AtomicUsize>,
+    }
+
+    impl Embed for Fake {
+        fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|t| fake_vector(t)).collect())
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A data folder with two meetings and a model file, which the fake models never read.
+    fn folder(name: &str) -> PathBuf {
+        let data = std::env::temp_dir().join(format!("alcyo-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let meetings = data.join("meetings/v2");
+        std::fs::create_dir_all(&meetings).unwrap();
+        let meeting = |id: &str, title: &str, lines: &[&str]| {
+            let lines: Vec<_> = lines.iter().map(|t| json!({ "text": t, "speaker": "A" })).collect();
+            std::fs::write(meetings.join(format!("{id}.json")), json!({ "version": 2, "id": id, "title": title, "lines": lines }).to_string()).unwrap();
+        };
+        meeting("20260101-000000-aaaa", "Release review", &["We moved the ship date from Friday to Tuesday.", "Load testing has to finish before launch."]);
+        meeting("20260101-000000-bbbb", "物业例会", &["地下车库的车位按先来后到分配。", "物业费下个月起按季度收。"]);
+        std::fs::write(data.join("model.gguf"), b"").unwrap();
+        data
+    }
+
+    fn wait(events: &Receiver<Event>, want: &dyn Fn(&Event) -> bool) -> Event {
+        loop {
+            let event = events.recv_timeout(Duration::from_secs(10)).expect("an answer from the worker");
+            if let Event::Failed(e) = &event {
+                panic!("{e}");
+            }
+            if want(&event) {
+                return event;
+            }
+        }
+    }
+
+    #[test]
+    fn a_model_inside_the_app_indexes_and_finds() {
+        let data = folder("in-process");
+        // A closure is a model too, as the app hands one over.
+        let load: Load = Box::new(|_| Ok(Box::new(|texts: &[String]| -> Result<Vec<Vec<f32>>> { Ok(texts.iter().map(|t| fake_vector(t)).collect()) })));
+        let (jobs, events) = start_with(&data, data.join("model.gguf"), Backend::InProcess(load));
+        let ids = vec!["20260101-000000-aaaa".to_string(), "20260101-000000-bbbb".to_string()];
+        jobs.send(Job::Index(ids.clone())).unwrap();
+        wait(&events, &|e| matches!(e, Event::Indexing { done, total } if done == total));
+        // The model's full vectors are kept cut to the index's size, as the server's are.
+        let index = Index::load(&data.join("search/20260101-000000-aaaa.index")).unwrap();
+        assert_eq!(index.dims, DIMS);
+        assert!((index.vector(0).iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 1e-4, "at unit length");
+        jobs.send(Job::Find { text: "when did the ship date move".into(), meetings: ids, limit: 3, ticket: 7 }).unwrap();
+        let Event::Found { ticket, hits } = wait(&events, &|e| matches!(e, Event::Found { .. })) else { unreachable!() };
+        assert_eq!(ticket, 7);
+        assert!(!hits.is_empty() && hits.iter().all(|h| h.meeting == "20260101-000000-aaaa"), "{:?}", hits.iter().map(|h| &h.text).collect::<Vec<_>>());
+        assert_eq!(hits[0].title, "Release review");
+        drop(jobs);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_model_inside_the_app_is_let_go_when_idle() {
+        let data = folder("in-process-idle");
+        let (loads, drops) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let load: Load = {
+            let (loads, drops) = (loads.clone(), drops.clone());
+            Box::new(move |_| {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(Fake { dropped: drops.clone() }))
+            })
+        };
+        let (jobs, events) = run(&data, data.join("model.gguf"), Backend::InProcess(load), Duration::from_millis(300));
+        let find = |ticket| Job::Find { text: "ship date".into(), meetings: vec![], limit: 3, ticket };
+        jobs.send(find(1)).unwrap();
+        jobs.send(find(2)).unwrap();
+        wait(&events, &|e| matches!(e, Event::Found { ticket: 2, .. }));
+        assert_eq!((loads.load(Ordering::SeqCst), drops.load(Ordering::SeqCst)), (1, 0), "loaded once for both questions");
+        let since = Instant::now();
+        while drops.load(Ordering::SeqCst) == 0 && since.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 1, "let go once idle");
+        jobs.send(find(3)).unwrap();
+        wait(&events, &|e| matches!(e, Event::Found { ticket: 3, .. }));
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "loaded again when asked");
+        drop(jobs);
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_model_that_will_not_load_fails_the_job() {
+        let data = folder("in-process-fails");
+        let load: Load = Box::new(|_| bail!("not enough memory for the search model"));
+        let (jobs, events) = start_with(&data, data.join("model.gguf"), Backend::InProcess(load));
+        jobs.send(Job::Find { text: "ship date".into(), meetings: vec!["20260101-000000-aaaa".into()], limit: 3, ticket: 1 }).unwrap();
+        let Ok(Event::Failed(e)) = events.recv_timeout(Duration::from_secs(10)) else { panic!("the question fails") };
+        assert!(e.contains("not enough memory"), "{e}");
+        // Indexing too, and the worker goes on answering.
+        jobs.send(Job::Index(vec!["20260101-000000-aaaa".into()])).unwrap();
+        let failed = (0..3).filter_map(|_| events.recv_timeout(Duration::from_secs(10)).ok()).any(|e| matches!(e, Event::Failed(_)));
+        assert!(failed, "indexing fails");
+        // No model file at all says so before trying.
+        let (jobs, events) = start_with(&data, data.join("missing.gguf"), Backend::InProcess(Box::new(|_| unreachable!("not asked"))));
+        jobs.send(Job::Find { text: "x".into(), meetings: vec![], limit: 3, ticket: 1 }).unwrap();
+        let Ok(Event::Failed(e)) = events.recv_timeout(Duration::from_secs(10)) else { panic!("the question fails") };
+        assert!(e.contains("not downloaded"), "{e}");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
     #[test]
     fn meetings_without_an_index_are_counted() {
         let data = std::env::temp_dir().join(format!("alcyo-unindexed-{}", std::process::id()));
@@ -371,12 +565,13 @@ mod tests {
     }
 
     /// The whole round on a real model: index two meetings, then find one by what it means. Skipped where
-    /// the model (eval/search/.models) or llama-server (resources/llama) is not there.
+    /// the model (eval/search/.models, or ALCYO_SEARCH_MODEL) or llama-server (resources/llama, or the folder
+    /// in ALCYO_LLAMA_SERVER_DIR) is not there.
     #[test]
     fn a_question_finds_its_meeting_by_meaning() {
         let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-        let model = root.join("eval/search/.models/embeddinggemma-300M-Q8_0.gguf");
-        let binaries = root.join("resources/llama");
+        let model = std::env::var_os("ALCYO_SEARCH_MODEL").map_or_else(|| root.join("eval/search/.models/embeddinggemma-300M-Q8_0.gguf"), PathBuf::from);
+        let binaries = std::env::var_os("ALCYO_LLAMA_SERVER_DIR").map_or_else(|| root.join("resources/llama"), PathBuf::from);
         if !model.is_file() || !binaries.join("llama-server").is_file() {
             eprintln!("skipped: no search model or llama-server here");
             return;
