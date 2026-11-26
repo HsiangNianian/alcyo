@@ -55,7 +55,7 @@ gpui-base = { git = "https://github.com/HsiangNianian/gpui-kit", rev = "968ab569
 # gpui-pre-ios 0.3.11 (its crates.io source) with what the iPad needs on top: whether a touch is the Apple
 # Pencil and its double tap and squeeze, windows on an external display, pinches and multi-finger taps, the
 # document picker and share sheet, where a windowed scene draws its controls, windows held to the app's light or
-# dark theme, and the keyboard's return key delivered as Enter.
-gpui-pre-ios = { git = "https://github.com/HsiangNianian/gpui-pre-ios", rev = "d67d5304e5d7f732737660426d583de9e6472c13" }
+# dark theme, the keyboard's return key delivered as Enter, and two fingers that pan and pinch at once.
+gpui-pre-ios = { git = "https://github.com/HsiangNianian/gpui-pre-ios", rev = "9b1be2d4ee74f26140e10ae71d2964148b6a02c5" }
 sherpa-onnx = { git = "https://github.com/HsiangNianian/sherpa-onnx", tag = "alcyo-2.0.1-4" }
 sherpa-onnx-sys = { git = "https://github.com/HsiangNianian/sherpa-onnx", tag = "alcyo-2.0.1-4" }

@@ -27,6 +27,12 @@ pub(super) const DOCK_H: f32 = 60.0;
 pub(super) const CARD_H: f32 = 52.0;
 /// The meetings list's width, past the left margin it shares with the meeting's card.
 const SIDEBAR_PANEL_W: f32 = 296.0;
+/// The meetings drawer's grid: a row's inset, its icon column and the gap after it. Names, section headings and the
+/// drawer's title all start `DRAWER_TEXT` in, the icons and the title's button share one column before them.
+const DRAWER_PAD: f32 = 12.0;
+const DRAWER_ICON: f32 = 22.0;
+const DRAWER_GAP: f32 = 12.0;
+const DRAWER_TEXT: f32 = DRAWER_PAD + DRAWER_ICON + DRAWER_GAP;
 /// The puck the palette folds into, and the same in portrait.
 const PUCK: f32 = 44.0;
 const PUCK_PORTRAIT: f32 = 52.0;
@@ -950,6 +956,10 @@ impl Workbench {
             this.ipad.sidebar = None;
             cx.notify();
         });
+        // One grid for the head and the list: the button that puts the list away is where the meeting card had it, its
+        // icon on the column the rows' icons share, and "Meetings" starts where their names do.
+        let icon_centre = f.top_left + 4.0 + TARGET / 2.0;
+        let list_left = icon_centre - DRAWER_PAD - DRAWER_ICON / 2.0;
         let head = div()
             .flex_none()
             .mt(px(f.top() + 10.0))
@@ -958,9 +968,8 @@ impl Workbench {
             .pr(px(12.))
             .flex()
             .items_center()
-            .gap(px(4.))
             .child(round_button("ipad-sidebar-close", "sidebar", false).on_click(close))
-            .child(div().flex_1().min_w_0().pl_1().text_title().font_weight(FontWeight::SEMIBOLD).child(t("meetings")));
+            .child(div().flex_1().min_w_0().pl(px(icon_centre + DRAWER_ICON / 2.0 + DRAWER_GAP - (f.top_left + 4.0 + TARGET))).text_title().font_weight(FontWeight::SEMIBOLD).child(t("meetings")));
         let list = self.ipad_drawer_list(listening, cx);
         let panel = div()
             .id("ipad-sidebar")
@@ -978,7 +987,7 @@ impl Workbench {
             .border_color(rgb(pal().line))
             .shadow(vec![BoxShadow { color: alpha(0, if dark { 0.5 } else { 0.12 }), offset: point(px(0.), px(0.)), blur_radius: px(24.), spread_radius: px(0.), inset: false }])
             .child(head)
-            .child(div().flex_1().min_h_0().flex().flex_col().pl(px((f.top_left - 12.0).max(8.0))).pr(px(8.)).child(list))
+            .child(div().flex_1().min_h_0().flex().flex_col().pl(px(list_left)).pr(px(8.)).child(list))
             .with_animation("ipad-sidebar-in", gpui_kit::Animation::new(Duration::from_millis(320)).with_easing(|t: f32| 1. - (1. - t).powi(4)), move |d, t| d.left(px(-w * (1. - t))));
         // Pinned to the screen's corner: left to its static place it would start below the board, which is in
         // the flow before it, and so it did on the iPad, half way down.
@@ -1014,14 +1023,14 @@ impl Workbench {
                 .h(px(TARGET))
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .px(px(12.))
+                .gap(px(DRAWER_GAP))
+                .px(px(DRAWER_PAD))
                 .rounded(px(12.))
                 .text_size(px(15.))
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
                 .map(|d| if on { d.bg(accent_fill).text_color(rgb(p.accent)) } else { d.text_color(rgb(p.text)).active(|d| d.bg(soft(1.5))) })
-                .child(div().flex_none().w(px(22.)).flex().justify_center().text_color(rgb(if on { p.accent } else { p.muted })).child(icon(glyph).size(px(18.))))
+                .child(div().flex_none().w(px(DRAWER_ICON)).flex().justify_center().text_color(rgb(if on { p.accent } else { p.muted })).child(icon(glyph).size(px(18.))))
                 .child(div().flex_1().min_w_0().child(text))
                 .when_some(aside, |d, aside| d.child(div().text_size(px(13.)).text_color(rgb(p.faint)).child(aside)))
         };
@@ -1065,13 +1074,15 @@ impl Workbench {
                 .min_h(px(TARGET))
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
+                .gap(px(DRAWER_GAP))
+                .px(px(DRAWER_PAD))
                 .rounded(px(12.))
                 .text_size(px(15.))
                 .cursor_pointer()
                 .map(|d| if lit { d.bg(accent_fill).text_color(rgb(p.accent)).font_weight(FontWeight::SEMIBOLD) } else { d.text_color(rgb(p.text)).active(|d| d.bg(soft(1.5))) })
-                .when(live, |d| d.child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(p.recording)).with_animation("drawer-live", motion::pulse(), |d, t| d.opacity(t))))
+                // The icon column, empty but for the dot of a meeting being listened to, so the names line up with
+                // those of the rows above.
+                .child(div().flex_none().w(px(DRAWER_ICON)).flex().justify_center().when(live, |d| d.child(div().size(px(8.)).rounded_full().bg(rgb(p.recording)).with_animation("drawer-live", motion::pulse(), |d, t| d.opacity(t)))))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                 .map(|d| match (live, when) {
                     (true, _) => d.child(div().flex_none().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.recording)).child(t("live"))),
@@ -1081,7 +1092,7 @@ impl Workbench {
                 .on_click(cx.listener(move |this, _, _, cx| this.open_meeting(&id, cx)))
                 .into_any_element()
         };
-        let heading = |text: &'static str| div().flex_none().pt(px(18.)).pb(px(4.)).px(px(12.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.faint)).child(text).into_any_element();
+        let heading = |text: &'static str| div().flex_none().pt(px(18.)).pb(px(4.)).pl(px(DRAWER_TEXT)).pr(px(DRAWER_PAD)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.faint)).child(text).into_any_element();
         let title_of = |m: &Info| if m.id == current { self.live.title().to_string() } else { m.title.clone() };
         let mut rows: Vec<AnyElement> = vec![];
         let pins: Vec<(usize, &Info)> = readable.iter().copied().enumerate().filter(|(_, m)| pinned(&m.id)).collect();
@@ -1102,7 +1113,7 @@ impl Workbench {
             rows.extend(group.iter().map(|(i, m)| row(*i, m.id.clone(), title_of(m), Some(m.updated_at))));
         }
         if self.store.is_none() {
-            rows.push(div().px(px(12.)).pt(px(18.)).text_size(px(13.)).text_color(rgb(p.muted)).child(t("this-is-a-sample-it")).into_any_element());
+            rows.push(div().pl(px(DRAWER_TEXT)).pr(px(DRAWER_PAD)).pt(px(18.)).text_size(px(13.)).text_color(rgb(p.muted)).child(t("this-is-a-sample-it")).into_any_element());
         }
         let meetings = div().id("drawer-meetings").flex_1().min_h_0().overflow_y_scroll().pb(px(12.)).flex().flex_col().gap(px(2.)).children(rows);
         let settings = div()

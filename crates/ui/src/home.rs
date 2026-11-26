@@ -555,9 +555,9 @@ impl Workbench {
         let typed = self.library_query.read(cx).value().to_string();
         self.search_typed(&typed);
         let query = typed.trim().to_lowercase();
-        let mut hits: HashSet<String> = self.search.as_ref().filter(|_| !query.is_empty()).map(|s| s.hits.iter().map(|h| h.meeting.clone()).collect()).unwrap_or_default();
+        let mut hits: HashSet<String> = self.search.as_ref().filter(|s| !query.is_empty() && s.error.is_none()).map(|s| s.hits.iter().map(|h| h.meeting.clone()).collect()).unwrap_or_default();
         // Where search by meaning cannot run (the iPad), the words themselves are looked for.
-        if self.search.is_none() && !query.is_empty() {
+        if !self.searching_by_meaning() && !query.is_empty() {
             hits.extend(self.word_hits(&query));
         }
         let pinned = |id: &str| self.pinned.iter().any(|p| p == id);
@@ -751,7 +751,7 @@ impl Workbench {
         };
         let indexing = self.search.as_ref().and_then(|s| s.indexing.map(|done| (done, s.held)));
         // Where search by meaning cannot run, it says it looks for the words themselves, and how many it found.
-        let word_search = (self.search.is_none() && !query.is_empty()).then(|| ta!("home-word-search", n = found));
+        let word_search = (!self.searching_by_meaning() && !query.is_empty()).then(|| ta!("home-word-search", n = found));
         let chips = div()
             .absolute()
             .top(px(top + 72.))

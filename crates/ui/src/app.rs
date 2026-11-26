@@ -17,6 +17,7 @@ use crate::i18n::t;
 use crate::ta;
 use crate::theme::{self, icon, pal, Type as _};
 use crate::motion;
+use crate::compile_cache;
 use crate::quiet::Quiet;
 use gpui_kit::{AnimationExt as _, AppLifecyclePhase, SpringAnimation};
 use crate::pipeline::{Event, Pipeline, Script, Speech};
@@ -66,6 +67,8 @@ use std::time::{Duration, Instant};
 mod ipad;
 #[path = "ipad_card.rs"]
 mod ipad_card;
+#[path = "ipad_dialogs.rs"]
+mod ipad_dialogs;
 // The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
 #[path = "home.rs"]
 mod home;
@@ -436,6 +439,8 @@ struct Ink {
     generation: u64,
     rebuilding: Option<Receiver<Rebuilt>>,
     drag: Option<(Point<Pixels>, View)>,
+    /// Where two fingers on the iPad last had their centroid, while they pan and pinch the board.
+    pinch_at: Option<Point<Pixels>>,
     /// Dragging draws a circle around things rather than moving the board.
     circling: bool,
     /// Circles drawn so far, and the one being drawn, in board coordinates.
@@ -606,6 +611,27 @@ impl Ink {
                 continue;
             }
             let mut r = Rng::new(&piece.seed);
+            // What a hand drew joins the board at once, exactly as it was drawn: it is not written out again. It slides
+            // only when it is the same stroke moved, as with the thing it is anchored to; a stroke that only took over
+            // another's place in the list (one before it was rubbed out) is put down where it is.
+            if !piece.lines.is_empty() && piece.lines.iter().all(|l| l.hand) {
+                let shapes: Vec<Vec<Pt>> = piece.lines.iter().map(|l| outline(&l.inked(&mut r), 1.0)).collect();
+                let before = gone.remove(&piece.seed).filter(|b| b.len() == shapes.len());
+                let shift = |old: &Stroke, new: &[Pt]| -> Option<[f32; 2]> {
+                    let (a, b) = (old.shape.first()?, new.first()?);
+                    let d = [a[0] - b[0], a[1] - b[1]];
+                    (old.shape.len() == new.len() && old.shape.iter().zip(new).all(|(o, n)| (o[0] - n[0] - d[0]).abs() < 0.01 && (o[1] - n[1] - d[1]).abs() < 0.01)).then_some(d)
+                };
+                for (i, (line, shape)) in piece.lines.iter().zip(shapes).enumerate() {
+                    let stroke = Arc::new(Stroke { key: piece.key.clone(), area: area_of(&shape), shape, style: line.style });
+                    match before.as_ref().and_then(|b| shift(&b[i], &stroke.shape)).filter(|d| !self.jump && (d[0] != 0.0 || d[1] != 0.0)) {
+                        Some(from) => moved.push((stroke, from)),
+                        None => self.bake(stroke),
+                    }
+                }
+                self.drawn.insert(piece.key);
+                continue;
+            }
             if let Some(before) = gone.remove(&piece.seed).filter(|b| b.len() == piece.lines.len()) {
                 for (line, old) in piece.lines.iter().zip(before) {
                     let shape = outline(&line.inked(&mut r), 1.0);
@@ -720,6 +746,13 @@ impl Ink {
             return false;
         }
         true
+    }
+
+    /// Forget the stroke a tool had begun, without putting it down.
+    fn drop_stroke(&mut self) {
+        self.scribble = None;
+        self.crop = None;
+        self.drawing = None;
     }
 
     /// Close the circle being drawn, and take in whatever has its middle inside it.
@@ -1663,6 +1696,8 @@ struct Workbench {
     /// Which of its addresses the QR code shows.
     share_address: usize,
     share_note: Option<String>,
+    /// When the share link was last copied, for the button to say so a moment.
+    share_copied: Option<Instant>,
     import: ImportState,
     arxiv_input: Entity<InputState>,
     /// Which of a read document's pages to import, as "1-5, 8"; empty for all.
@@ -1808,77 +1843,83 @@ fn engine_of(backend: &Backend) -> Engine {
     }
 }
 
-/// Whether going from the board model in use to the one chosen waits for a restart, on the iPad: between two that
-/// hold a model, local or remote, but not from none to the first, nor from one remote model's settings to another's.
-fn waits_for_restart(active: &Engine, chosen: &Engine) -> bool {
+/// Whether going from the board model in use to the one chosen means stopping the one in use first, on the iPad:
+/// between two that hold a model, local or remote, but not from none to the first, nor from one remote model's
+/// settings to another's.
+fn needs_swap(active: &Engine, chosen: &Engine) -> bool {
     active != chosen && *active != Engine::None && *chosen != Engine::None
 }
 
-/// The iPad's board model in use, and one chosen to take over after a restart.
+/// The iPad's board model in use, and a switch to another.
 #[derive(Default)]
 pub(crate) struct ModelSwitch {
     /// What the settings in use chose, once applied.
     active: Option<Engine>,
-    /// What to call the model chosen but waiting for a restart.
-    pub(crate) pending: Option<String>,
-    /// The dialog asking to restart now or later is up.
-    pub(crate) asking: bool,
-    /// A restart is under way: the old model stopping.
-    pub(crate) restarting: bool,
+    /// Another model was chosen: the one in use is to stop for it.
+    wanted: bool,
+    /// The model in use is stopping, for the one chosen to take over.
+    swapping: bool,
+    /// A switch that could not free the old model's memory: the choice is kept for the next launch, and not tried
+    /// again in this one, as the person has been told to restart the app.
+    failed: Option<Engine>,
 }
 
-/// Where the graphics driver keeps the shaders it compiles for the local model, beside the models.
-fn shader_dir(models: &std::path::Path) -> PathBuf {
-    models.parent().unwrap_or(models).join("shader-cache")
+/// The model whose start the preparing page is about: the one chosen in Settings.
+fn preparing_model(models: &std::path::Path) -> Option<PathBuf> {
+    alcyo_models::current(models)
 }
 
-/// Left beside the shaders once a start has got all the way through. The driver writes into the folder
-/// from the moment it starts, so what is there says nothing about whether it finished.
-const SHADERS_READY: &str = "ready";
-
-/// What a finished start is noted under. The desktop's driver keeps its shaders across versions, so one start
-/// anywhere counts. The iPad's model runs inside the app, whose graphics code comes with each version, so it
-/// counts for that model and version.
-fn shaders_key(models: &std::path::Path) -> String {
-    if !cfg!(target_os = "ios") {
-        return String::new();
-    }
-    let model = alcyo_models::current(models).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-    format!("{} {model}", alcyo_update::VERSION)
+/// The version a finished start is noted under (compile_cache). The desktop's driver keeps its shaders across
+/// versions, so one start of a model counts for every version. The iPad's model runs inside the app, whose graphics
+/// code comes with each version, so it counts for that version only.
+fn shaders_version() -> Option<&'static str> {
+    cfg!(target_os = "ios").then_some(alcyo_update::VERSION)
 }
 
 /// Whether the local model has started all the way here before, so its next start is not its first.
 fn shaders_ready(models: &std::path::Path) -> bool {
-    let key = shaders_key(models);
-    std::fs::read_to_string(shader_dir(models).join(SHADERS_READY)).is_ok_and(|noted| key.is_empty() || noted.lines().any(|l| l == key))
+    let root = compile_cache::root(models);
+    compile_cache::adopt_older_note(&root);
+    preparing_model(models).is_some_and(|model| compile_cache::ready(&root, &model, shaders_version()))
 }
 
-/// Note that the local model started all the way. The folder is made here too: on the iPad no server program
-/// makes it first (the model runs inside the app), so the note was never kept there and every start, after the
-/// app came back from the background or opened another meeting, looked like the first.
+/// Note that the local model started all the way, so its next start, after the app came back from the background
+/// or opened another meeting, is not taken for the first.
 fn note_shaders_ready(models: &std::path::Path) {
-    let dir = shader_dir(models);
-    let key = shaders_key(models);
-    let noted = std::fs::read_to_string(dir.join(SHADERS_READY)).unwrap_or_default();
-    if noted.lines().any(|l| l == key) && !key.is_empty() {
-        return;
-    }
-    let kept = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(SHADERS_READY), if key.is_empty() { noted } else { format!("{noted}{key}\n") }));
-    if let Err(e) = kept {
-        eprintln!("could not note the model as ready in {}: {e}", dir.display());
+    let Some(model) = preparing_model(models) else { return };
+    if let Err(e) = compile_cache::note_ready(&compile_cache::root(models), &model, shaders_version().unwrap_or(alcyo_update::VERSION)) {
+        eprintln!("could not note the model as ready: {e}");
     }
 }
 
-fn dir_size(dir: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    entries
-        .flatten()
-        .map(|entry| match entry.metadata() {
-            Ok(meta) if meta.is_dir() => dir_size(&entry.path()),
-            Ok(meta) => meta.len(),
-            Err(_) => 0,
-        })
-        .sum()
+/// Where the graphics driver keeps what it compiles for `model`'s server: a folder of its own, beside the models.
+fn shader_dir_for(model: &std::path::Path) -> Option<PathBuf> {
+    let models = model.parent()?;
+    Some(compile_cache::model_dir(&compile_cache::root(models), model))
+}
+
+/// Whether meetings are searched by what they mean, or why by their words instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ByMeaning {
+    On,
+    /// Turned off in Settings.
+    Off,
+    /// No search model in this build, or no llama.cpp to run it inside the app.
+    NoModel,
+    /// Not memory enough left to the app for the model beside what it holds already, the board model among it.
+    NoMemory,
+}
+
+/// Search by meaning, decided from the switch, where the model runs (`in_app`, the iPad, where it needs llama.cpp
+/// `built_in` and the memory for it), the model's size if it is here and how much memory the app has left.
+fn by_meaning(switch: bool, in_app: bool, built_in: bool, model_bytes: Option<u64>, available: Option<u64>) -> ByMeaning {
+    match model_bytes {
+        _ if !switch => ByMeaning::Off,
+        None => ByMeaning::NoModel,
+        Some(_) if in_app && !built_in => ByMeaning::NoModel,
+        Some(bytes) if in_app && !alcyo_llama::embed::fits(bytes, available) => ByMeaning::NoMemory,
+        Some(_) => ByMeaning::On,
+    }
 }
 
 /// The local model getting ready: a page says so, as a first start can take half a minute.
@@ -1918,7 +1959,7 @@ fn backend_from(settings: &Settings, local_only: bool, binaries: &std::path::Pat
         return Backend::NoModel;
     }
     match alcyo_models::current(models) {
-        Some(model) => Backend::ManagedLocal(Arc::new(LocalServer { binaries: binaries.to_path_buf(), model, shaders: Some(shader_dir(models)) })),
+        Some(model) => Backend::ManagedLocal(Arc::new(LocalServer { binaries: binaries.to_path_buf(), shaders: shader_dir_for(&model), model })),
         None => Backend::NoModel,
     }
 }
@@ -2044,7 +2085,7 @@ fn read_image(path: &std::path::Path, binaries: &std::path::Path, model: &std::p
     let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let _ = tx.send(ImportUpdate::Progress(t("import-starting-vision-image").to_string()));
-    let shaders = model.parent().map(shader_dir);
+    let shaders = shader_dir_for(model);
     let server = VisionServer::start(binaries, model, projector, shaders.as_deref())?;
     let imported = alcyo_import::image::import_image(&bytes, english, cancel, &mut |png| server.read(png), &mut |done, total| {
         let _ = tx.send(ImportUpdate::Progress(ta!("import-reading-image-block", name = name.clone(), done = done, total = total)));
@@ -2083,7 +2124,7 @@ fn read_import(source: ImportSource, vision: Option<Vision>, library: &std::path
     let mut read_scanned = 0;
     if let Some(vision) = vision.filter(|_| !imported.scanned_pages.is_empty()) {
         let _ = tx.send(ImportUpdate::Progress(t("import-starting-vision-scans").to_string()));
-        let shaders = vision.model.parent().map(shader_dir);
+        let shaders = shader_dir_for(&vision.model);
         let server = VisionServer::start(&vision.binaries, &vision.model, &vision.projector, shaders.as_deref())?;
         let count = imported.scanned_pages.len();
         for (k, &i) in imported.scanned_pages.clone().iter().enumerate() {
@@ -2776,6 +2817,10 @@ impl Workbench {
         self.pump_download(&mut changed);
         self.pump_search(&mut changed);
         self.pump_update(&mut changed);
+        if self.switch.wanted && !self.switch.swapping {
+            self.swap_board_model(cx);
+            changed = true;
+        }
         // Where the map was dragged to is remembered once it is let go, not at every step of the way.
         if self.map_moved && !cx.has_active_drag() {
             self.map_moved = false;
@@ -3008,6 +3053,9 @@ impl Workbench {
     }
 
     fn share_panel(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        if crate::platform::ipad_layout() {
+            return self.ipad_share_body(cx);
+        }
         // Who can see what, and that the network carries it in the clear.
         let privacy = div().w_full().flex().flex_col().gap_1().p_3().rounded(px(6.)).bg(rgb(pal().danger_soft)).text_small().text_color(rgb(pal().text)).child(t("share-privacy")).child(div().font_weight(gpui_kit::FontWeight::MEDIUM).child(t("share-unencrypted")));
         let Some(sharing) = &self.sharing else {
@@ -3134,7 +3182,8 @@ impl Workbench {
                 div()
                     .flex()
                     .gap_2()
-                    .child(button("share-copy", t("share-copy-link")).on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copied.clone())))))
+                    // Says so for a moment once the link is on the clipboard.
+                    .child(button("share-copy", if self.share_just_copied() { t("share-copied") } else { t("share-copy-link") }).on_click(cx.listener(move |this, _, _, cx| this.copy_share_link(copied.clone(), cx))))
                     .child(Quiet::new("share-stop").danger().label(t("share-stop")).on_click(cx.listener(|this, _, _, cx| this.stop_sharing(cx)))),
             )
     }
@@ -3603,28 +3652,50 @@ impl Workbench {
 
     /// Start meeting search if it is on and its model is here, and bring every meeting's index up to date.
     fn start_search(&mut self) {
-        // The meaning model runs as a program of its own, which the iPad does not allow; there meetings are
-        // searched for their words instead (ipad.rs).
-        if !crate::platform::OWN_PROGRAMS {
-            return;
-        }
         let (Some(store), Some(data)) = (&self.store, self.models.parent()) else { return };
         if self.search.is_some() || !self.form.saved.meeting_search {
             return;
         }
         let Some(model) = self.embedding_file() else { return };
-        let binaries = self.binaries.clone();
-        let spawn: alcyo_search::service::Spawn = Box::new(move |args| alcyo_agent::spawn_tied({
-            let mut cmd = alcyo_agent::server_command(&binaries);
-            cmd.args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-            cmd
-        }));
-        let (jobs, events) = alcyo_search::service::start(data, model, spawn);
+        let backend = if crate::platform::OWN_PROGRAMS {
+            let binaries = self.binaries.clone();
+            alcyo_search::service::Backend::Spawn(Box::new(move |args| {
+                alcyo_agent::spawn_tied({
+                    let mut cmd = alcyo_agent::server_command(&binaries);
+                    cmd.args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                    cmd
+                })
+            }))
+        } else {
+            // The iPad starts no program: the model runs inside the app, through llama.cpp's own library beside the
+            // board model's server, on the CPU. Without memory enough for it now, meetings are searched by their
+            // words (ipad.rs) until there is.
+            if self.search_by_meaning() != ByMeaning::On {
+                return;
+            }
+            alcyo_search::service::Backend::InProcess(Box::new(|path| {
+                let mut model = alcyo_llama::Embedder::load(path)?;
+                Ok(Box::new(move |texts: &[String]| model.embed(texts)))
+            }))
+        };
+        let (jobs, events) = alcyo_search::service::start_with(data, model, backend);
         let all: Vec<String> = store.list().unwrap_or_default().into_iter().filter(|m| m.read_error.is_none()).map(|m| m.id).collect();
         let missing = alcyo_search::service::unindexed(data, &all);
         let building = (missing > 0 && missing * 2 >= all.len()).then_some(all.len());
         let _ = jobs.send(alcyo_search::service::Job::Index(all));
         self.search = Some(MeetingSearch { jobs, events, indexing: None, building, held: false, asked: String::new(), typed_at: None, ticket: 0, asking: false, hits: vec![], saved: HashMap::new(), error: None });
+    }
+
+    /// Whether search by meaning can run here now, or why meetings are searched by their words instead.
+    pub(crate) fn search_by_meaning(&self) -> ByMeaning {
+        let bytes = self.embedding_file().and_then(|path| std::fs::metadata(path).ok()).map(|m| m.len());
+        by_meaning(self.form.saved.meeting_search, !crate::platform::OWN_PROGRAMS, alcyo_llama::BUILT_IN, bytes, alcyo_llama::available_memory())
+    }
+
+    /// Whether the search box finds meetings by meaning now: search is running and has not failed. Otherwise, as when
+    /// the iPad had no memory left for its model, it finds the words themselves.
+    pub(crate) fn searching_by_meaning(&self) -> bool {
+        self.search.as_ref().is_some_and(|s| s.error.is_none())
     }
 
     /// Turn meeting search on or off. On, it downloads its model first if the app came without it.
@@ -3636,7 +3707,7 @@ impl Workbench {
         if on {
             if self.embedding_file().is_some() {
                 self.start_search();
-            } else {
+            } else if crate::platform::OWN_PROGRAMS {
                 self.start_download(alcyo_models::embedding(), cx);
             }
         } else {
@@ -3708,7 +3779,15 @@ impl Workbench {
             return None;
         }
         if !crate::platform::OWN_PROGRAMS {
-            return Some((t("ipad-search-words").to_string(), false));
+            match self.search_by_meaning() {
+                ByMeaning::Off => return None,
+                ByMeaning::NoModel => return Some((t("ipad-search-no-model").to_string(), false)),
+                ByMeaning::NoMemory if self.search.is_none() => return Some((t("ipad-search-no-memory").to_string(), false)),
+                _ => {}
+            }
+            if let Some(error) = self.search.as_ref().and_then(|s| s.error.clone()) {
+                return Some((crate::ta!("ipad-search-failed", error = error), true));
+            }
         }
         let model = alcyo_models::embedding();
         if let Some(download) = self.download.as_ref().filter(|d| d.id == model.id) {
@@ -3730,6 +3809,10 @@ impl Workbench {
 
     /// The library's query changed: ask again once typing pauses, or clear the results.
     fn search_typed(&mut self, text: &str) {
+        // On the iPad search by meaning waits for memory enough for its model: once there is, a query starts it.
+        if self.search.is_none() && !crate::platform::OWN_PROGRAMS && text.trim().chars().count() >= 2 {
+            self.start_search();
+        }
         let Some(search) = &mut self.search else { return };
         let text = text.trim();
         if text == search.asked {
@@ -3928,14 +4011,16 @@ impl Workbench {
 
     fn apply_backend(&mut self) {
         if !self.forced_backend {
-            // On the iPad another board model waits for a restart, which the person is asked for (sheet.rs): the
-            // model in use keeps drawing meanwhile, and the new one is used from the next launch either way.
+            // On the iPad another board model takes over at once, without asking: the one in use stops and gives its
+            // memory back first (swap_board_model, from the next pump), and the new one loads when a line needs it,
+            // as at launch. Until then the one in use is left as it is.
             let chosen = engine_of(&backend_from(&self.form.saved, false, &self.binaries, &self.models));
             if cfg!(target_os = "ios") {
-                if self.switch.active.as_ref().is_some_and(|active| waits_for_restart(active, &chosen)) {
-                    let name = self.engine_name(&chosen);
-                    self.switch.asking |= self.switch.pending.as_ref() != Some(&name);
-                    self.switch.pending = Some(name);
+                if self.switch.failed.as_ref() == Some(&chosen) {
+                    return;
+                }
+                if self.switch.swapping || self.switch.active.as_ref().is_some_and(|active| needs_swap(active, &chosen)) {
+                    self.switch.wanted = true;
                     return;
                 }
             }
@@ -3948,25 +4033,16 @@ impl Workbench {
         }
     }
 
-    /// What to call a board model in "Restart to use …".
-    fn engine_name(&self, engine: &Engine) -> String {
-        match engine {
-            Engine::Local(path) => alcyo_models::catalog().into_iter().find(|m| path.ends_with(&m.file)).map_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned(), |m| m.label.to_string()),
-            Engine::Remote if !self.form.saved.model.trim().is_empty() => self.form.saved.model.trim().to_string(),
-            Engine::Remote => t("remote").to_string(),
-            Engine::None => String::new(),
-        }
-    }
-
-    /// "Restart now", on the iPad: the model in use stops and gives its memory back, and then the one chosen takes
-    /// over, starting as at launch when a line needs it. If the old one would not stop, or iPadOS has not given back
-    /// memory enough, the choice stays waiting for the next launch and the person is told how to get there.
-    pub(crate) fn restart_board_model(&mut self, cx: &mut Context<Self>) {
-        if self.switch.restarting || self.forced_backend {
+    /// Switch the iPad's board model to the one now chosen, without asking: the model in use stops and gives its memory
+    /// back, and then the one chosen takes over, loading when a line next needs it with the status pill saying so. If
+    /// the old one would not stop, or iPadOS has not given memory enough back (`os_proc_available_memory`, checked by
+    /// the switcher), the choice stays for the next launch and the person is told how to get there.
+    fn swap_board_model(&mut self, cx: &mut Context<Self>) {
+        if self.switch.swapping || self.forced_backend {
             return;
         }
-        self.switch.asking = false;
-        self.switch.restarting = true;
+        self.switch.wanted = false;
+        self.switch.swapping = true;
         let backend = backend_from(&self.form.saved, self.live.local_only(), &self.binaries, &self.models);
         let chosen = engine_of(&backend_from(&self.form.saved, false, &self.binaries, &self.models));
         let switcher = self.session().switcher();
@@ -3975,16 +4051,22 @@ impl Workbench {
         cx.spawn(async move |this, cx| {
             let done = done.await;
             let _ = this.update(cx, |this, cx| {
-                this.switch.restarting = false;
+                this.switch.swapping = false;
                 match done {
                     Ok(()) => {
+                        let again = this.switch.wanted;
                         this.switch = ModelSwitch { active: Some(chosen), ..ModelSwitch::default() };
                         this.needs_model = matches!(backend, Backend::NoModel);
-                        // The new model loads as at launch: the next line shows it loading.
                         this.notice = None;
+                        // Chosen again while this one was stopping: that choice goes next.
+                        if again {
+                            this.apply_backend();
+                        }
                     }
                     Err(error) => {
-                        eprintln!("restarting the board model: {error}");
+                        eprintln!("switching the board model: {error}");
+                        this.switch.wanted = false;
+                        this.switch.failed = Some(chosen);
                         this.notice = Some(t("ipad-restart-failed").to_string());
                     }
                 }
@@ -3992,7 +4074,98 @@ impl Workbench {
             });
         })
         .detach();
+    }
+
+    /// The compile cache as Settings lists it: each entry found on disk, what to call it, and whether it is in use by
+    /// the model running now, so it is not cleared from under it.
+    pub(crate) fn compile_cache_view(&self) -> Vec<(compile_cache::Entry, String, bool)> {
+        let data = self.models.parent().unwrap_or(&self.models);
+        let (running, busy) = match self.session().local_model_up() {
+            Ok(model) => (model, false),
+            Err(()) => (None, true),
+        };
+        let catalog = alcyo_models::catalog();
+        compile_cache::entries(&compile_cache::root(&self.models), compile_cache::system_dir(data).as_deref())
+            .into_iter()
+            .map(|entry| {
+                let name = match &entry.kind {
+                    compile_cache::Kind::Model(file) => catalog.iter().find(|m| m.file == *file).map_or_else(|| file.trim_end_matches(".gguf").to_string(), |m| m.label.to_string()),
+                    compile_cache::Kind::Older => t("compile-cache-older").to_string(),
+                    compile_cache::Kind::System => t("compile-cache-system").to_string(),
+                };
+                let used = compile_cache::in_use(&entry, running.as_deref(), busy);
+                (entry, name, used)
+            })
+            .collect()
+    }
+
+    /// How big an entry is and when it was built, for its row.
+    pub(crate) fn compile_cache_detail(entry: &compile_cache::Entry) -> String {
+        let size = if entry.bytes < 1_000_000 { format!("{:.0} KB", (entry.bytes as f64 / 1e3).ceil()) } else { format!("{:.1} MB", entry.bytes as f64 / 1e6) };
+        match entry.built {
+            Some(at) => {
+                let when: chrono::DateTime<chrono::Local> = at.into();
+                ta!("compile-cache-built", size = size, when = when.format("%Y-%m-%d %H:%M").to_string())
+            }
+            None => size,
+        }
+    }
+
+    /// Clear one entry of the compile cache, or all of them (`None`), leaving what the running model uses: a model's
+    /// next start compiles again what was cleared.
+    pub(crate) fn clear_compile_cache(&mut self, which: Option<compile_cache::Kind>, cx: &mut Context<Self>) {
+        let mut kept = vec![];
+        for (entry, name, used) in self.compile_cache_view() {
+            if which.as_ref().is_some_and(|kind| *kind != entry.kind) {
+                continue;
+            }
+            if used {
+                kept.push(name);
+                continue;
+            }
+            if let Err(e) = compile_cache::clear(&entry) {
+                self.form.note = Some(format!("{e:#}"));
+                cx.notify();
+                return;
+            }
+        }
+        self.form.note = match kept.first() {
+            Some(_) if self.session().local_model_up().is_err() => Some(t("compile-cache-busy").to_string()),
+            Some(name) => Some(ta!("compile-cache-kept", model = name.clone())),
+            None => None,
+        };
         cx.notify();
+    }
+
+    /// The compile cache in the desktop's Settings: a row to clear it all, then a row for each entry.
+    fn compile_cache_rows(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let entries = self.compile_cache_view();
+        let line = |title: String, hint: String| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_6()
+                .px_4()
+                .py_3()
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_ui().child(title)).child(div().text_small().text_color(rgb(pal().muted)).child(hint)))
+        };
+        let clearable = entries.iter().any(|(_, _, used)| !used);
+        let mut out = vec![line(t("compile-cache").to_string(), if entries.is_empty() { t("compile-cache-empty").to_string() } else { t("compile-cache-hint").to_string() })
+            .child(button("clear-compile-cache", t("compile-cache-clear-all")).disabled(!clearable).on_click(cx.listener(|this, _, _, cx| this.clear_compile_cache(None, cx))))
+            .into_any_element()];
+        out.extend(entries.into_iter().enumerate().map(|(i, (entry, name, used))| {
+            let kind = entry.kind.clone();
+            line(name, Self::compile_cache_detail(&entry))
+                .pl_8()
+                .child(if used {
+                    div().text_small().text_color(rgb(pal().muted)).child(t("compile-cache-in-use")).into_any_element()
+                } else {
+                    button(("clear-compile-cache-entry", i), t("compile-cache-clear")).on_click(cx.listener(move |this, _, _, cx| this.clear_compile_cache(Some(kind.clone()), cx))).into_any_element()
+                })
+                .into_any_element()
+        }));
+        out
     }
 
     /// Put a meeting on screen. Anything still in flight for the previous one is discarded.
@@ -6316,6 +6489,9 @@ impl Workbench {
     }
 
     fn import_panel(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        if crate::platform::ipad_layout() {
+            return self.ipad_import_body(cx);
+        }
         let hint = |text: &'static str| div().text_small().text_color(rgb(pal().muted)).child(text);
         let panel = div().id("import-panel").flex_1().overflow_y_scroll().flex().flex_col().gap_2();
         let can_add_here = self.live.read_only.is_none();
@@ -6956,8 +7132,27 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .when(on_ipad, |d| {
+                // Two fingers pan and pinch at once, as in Freeform: the board follows their centroid as it moves,
+                // and zooms about it as they spread. The iPad sends a pan's steps as pinches that do not zoom.
                 d.on_pinch(cx.listener(move |_, e: &gpui_kit::PinchEvent, _, cx| {
-                    pinch.borrow_mut().zoom_at(e.position, (1.0 + e.delta).max(0.2));
+                    let mut b = pinch.borrow_mut();
+                    match e.phase {
+                        gpui_kit::TouchPhase::Started => b.pinch_at = Some(e.position),
+                        gpui_kit::TouchPhase::Moved => {
+                            if let Some(from) = b.pinch_at.replace(e.position) {
+                                let d = e.position - from;
+                                let v = b.shown();
+                                b.view = Some(View { x: v.x - f32::from(d.x) / v.k, y: v.y - f32::from(d.y) / v.k, k: v.k });
+                                b.reading = true;
+                                b.glide = None;
+                                b.touched = Instant::now();
+                            }
+                        }
+                        gpui_kit::TouchPhase::Ended | gpui_kit::TouchPhase::Cancelled => b.pinch_at = None,
+                    }
+                    if e.delta != 0.0 {
+                        b.zoom_at(e.position, (1.0 + e.delta).max(0.2));
+                    }
                     cx.notify();
                 }))
             })
@@ -7090,8 +7285,14 @@ impl Render for Workbench {
                                         window.refresh();
                                     }
                                 }
-                                gpui_kit::TouchPhase::Ended | gpui_kit::TouchPhase::Cancelled => {
+                                gpui_kit::TouchPhase::Ended => {
                                     let _ = touch_this.update(cx, |this, cx| this.tool_up(cx));
+                                }
+                                // Taken over, as by a second finger that pans and pinches: what the first had begun
+                                // to draw goes, rather than a stray mark staying behind.
+                                gpui_kit::TouchPhase::Cancelled => {
+                                    touch_ink.borrow_mut().drop_stroke();
+                                    window.refresh();
                                 }
                             }
                         });
@@ -7269,13 +7470,26 @@ impl Render for Workbench {
                                 edge.a = 0.9;
                                 window.paint_quad(gpui_kit::fill(area, tint).border_widths(px(2.)).border_color(edge));
                             }
-                            // The line being drawn, in its tool's colour, until it joins the board.
+                            // The line being drawn, in its tool's colour, until it joins the board: the very shape it
+                            // will have there (pen::hand), so lifting the pen changes nothing.
                             if let Some(line) = b.scribble.as_ref().filter(|l| l.len() > 1) {
-                                let (color, alpha, width) = if b.mark_tool == ERASER { (0x8a_8a_8a, 0.3, ERASER_W) } else { annotation_look(b.mark_tool) };
-                                let mut pb = PathBuilder::stroke(px(width * v.k));
                                 let at = |p: &[f32; 2]| origin + point(px(p[0] * v.k), px(p[1] * v.k));
-                                pb.move_to(at(&line[0]));
-                                line[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                let (pb, color, alpha) = if b.mark_tool == ERASER {
+                                    let mut pb = PathBuilder::stroke(px(ERASER_W * v.k));
+                                    pb.move_to(at(&line[0]));
+                                    line[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                    (pb, 0x8a_8a_8a, 0.3)
+                                } else {
+                                    let (color, alpha, width) = annotation_look(b.mark_tool);
+                                    let shape = outline(&alcyo_board::pen::hand(line, width, !alcyo_board::graph::is_pen(b.mark_tool)), 1.0);
+                                    let mut pb = fill_builder();
+                                    if let Some(first) = shape.first() {
+                                        pb.move_to(at(first));
+                                        shape[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                        pb.close();
+                                    }
+                                    (pb, color, alpha)
+                                };
                                 if let Ok(path) = pb.build() {
                                     let mut ink: Hsla = rgb(pal().ink(color)).into();
                                     ink.a = alpha;
@@ -9069,26 +9283,10 @@ impl Render for Workbench {
                             .into_any_element(),
                     );
                 }
-                // Metal keeps its own shaders, so there is nothing here for a Mac to manage.
+                // What the graphics compiled, model by model. Metal keeps its own shaders, so there is nothing here for a
+                // Mac to manage.
                 if cfg!(not(target_os = "macos")) {
-                    let size = dir_size(&shader_dir(&self.models));
-                    storage.push(
-                        row(t("graphics-cache"), Some(t("safe-to-delete-the-model")))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(div().font_family(theme::MONO).text_small().text_color(rgb(pal().muted)).child(format!("{:.1} MB", size as f64 / 1e6)))
-                                    .child(button("clear-shaders", t("delete")).disabled(size == 0).on_click(cx.listener(|this, _, _, cx| {
-                                        if let Err(e) = std::fs::remove_dir_all(shader_dir(&this.models)) {
-                                            this.form.note = Some(format!("{e:#}"));
-                                        }
-                                        cx.notify();
-                                    }))),
-                            )
-                            .into_any_element(),
-                    );
+                    storage.extend(self.compile_cache_rows(cx));
                 }
                 div()
                     .flex()
@@ -9925,10 +10123,15 @@ impl Render for Shell {
         // Clear of what the system draws over the window: the iPad's status bar, its home indicator, the
         // corners of a rounded screen. Nothing on a desktop window.
         // Laid out for the iPad, the board runs under them and what floats over it keeps clear (ipad.rs).
-        let safe = if crate::platform::ipad_layout() && self.workbench.is_some() { gpui_kit::Edges::default() } else { window.insets().safe_area };
+        let ipad = crate::platform::ipad_layout();
+        let safe = if ipad { gpui_kit::Edges::default() } else { window.insets().safe_area };
         div().size_full().font(theme::interface_font()).bg(rgb(pal().paper)).pt(safe.top).pb(safe.bottom).pl(safe.left).pr(safe.right).map(|d| match &self.workbench {
             // The app comes up through the written name rather than cutting to it.
             Some(workbench) => d.child(div().size_full().child(workbench.clone()).with_animation("hand-off", motion::ease(Duration::from_millis(360)), |d, t| d.opacity(t))).into_any_element(),
+            // On the iPad the name is written on one sheet of paper from edge to edge, under the status bar too, as
+            // the system's launch screen before it (packaging/ios): a bar of its own there was a white band with a
+            // line under it.
+            None if ipad => d.child(crate::splash::splash(&self.word, self.started, window)).into_any_element(),
             // The bar is there from the start, so the window can be moved while the app gets ready.
             None => d.flex().flex_col().child(title_bar()).child(div().flex_1().min_h_0().child(crate::splash::splash(&self.word, self.started, window))).into_any_element(),
         })
@@ -10111,6 +10314,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 generation: 0,
                 rebuilding: None,
                 drag: None,
+                pinch_at: None,
                 circling: false,
                 loops: vec![],
                 drawing: None,
@@ -10339,6 +10543,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     watching: 0,
                     share_address: 0,
                     share_note: None,
+                    share_copied: None,
                     inbox,
                     save: SaveState::Idle,
                     saving: None,
@@ -10580,13 +10785,26 @@ mod switch_tests {
     #[test]
     fn only_a_switch_between_two_models_waits_for_a_restart() {
         let local = |f: &str| Engine::Local(PathBuf::from(f));
-        assert!(waits_for_restart(&local("a"), &local("b")), "local to local");
-        assert!(waits_for_restart(&local("a"), &Engine::Remote), "local to remote");
-        assert!(waits_for_restart(&Engine::Remote, &local("a")), "remote to local");
-        assert!(!waits_for_restart(&Engine::Remote, &Engine::Remote), "a remote model's settings apply at once");
-        assert!(!waits_for_restart(&local("a"), &local("a")));
-        assert!(!waits_for_restart(&Engine::None, &local("a")), "the first model is used at once");
-        assert!(!waits_for_restart(&local("a"), &Engine::None));
+        assert!(needs_swap(&local("a"), &local("b")), "local to local");
+        assert!(needs_swap(&local("a"), &Engine::Remote), "local to remote");
+        assert!(needs_swap(&Engine::Remote, &local("a")), "remote to local");
+        assert!(!needs_swap(&Engine::Remote, &Engine::Remote), "a remote model's settings apply at once");
+        assert!(!needs_swap(&local("a"), &local("a")));
+        assert!(!needs_swap(&Engine::None, &local("a")), "the first model is used at once");
+        assert!(!needs_swap(&local("a"), &Engine::None));
+    }
+
+    /// Search by meaning runs where it can, and says why not where it cannot: then the search box finds words.
+    #[test]
+    fn search_by_meaning_falls_back_to_words() {
+        let mb = |n: u64| n << 20;
+        assert_eq!(by_meaning(false, true, true, Some(mb(320)), Some(mb(4000))), ByMeaning::Off);
+        assert_eq!(by_meaning(true, true, true, None, Some(mb(4000))), ByMeaning::NoModel);
+        assert_eq!(by_meaning(true, true, false, Some(mb(320)), Some(mb(4000))), ByMeaning::NoModel, "no llama.cpp in the app");
+        assert_eq!(by_meaning(true, true, true, Some(mb(320)), Some(mb(300))), ByMeaning::NoMemory, "the board model holds the rest");
+        assert_eq!(by_meaning(true, true, true, Some(mb(320)), Some(mb(4000))), ByMeaning::On);
+        assert_eq!(by_meaning(true, true, true, Some(mb(320)), None), ByMeaning::On, "unknown off the iPad");
+        assert_eq!(by_meaning(true, false, false, Some(mb(320)), Some(mb(1))), ByMeaning::On, "a desktop's server is a program of its own");
     }
 }
 

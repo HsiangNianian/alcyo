@@ -335,8 +335,6 @@ verifying-and-installing = Vérification et installation…
 save-and-restart = Enregistrer et redémarrer
 try-again = Réessayer
 about = À propos
-graphics-cache = Cache graphique
-safe-to-delete-the-model = Peut être supprimé sans risque ; le modèle le recompile en une demi-minute environ.
 transcript-2 = Transcription
 summary-2 = Résumé
 speakers = Intervenants
@@ -572,6 +570,7 @@ share-watching = { $n ->
     }
 share-none-watching = Personne ne regarde encore
 share-copy-link = Copier le lien
+share-copied = Copié ✓
 share-failed = Le partage n’a pas pu démarrer : { $error }
 share-stopped-other-meeting = Partage arrêté : une autre réunion a été ouverte, et les spectateurs n’avaient accès qu’à la précédente.
 share-unencrypted = Non chiffré : quiconque peut observer le trafic de ce réseau pourrait voir le code et la réunion. Ne partagez que sur un réseau de confiance.

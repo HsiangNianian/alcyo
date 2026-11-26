@@ -169,13 +169,30 @@ pub struct Inked {
     pub length: f32,
     /// A highlighter: a flat tip of one width from end to end, rather than a pen that responds to speed.
     pub flat: bool,
+    /// Drawn by a hand on the board: one width from end to end with round ends, exactly along the points it was
+    /// drawn through, so it stays as it looked while being drawn.
+    pub even: bool,
 }
 
 pub fn ink(points: &[Pt], width: f32, wobble_amp: f32, r: &mut Rng) -> Inked {
     let mut center = resample(&round_bends(points, width * 0.6), width * 0.3);
     wobble(&mut center, wobble_amp, r);
     let length = center.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
-    Inked { center, width, length, flat: false }
+    Inked { center, width, length, flat: false, even: false }
+}
+
+/// A line drawn by hand on the board, with a pen (`flat` false) or a highlighter, as it is shown while it is being
+/// drawn and once it has joined the board: nothing smoothed, shaken or pressed into it afterwards, so lifting the pen
+/// changes nothing on screen. Points closer than a hair to the one before are dropped, as they give no direction.
+pub fn hand(points: &[Pt], width: f32, flat: bool) -> Inked {
+    let mut center: Stroke = Vec::with_capacity(points.len());
+    for p in points {
+        if center.last().is_none_or(|q: &Pt| (p[0] - q[0]).hypot(p[1] - q[1]) > 1e-3) {
+            center.push(*p);
+        }
+    }
+    let length = center.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+    Inked { center, width, length, flat, even: !flat }
 }
 
 /// A pass of a highlighter along these points.
@@ -320,7 +337,14 @@ pub fn outline(s: &Inked, upto: f32) -> Vec<Pt> {
     let target = s.length * upto;
     let mut pts: Vec<Pt> = Vec::with_capacity(s.center.len());
     let mut press: Vec<f32> = Vec::with_capacity(s.center.len());
-    let whole = if s.flat || s.center.len() < 2 { vec![] } else { pressure(&s.center, s.width) };
+    // A hand's stroke presses evenly: half its width either side all along.
+    let whole = if s.flat || s.center.len() < 2 {
+        vec![]
+    } else if s.even {
+        vec![0.5 / RADIUS; s.center.len()]
+    } else {
+        pressure(&s.center, s.width)
+    };
     let mut walked = 0.0;
     for (i, p) in s.center.iter().enumerate() {
         if i > 0 {
@@ -349,6 +373,9 @@ pub fn outline(s: &Inked, upto: f32) -> Vec<Pt> {
     if s.flat {
         return flat_outline(&pts, s.width * 0.5);
     }
+    if s.even {
+        return even_outline(&pts, s.width * 0.5);
+    }
 
     let mut left = Vec::with_capacity(pts.len() + CAP_STEPS);
     let mut right = Vec::with_capacity(pts.len() + CAP_STEPS);
@@ -372,6 +399,38 @@ pub fn outline(s: &Inked, upto: f32) -> Vec<Pt> {
     cap(&mut out, pts[pts.len() - 1], radius, heading);
     out.extend(right.iter().rev());
     cap(&mut out, pts[0], s.width * RADIUS * press[0], start_heading + std::f32::consts::PI);
+    out
+}
+
+/// A band of one width along the points with a half circle at each end. Each edge point is set off along the turn
+/// between the segments either side (the miter, capped so a hairpin does not spike), which keeps the edge on the line
+/// as the hand drew it.
+fn even_outline(pts: &[Pt], radius: f32) -> Vec<Pt> {
+    let n = pts.len();
+    let heading = |a: Pt, b: Pt| (b[1] - a[1]).atan2(b[0] - a[0]);
+    let mut left = Vec::with_capacity(n);
+    let mut right = Vec::with_capacity(n);
+    for i in 0..n {
+        let before = heading(pts[i.saturating_sub(1)], pts[i.max(1).min(n - 1)]);
+        let after = heading(pts[i.min(n - 2)], pts[(i + 1).min(n - 1)]);
+        let (sb, cb) = before.sin_cos();
+        let (sa, ca) = after.sin_cos();
+        // The two segments' normals, added: the miter's direction, as long as their turn asks for.
+        let (mx, my) = (sb + sa, -(cb + ca));
+        let len = mx.hypot(my);
+        let (nx, ny) = if len < 1e-3 { (sa, -ca) } else { (mx / len, my / len) };
+        let cos_half = (nx * sa - ny * ca).abs().max(0.5);
+        let reach = radius / cos_half;
+        left.push([pts[i][0] + nx * reach, pts[i][1] + ny * reach]);
+        right.push([pts[i][0] - nx * reach, pts[i][1] - ny * reach]);
+    }
+    let start = heading(pts[0], pts[1]);
+    let end = heading(pts[n - 2], pts[n - 1]);
+    let mut out = Vec::with_capacity(n * 2 + CAP_STEPS * 2);
+    out.extend_from_slice(&left);
+    cap(&mut out, pts[n - 1], radius, end);
+    out.extend(right.iter().rev());
+    cap(&mut out, pts[0], radius, start + std::f32::consts::PI);
     out
 }
 
@@ -503,6 +562,26 @@ pub fn star(cx: f32, cy: f32, radius: f32, r: &mut Rng) -> Stroke {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line drawn by hand keeps the points it was drawn through and one width along them, so the shape shown while
+    /// drawing and the one put on the board are the same.
+    #[test]
+    fn a_hand_stroke_is_kept_as_drawn() {
+        let points: Vec<Pt> = (0..20).map(|i| [i as f32 * 3.0, (i as f32 * 0.4).sin() * 10.0]).collect();
+        let stroke = hand(&points, 2.6, false);
+        assert_eq!(stroke.center, points, "nothing smoothed or shaken into it");
+        assert_eq!(outline(&stroke, 1.0), outline(&hand(&points, 2.6, false), 1.0), "the same every time");
+        // Along a straight part, the edges are the width apart.
+        let straight = hand(&[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]], 2.6, false);
+        let shape = outline(&straight, 1.0);
+        assert!((shape[1][1] - 0.0).abs() - 1.3 < 1e-4, "{shape:?}");
+        // Round at both ends: the outline reaches past the first and the last point by half the width.
+        let xs: Vec<f32> = shape.iter().map(|p| p[0]).collect();
+        assert!((xs.iter().cloned().fold(f32::MAX, f32::min) + 1.3).abs() < 0.05);
+        assert!((xs.iter().cloned().fold(f32::MIN, f32::max) - 21.3).abs() < 0.05);
+        // A highlighter keeps its flat tip, still without a wobble of its own.
+        assert!(hand(&points, 16.0, true).flat && !hand(&points, 16.0, true).even);
+    }
 
     fn widths(points: &[Pt], width: f32) -> Vec<f32> {
         let center = resample(points, width * 0.3);

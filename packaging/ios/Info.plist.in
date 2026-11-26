@@ -44,8 +44,13 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<!-- The paper the app's first frame is written on, light or dark with the system: one colour edge to edge,
+	     from the colour set package.sh compiles beside the icon. -->
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchPaper</string>
+	</dict>
 	<!-- One window scene for the app, and one for a cabled or AirPlay display, where the room view is shown. -->
 	<key>UIApplicationSceneManifest</key>
 	<dict>

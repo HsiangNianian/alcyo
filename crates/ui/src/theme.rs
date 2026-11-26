@@ -448,3 +448,18 @@ pub fn apply(cx: &mut App) {
         theme.radius_lg = px(3.);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The iPad's launch screen is the colour set packaging/ios/package.sh writes: it must be the paper the app's
+    /// first frame is drawn on, light and dark, or the two meet at a seam.
+    #[test]
+    fn the_launch_screen_is_the_paper() {
+        let script = include_str!("../../../packaging/ios/package.sh");
+        let components = |c: u32| format!(r#""red": "0x{:02X}", "green": "0x{:02X}", "blue": "0x{:02X}""#, c >> 16 & 0xff, c >> 8 & 0xff, c & 0xff);
+        assert!(script.contains(&components(LIGHT.paper)), "light paper {:06x}", LIGHT.paper);
+        assert!(script.contains(&components(DARK.paper)), "dark paper {:06x}", DARK.paper);
+    }
+}

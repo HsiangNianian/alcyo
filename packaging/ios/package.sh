@@ -55,6 +55,19 @@ cat > "$icons/Assets.xcassets/AppIcon.appiconset/Contents.json" <<'JSON'
 { "images": [ { "filename": "icon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" } ], "info": { "author": "xcode", "version": 1 } }
 JSON
 printf '{ "info": { "author": "xcode", "version": 1 } }\n' > "$icons/Assets.xcassets/Contents.json"
+# The launch screen's colour (UILaunchScreen in Info.plist): the board's paper, light and dark, as the app's first
+# frame paints it (PAPER in crates/board/src/compose.rs, `paper` of the dark palette in crates/ui/src/theme.rs), so
+# the system's screen and the app's are one surface.
+mkdir -p "$icons/Assets.xcassets/LaunchPaper.colorset"
+cat > "$icons/Assets.xcassets/LaunchPaper.colorset/Contents.json" <<'JSON'
+{
+  "colors": [
+    { "idiom": "universal", "color": { "color-space": "srgb", "components": { "red": "0xFB", "green": "0xFB", "blue": "0xF9", "alpha": "1.000" } } },
+    { "idiom": "universal", "appearances": [ { "appearance": "luminosity", "value": "dark" } ], "color": { "color-space": "srgb", "components": { "red": "0x07", "green": "0x07", "blue": "0x07", "alpha": "1.000" } } }
+  ],
+  "info": { "author": "xcode", "version": 1 }
+}
+JSON
 xcrun actool "$icons/Assets.xcassets" --compile "$app" --platform iphoneos --minimum-deployment-target "$min_os" \
   --app-icon AppIcon --target-device ipad --output-partial-info-plist "$icons/partial.plist" > /dev/null
 /usr/libexec/PlistBuddy -c "Merge $icons/partial.plist" "$app/Info.plist"
