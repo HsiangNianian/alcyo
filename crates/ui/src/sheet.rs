@@ -8,7 +8,7 @@
 //! (onboarding.rs) is laid over the screen from here too.
 
 use super::*;
-use gpui_kit::{AnyElement, BoxShadow, ElementId, FontWeight, Image, ImageFormat, SpringConfig, Stateful};
+use gpui_kit::{AnyElement, BoxShadow, ElementId, FontWeight, SpringConfig, Stateful};
 
 /// The remote provider an address is for, by its host, however much of the address was typed: `api.deepseek.com`,
 /// `https://api.deepseek.com/v1` and the preset's own all name DeepSeek.
@@ -320,32 +320,6 @@ fn menu_row<T: Clone + PartialEq + 'static>(id: &'static str, open: bool, shown:
         }))
         .with_animation(name(id, "menu-in"), gpui_kit::Animation::new(Duration::from_millis(180)).with_easing(|t: f32| 1. - (1. - t).powi(3)), |d, t| d.opacity(t).mt(px(6. - 6. * (1. - t))));
     trigger.child(div().absolute().top_full().right_0().child(gpui_kit::deferred(gpui_kit::anchored().anchor(gpui_kit::Anchor::TopRight).snap_to_window_with_margin(px(12.)).child(card)).with_priority(1)))
-}
-
-/// The kingfisher, in its colours, `w` wide: the app's mark.
-pub(super) fn kingfisher(w: f32) -> impl IntoElement {
-    thread_local! {
-        static MARKS: RefCell<HashMap<(bool, u32), Arc<Image>>> = RefCell::new(HashMap::new());
-    }
-    let dark = theme::is_dark();
-    let h = w * 380.0 / 480.0;
-    // Drawn at three times its size, so it stays sharp on a dense screen: GPUI rasterizes an SVG once, at 1x.
-    let at = (w * 3.0).round() as u32;
-    let mark = MARKS.with(|marks| {
-        marks
-            .borrow_mut()
-            .entry((dark, at))
-            .or_insert_with(|| {
-                let cut = if dark { "#0e0e0e" } else { "#f3f3f1" };
-                let svg = format!(
-                    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 100 480 380" width="{at}" height="{}"><path d="M48 430 C120 392 168 300 214 236 C240 182 280 134 334 132 C370 131 394 150 398 172 L480 194 L390 204 C374 226 348 244 316 262 C262 292 214 330 168 372 C134 402 102 426 70 448 L84 429 Z" fill="#0a7ea4"/><path d="M372 236 C350 274 300 318 246 352 C214 372 182 390 148 402 C196 404 252 386 298 352 C336 324 362 284 372 236 Z" fill="#f07a2b"/><path d="M318 176 C330 167 352 163 370 168 C354 175 336 179 318 176 Z" fill="{cut}"/><path d="M150 372 C190 318 232 262 290 222 C246 270 206 320 168 370 Z" fill="{cut}"/></svg>"##,
-                    (at as f32 * 380.0 / 480.0).round() as u32
-                );
-                Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()))
-            })
-            .clone()
-    });
-    gpui_kit::img(mark).w(px(w)).h(px(h)).flex_none()
 }
 
 /// What can be chosen for the Pencil's double tap and squeeze, as saved and as said.
@@ -737,7 +711,7 @@ impl Workbench {
                     .px(px(12.))
                     .text_size(px(12.))
                     .text_color(rgb(pal().faint))
-                    .child(kingfisher(22.))
+                    .child(theme::app_icon(22.))
                     .child(ta!("ipad-version", version = alcyo_update::VERSION)),
             );
         self.grip(nav, cx).into_any_element()
@@ -1511,7 +1485,7 @@ impl Workbench {
         let app = row()
             .min_h(px(84.))
             .gap(px(16.))
-            .child(div().flex_none().size(px(56.)).flex().items_center().justify_center().rounded(px(14.)).bg(rgb(p.surface)).shadow(vec![ring(rgb(p.line).into(), 1.)]).child(kingfisher(40.)))
+            .child(div().flex_none().size(px(60.)).rounded(px(14.)).shadow(vec![shade(0.12, 2., 8.)]).child(theme::app_icon(60.)))
             .child(
                 div()
                     .flex_1()

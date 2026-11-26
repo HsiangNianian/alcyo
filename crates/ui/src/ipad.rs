@@ -490,7 +490,10 @@ impl Workbench {
         };
         let snap = dragging.is_some();
         // The map draws itself 4 pt in from the corner it is given.
+        // Over the board, it keeps the board from taking a Pencil's touch on it for a stroke.
         let frame = div()
+            .id("ipad-map")
+            .occlude()
             .relative()
             .w(px(MAP_PANEL_W + 8.0))
             .h(px(MAP_PANEL_H + 8.0))
@@ -871,7 +874,9 @@ impl Workbench {
             .when_some(status, |d, status| d.child(fade("ipad-fade-status", status)))
             .when_some(actions, |d, actions| d.child(fade("ipad-fade-actions", actions)))
             // Meetings and Settings lie over the board and under the meeting's card, which leads back.
-            .when_some(page, |d, page| d.child(div().absolute().inset_0().pt(px(f.top() + 10.0 + CARD_H)).bg(rgb(pal().paper)).child(div().relative().size_full().child(page))))
+            // It takes every touch over it: the board under it, with the Pencil's tool still in hand, would otherwise
+            // claim a Pencil's touch on the page's buttons as the start of a stroke, so the tap never came.
+            .when_some(page, |d, page| d.child(div().id("ipad-page").occlude().absolute().inset_0().pt(px(f.top() + 10.0 + CARD_H)).bg(rgb(pal().paper)).child(div().relative().size_full().child(page))))
             .when_some(sidebar, |d, sidebar| d.child(sidebar))
             .when_some(meeting_card, |d, card| d.child(fade("ipad-fade-meeting", card)))
             .when_some(preparing, |d, page| d.child(page))

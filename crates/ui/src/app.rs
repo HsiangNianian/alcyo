@@ -362,6 +362,21 @@ struct View {
     k: f32,
 }
 
+/// A touch moving the board (`Ink::touch_pan`).
+struct TouchPan {
+    from: Point<Pixels>,
+    view: View,
+    /// Recent positions and when, for the speed it is let go at.
+    trail: VecDeque<(Instant, Point<Pixels>)>,
+    /// It went further than a tap's slop: it is a pan, not a tap.
+    moved: bool,
+}
+
+/// How far a touch may wander and still be a tap, as GPUI's own recognizer has it.
+const TAP_SLOP: f32 = 8.0;
+/// How quickly a thrown board slows, as UIScrollView's normal rate: the speed kept after a millisecond.
+const FLING_DECAY: f32 = 0.998;
+
 struct Rebuilt {
     tier: Tier,
     /// The part of the board a detail tier covers; None for the whole-board base.
@@ -441,6 +456,13 @@ struct Ink {
     drag: Option<(Point<Pixels>, View)>,
     /// Where two fingers on the iPad last had their centroid, while they pan and pinch the board.
     pinch_at: Option<Point<Pixels>>,
+    /// One finger or the Pencil moving the board on the iPad, freely in any direction (GPUI's own touch pan keeps to
+    /// one axis): where it began, the view then, and where it has been lately, for the throw when it lets go.
+    touch_pan: Option<TouchPan>,
+    /// The board coasting after a throw: its speed in screen points a second, and when it last moved.
+    fling: Option<([f32; 2], Instant)>,
+    /// The last tap on the board that a touch pan let through, to count a double tap.
+    last_tap: Option<(Instant, Point<Pixels>, usize)>,
     /// Dragging draws a circle around things rather than moving the board.
     circling: bool,
     /// Circles drawn so far, and the one being drawn, in board coordinates.
@@ -473,6 +495,8 @@ struct Ink {
     page_src: Option<String>,
     zoom_test: Option<ZoomTest>,
     instant: bool,
+    /// How fast the pen writes relative to its own pace: a replay's speed while one plays, 1 otherwise.
+    pace: f32,
     /// When the last circle closed, for the iPad's circle to settle and what it caught to tint in.
     closed_at: Option<Instant>,
 }
@@ -746,6 +770,27 @@ impl Ink {
             return false;
         }
         true
+    }
+
+    /// Move the view by a touch's travel, `d` in screen points, from the view `from`.
+    fn pan_from(&mut self, from: View, d: Point<Pixels>) {
+        self.view = Some(View { x: from.x - f32::from(d.x) / from.k, y: from.y - f32::from(d.y) / from.k, k: from.k });
+        self.reading = true;
+        self.glide = None;
+        self.touched = Instant::now();
+    }
+
+    /// A thrown board coasts on, slowing as a list in iPadOS does. True while it still moves.
+    fn coast(&mut self) -> bool {
+        let Some((v, last)) = self.fling else { return false };
+        let now = Instant::now();
+        let dt = (now - last).as_secs_f32().min(0.05);
+        let keep = FLING_DECAY.powf(dt * 1000.0);
+        let next = [v[0] * keep, v[1] * keep];
+        let from = self.shown();
+        self.pan_from(from, point(px((v[0] + next[0]) / 2.0 * dt), px((v[1] + next[1]) / 2.0 * dt)));
+        self.fling = (next[0].hypot(next[1]) > 20.0).then_some((next, now));
+        self.fling.is_some()
     }
 
     /// Forget the stroke a tool had begun, without putting it down.
@@ -1206,7 +1251,7 @@ impl Ink {
         }
         let dt = self.last.replace(now).map_or(0.016, |l| (now - l).as_secs_f32()).min(0.1);
         // Time to spend this frame, and the pen's speed for what is waiting.
-        let mut budget = if self.instant { f32::MAX } else { dt };
+        let mut budget = if self.instant { f32::MAX } else { dt * self.pace };
         let waiting: f32 = self.queue.iter().map(|q| q.inked.length).sum::<f32>() - self.queue.front().map_or(0.0, |q| q.inked.length * self.live);
         let speed = PEN_PX_PER_SECOND.max(waiting / PEN_BACKLOG);
         while budget > 0.0 {
@@ -1439,6 +1484,17 @@ struct Replaying {
     sound: Option<Sound>,
     /// The sound is still being read, and the replay waits for it.
     hearing: bool,
+    /// The tool that was in hand when it began, put down for the replay and taken up again after.
+    tools: Tools,
+}
+
+/// Which tool is in hand on the board: marking with which marker, circling, or cropping.
+#[derive(Clone, Copy)]
+struct Tools {
+    marking: bool,
+    mark_tool: &'static str,
+    circling: bool,
+    cropping: bool,
 }
 
 /// A replay's sound, and where each of its steps falls in it.
@@ -1698,6 +1754,8 @@ struct Workbench {
     share_note: Option<String>,
     /// When the share link was last copied, for the button to say so a moment.
     share_copied: Option<Instant>,
+    /// The replay speed last chosen, kept for the next replay while the app runs.
+    replay_speed: f64,
     import: ImportState,
     arxiv_input: Entity<InputState>,
     /// Which of a read document's pages to import, as "1-5, 8"; empty for all.
@@ -3236,6 +3294,10 @@ impl Workbench {
         }
         let mut ink = self.ink.borrow_mut();
         let (memory, view) = (ink.board.snapshot(), (ink.view, ink.reading));
+        // A replay is watched, not drawn on: whatever was in hand (the circle, a pen, the eraser) is put down for it.
+        let tools = Tools { marking: ink.marking, mark_tool: ink.mark_tool, circling: ink.circling, cropping: ink.cropping };
+        ink.put_tools_down();
+        ink.pace = self.replay_speed as f32;
         ink.open(&Graph::default(), &serde_json::Value::Null);
         drop(ink);
         self.notice = None;
@@ -3244,8 +3306,9 @@ impl Workbench {
         let audio = self.live.audio();
         let mut player = Player::new(total);
         player.playing = audio.is_empty();
+        player.speed = self.replay_speed;
         let track: Rc<std::cell::Cell<Bounds<Pixels>>> = Rc::default();
-        self.replay = Some(Replaying { player, timeline, steps, shown, memory, view, next_at: Instant::now(), track: track.clone(), held: false, sound: None, hearing: !audio.is_empty() });
+        self.replay = Some(Replaying { player, timeline, steps, shown, memory, view, next_at: Instant::now(), track: track.clone(), held: false, sound: None, hearing: !audio.is_empty(), tools });
         self.show_board_image(shown);
         self.wait_for_next_step();
         if !audio.is_empty() {
@@ -3274,6 +3337,7 @@ impl Workbench {
                     Ok((samples, pieces, peaks)) => {
                         let times = sound_times(&replay.steps, &pieces);
                         let mut player = alcyo_audio::play::Player::new(samples);
+                        player.set_speed(this.replay_speed);
                         player.play();
                         replay.sound = Some(Sound { player, times, peaks: Rc::new(peaks) });
                     }
@@ -3367,11 +3431,29 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Play the replay faster or slower, the sound and the board's writing alike, and keep that for the next one.
+    fn set_replay_speed(&mut self, speed: f64, cx: &mut Context<Self>) {
+        self.replay_speed = speed;
+        self.ink.borrow_mut().pace = speed as f32;
+        if let Some(replay) = &mut self.replay {
+            replay.player.speed = speed;
+            if let Some(sound) = &mut replay.sound {
+                sound.player.set_speed(speed);
+            }
+        }
+        self.wait_for_next_step();
+        cx.notify();
+    }
+
     fn exit_replay(&mut self, cx: &mut Context<Self>) {
         let Some(replay) = self.replay.take() else { return };
         let mut ink = self.ink.borrow_mut();
         ink.open(&self.live.graph, &replay.memory);
         (ink.view, ink.reading) = replay.view;
+        ink.pace = 1.0;
+        // The tool in hand before the replay is taken up again.
+        let Tools { marking, mark_tool, circling, cropping } = replay.tools;
+        (ink.marking, ink.mark_tool, ink.circling, ink.cropping) = (marking, mark_tool, circling, cropping);
         drop(ink);
         if replay.shown != self.live.page() {
             self.show_page_image();
@@ -6144,29 +6226,53 @@ impl Workbench {
                 .pr(px(4.))
                 .w_full()
                 .h_full()
-                // Play and pause: a round button, the one solid thing on the bar.
-                .child(
-                    Quiet::new("replay-toggle")
-                        .solid()
-                        .square(px(30.))
-                        .icon(if playing { "pause" } else { "play" }, 12.)
-                        .disabled(hearing)
-                        .tooltip(if playing { t("pause-space") } else { t("play-space") })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_replay(cx))),
-                )
+                // Play and pause: a round button, the one solid thing on the bar; on the iPad a plain round icon button.
+                .map(|d| {
+                    if crate::platform::ipad_layout() {
+                        let button = ipad_dialogs::round_icon("replay-toggle", if playing { "pause" } else { "play" });
+                        return d.child(if hearing { button.opacity(0.4).into_any_element() } else { button.on_click(cx.listener(|this, _, _, cx| this.toggle_replay(cx))).into_any_element() });
+                    }
+                    d.child(
+                        Quiet::new("replay-toggle")
+                            .solid()
+                            .square(px(30.))
+                            .icon(if playing { "pause" } else { "play" }, 12.)
+                            .disabled(hearing)
+                            .tooltip(if playing { t("pause-space") } else { t("play-space") })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_replay(cx))),
+                    )
+                })
                 .child(div().w(px(2.)))
                 .child(div().font_family(theme::MONO).text_meta().whitespace_nowrap().text_color(rgb(pal().text)).child(now))
                 .child(track)
                 .child(div().font_family(theme::MONO).text_meta().whitespace_nowrap().text_color(rgb(pal().faint)).child(whole))
                 .child(Separator::vertical().h(px(18.)).mx_1())
-                // With sound the replay runs in real time, so there is no speed to choose.
-                .when(sound.is_none() && !hearing, |d| {
-                    d.child(Quiet::new("replay-speed").label(format!("{}×", player.speed)).tooltip(t("speed")).on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(replay) = &mut this.replay {
-                            replay.player.next_speed();
-                        }
-                        this.wait_for_next_step();
-                        cx.notify();
+                // How fast: the sound and the board's writing together, kept for the next replay.
+                .map(|d| {
+                    let speed = self.replay_speed;
+                    if crate::platform::ipad_layout() {
+                        let this = cx.entity().downgrade();
+                        return d.child(
+                            Button::new("replay-speed")
+                                .ghost()
+                                .child(div().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).child(speed_label(speed)))
+                                .h(px(44.))
+                                .min_w(px(52.))
+                                .rounded_full()
+                                .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomRight, move |menu, _, _| {
+                                    alcyo_board::steps::SPEEDS.iter().fold(menu.min_w(px(140.)), |menu, &each| {
+                                        let this = this.clone();
+                                        menu.item(PopupMenuItem::new(speed_label(each)).checked(each == speed).on_click(move |_, _, cx| {
+                                            let _ = this.update(cx, |w, cx| w.set_replay_speed(each, cx));
+                                        }))
+                                    })
+                                }),
+                        );
+                    }
+                    d.child(Quiet::new("replay-speed").label(speed_label(speed)).tooltip(t("speed")).on_click(cx.listener(move |this, _, _, cx| {
+                        let speeds = alcyo_board::steps::SPEEDS;
+                        let next = speeds[(speeds.iter().position(|s| *s == speed).unwrap_or(0) + 1) % speeds.len()];
+                        this.set_replay_speed(next, cx);
                     })))
                 })
                 .when(self.live.read_only.is_none(), |d| {
@@ -6714,6 +6820,73 @@ impl Workbench {
             None if stale => (Some(t("the-meeting-has-moved-on").to_string()), pal().warning),
             None => (self.summary.note.clone(), pal().muted),
         };
+        let ipad = crate::platform::ipad_layout();
+        // On the iPad, the same things as the iPad does them (#341): pills, and round icon buttons a finger's size.
+        let ipad_bar = ipad.then(|| {
+            let mut left: Vec<gpui_kit::AnyElement> = vec![];
+            if editable && busy.is_some() {
+                left.push(ipad_dialogs::pill("stop-summary", t("stop"), ipad_dialogs::Look::Ending, None).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))).into_any_element());
+            }
+            if editable && busy.is_none() && has_text && !editing {
+                let again = ipad_dialogs::pill("make-summary", t("write-again"), ipad_dialogs::Look::Plain, Some("ipad/sparkle"));
+                left.push(if can_make { again.on_click(cx.listener(|this, _, _, cx| this.make_summary(cx))).into_any_element() } else { again.opacity(0.4).into_any_element() });
+            }
+            let mut right: Vec<gpui_kit::AnyElement> = vec![];
+            if has_text && !editing {
+                let (markdown, plain) = (text.clone(), summary::plain_text(&text));
+                let workbench = cx.entity().downgrade();
+                right.push(
+                    Button::new("copy-summary")
+                        .ghost()
+                        .child(icon("ipad/copy").size(px(19.)))
+                        .w(px(44.))
+                        .h(px(44.))
+                        .rounded_full()
+                        .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
+                            let (plain, markdown, a, b) = (plain.clone(), markdown.clone(), workbench.clone(), workbench.clone());
+                            menu.min_w(px(240.))
+                                .item(PopupMenuItem::new(t("copy-as-plain-text")).on_click(move |_, _, cx| {
+                                    let _ = a.update(cx, |this, cx| this.copy_summary(plain.clone(), t("copied-as-plain-text"), cx));
+                                }))
+                                .item(PopupMenuItem::new(t("copy-the-markdown-source")).on_click(move |_, _, cx| {
+                                    let _ = b.update(cx, |this, cx| this.copy_summary(markdown.clone(), t("copied-the-markdown-source"), cx));
+                                }))
+                        })
+                        .into_any_element(),
+                );
+            }
+            if editable && has_text && !editing {
+                right.push(ipad_dialogs::round_icon("edit-summary", "ipad/pen").on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
+                right.push(ipad_dialogs::round_icon("clear-summary", "ipad/trash").on_click(cx.listener(|this, _, window, cx| this.clear_summary(window, cx))).into_any_element());
+            }
+            if editing {
+                right.push(ipad_dialogs::pill("edit-summary", t("done"), ipad_dialogs::Look::Main, None).on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
+            }
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px(px(12.))
+                .min_h(px(56.))
+                .flex_none()
+                .border_b_1()
+                .border_color(rgb(pal().line))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .text_size(px(13.))
+                        .text_color(rgb(state_color))
+                        .children(left)
+                        .when_some(state.clone(), |d, state| {
+                            d.when(busy.is_some() || stale, |d| d.child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(state_color)))).child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(state))
+                        }),
+                )
+                .child(div().flex().items_center().gap(px(2.)).flex_none().children(right))
+        });
         let bar = div()
             .flex()
             .items_center()
@@ -6787,6 +6960,23 @@ impl Workbench {
             .flex()
             .flex_col()
             .when(self.summary.cleared.is_some(), |d| {
+                if ipad {
+                    return d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .mb_3()
+                            .pl(px(16.))
+                            .pr(px(4.))
+                            .py(px(4.))
+                            .rounded(px(16.))
+                            .bg(rgb(pal().selected))
+                            .child(div().text_size(px(14.)).child(t("summary-deleted")))
+                            .child(ipad_dialogs::pill("undo-clear", t("undo"), ipad_dialogs::Look::Plain, Some("ipad/undo")).on_click(cx.listener(|this, _, _, cx| this.undo_clear(cx)))),
+                    );
+                }
                 d.child(div().flex().items_center().justify_between().gap_2().mb_3().px_3().py_2().bg(rgb(pal().selected)).child(div().text_small().child(t("summary-deleted"))).child(button("undo-clear", t("undo")).on_click(cx.listener(|this, _, _, cx| this.undo_clear(cx)))))
             })
             .when(busy.is_some() && has_text, |d| d.child(div().mb_3().text_small().text_color(rgb(pal().muted)).child(t("your-current-text-stays-here"))))
@@ -6803,6 +6993,10 @@ impl Workbench {
                         .child(div().text_ui().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(t("no-summary-yet")))
                         .child(div().max_w(px(240.)).text_small().text_center().text_color(rgb(pal().muted)).child(t("a-draft-from-what-was")))
                         .when(editable, |d| {
+                            if ipad {
+                                let write = ipad_dialogs::pill("make-summary", t("write-summary"), ipad_dialogs::Look::Main, Some("ipad/sparkle"));
+                                return d.child(if can_make { write.on_click(cx.listener(|this, _, _, cx| this.make_summary(cx))).into_any_element() } else { write.opacity(0.4).into_any_element() });
+                            }
                             d.child(
                                 Quiet::new("make-summary")
                                     .solid()
@@ -6814,7 +7008,7 @@ impl Workbench {
                         .when_some(destination.clone().filter(|_| editable), |d, text| d.child(div().max_w(px(260.)).text_small().text_center().text_color(rgb(pal().faint)).child(text))),
                 )
             })
-            .when(editing, |d| d.child(div().flex_1().min_h(px(320.)).border_1().border_color(rgb(pal().line)).p_2().text_ui().child(Textarea::new(&self.summary.editor))))
+            .when(editing, |d| d.child(div().flex_1().min_h(px(320.)).border_1().border_color(rgb(pal().line)).p_2().when(ipad, |d| d.rounded(px(14.)).p_3()).text_ui().child(Textarea::new(&self.summary.editor))))
             .children(reading)
             .when_some(proposed, |d, proposed| {
                 d.child(
@@ -6822,6 +7016,7 @@ impl Workbench {
                         .mt_5()
                         .border_1()
                         .border_color(rgb(pal().strong))
+                        .when(ipad, |d| d.rounded(px(16.)).overflow_hidden())
                         .flex()
                         .flex_col()
                         .child(
@@ -6844,15 +7039,26 @@ impl Workbench {
                                 .gap_2()
                                 .px_3()
                                 .pb_3()
-                                .child(Quiet::new("use-draft").solid().label(t("replace-current")).on_click(cx.listener(|this, _, _, cx| this.use_draft(cx))))
-                                .child(button("keep-current", t("keep-current")).on_click(cx.listener(|this, _, _, cx| {
-                                    this.summary.draft = None;
-                                    cx.notify();
-                                }))),
+                                .map(|d| {
+                                    let keep = |this: &mut Self, cx: &mut Context<Self>| {
+                                        this.summary.draft = None;
+                                        cx.notify();
+                                    };
+                                    if ipad {
+                                        d.child(ipad_dialogs::pill("use-draft", t("replace-current"), ipad_dialogs::Look::Main, None).on_click(cx.listener(|this, _, _, cx| this.use_draft(cx))))
+                                            .child(ipad_dialogs::pill("keep-current", t("keep-current"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(move |this, _, _, cx| keep(this, cx))))
+                                    } else {
+                                        d.child(Quiet::new("use-draft").solid().label(t("replace-current")).on_click(cx.listener(|this, _, _, cx| this.use_draft(cx))))
+                                            .child(button("keep-current", t("keep-current")).on_click(cx.listener(move |this, _, _, cx| keep(this, cx))))
+                                    }
+                                }),
                         ),
                 )
             });
-        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().child(bar).child(body)
+        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().map(|d| match ipad_bar {
+            Some(ipad_bar) => d.child(ipad_bar),
+            None => d.child(bar),
+        }).child(body)
     }
 }
 
@@ -6933,6 +7139,11 @@ fn button(id: impl Into<gpui_kit::ElementId>, label: impl Into<gpui_kit::SharedS
 }
 
 /// An icon that does something, named in a tooltip.
+/// A replay speed as the bar says it: "0.5×", "1×", "1.5×".
+fn speed_label(speed: f64) -> String {
+    format!("{speed}×")
+}
+
 fn icon_button(id: &'static str, name: &'static str, tooltip: impl Into<gpui_kit::SharedString>) -> Quiet {
     Quiet::new(id).icon(name, 14.).square(px(28.)).tooltip(tooltip)
 }
@@ -7136,6 +7347,7 @@ impl Render for Workbench {
                 // and zooms about it as they spread. The iPad sends a pan's steps as pinches that do not zoom.
                 d.on_pinch(cx.listener(move |_, e: &gpui_kit::PinchEvent, _, cx| {
                     let mut b = pinch.borrow_mut();
+                    b.fling = None;
                     match e.phase {
                         gpui_kit::TouchPhase::Started => b.pinch_at = Some(e.position),
                         gpui_kit::TouchPhase::Moved => {
@@ -7159,6 +7371,7 @@ impl Render for Workbench {
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                 window.focus(&this.focus, cx);
                 let mut b = press.borrow_mut();
+                b.fling = None;
                 // On the iPad only the Pencil draws with the tool in hand, unless fingers may mark too.
                 let may_draw = !pencil_only || crate::platform::touch_is_pencil();
                 if may_draw && b.tool_down(e.position) {
@@ -7271,32 +7484,103 @@ impl Render for Workbench {
                             match e.phase {
                                 gpui_kit::TouchPhase::Started => {
                                     let mut b = touch_ink.borrow_mut();
+                                    b.fling = None;
+                                    // Only a drag that starts on the board itself, not on what floats over it.
+                                    if !(bounds.contains(&e.start_position) && hitbox.is_hovered_at(e.start_position, window)) {
+                                        return;
+                                    }
                                     // A finger pans unless fingers may mark; the Pencil always draws the tool in hand.
                                     let may_draw = !pencil_only || crate::platform::touch_is_pencil();
-                                    // Only a drag that starts on the board itself, not on what floats over it.
-                                    if may_draw && bounds.contains(&e.start_position) && hitbox.is_hovered_at(e.start_position, window) && b.tool_down(e.start_position) {
+                                    if may_draw && b.tool_down(e.start_position) {
                                         b.tool_drag(e.position);
                                         window.prevent_default();
                                         window.refresh();
+                                        return;
                                     }
+                                    // Nothing to draw with: the touch moves the board, in any direction, rather than
+                                    // being left to GPUI's pan, which keeps to one axis. A touch that never goes
+                                    // further than a tap is handed back as a tap when it lifts.
+                                    let view = b.shown();
+                                    b.touch_pan = Some(TouchPan { from: e.start_position, view, trail: VecDeque::from([(Instant::now(), e.position)]), moved: false });
+                                    window.prevent_default();
                                 }
                                 gpui_kit::TouchPhase::Moved => {
-                                    if touch_ink.borrow_mut().tool_drag(e.position) {
+                                    let mut b = touch_ink.borrow_mut();
+                                    if let Some(pan) = b.touch_pan.as_mut() {
+                                        let d = e.position - pan.from;
+                                        pan.moved |= f32::from(d.x).hypot(f32::from(d.y)) > TAP_SLOP;
+                                        pan.trail.push_back((Instant::now(), e.position));
+                                        while pan.trail.len() > 2 && pan.trail.front().is_some_and(|(t, _)| t.elapsed() > Duration::from_millis(100)) {
+                                            pan.trail.pop_front();
+                                        }
+                                        let (moved, from) = (pan.moved, pan.view);
+                                        if moved {
+                                            b.pan_from(from, d);
+                                            window.refresh();
+                                        }
+                                        return;
+                                    }
+                                    if b.tool_drag(e.position) {
                                         window.refresh();
                                     }
                                 }
                                 gpui_kit::TouchPhase::Ended => {
-                                    let _ = touch_this.update(cx, |this, cx| this.tool_up(cx));
+                                    let pan = touch_ink.borrow_mut().touch_pan.take();
+                                    match pan {
+                                        Some(pan) if pan.moved => {
+                                            // Let go moving: the board is thrown on, unless the touch had stopped first.
+                                            let (first, last) = (pan.trail.front().copied(), pan.trail.back().copied());
+                                            if let (Some((t0, p0)), Some((t1, p1))) = (first, last) {
+                                                let dt = (t1 - t0).as_secs_f32();
+                                                if dt > 0.005 && t1.elapsed() < Duration::from_millis(60) {
+                                                    let v = [f32::from(p1.x - p0.x) / dt, f32::from(p1.y - p0.y) / dt];
+                                                    let speed = v[0].hypot(v[1]).min(6000.0);
+                                                    if speed > 150.0 {
+                                                        let k = speed / v[0].hypot(v[1]);
+                                                        touch_ink.borrow_mut().fling = Some(([v[0] * k, v[1] * k], Instant::now()));
+                                                    }
+                                                }
+                                            }
+                                            window.refresh();
+                                        }
+                                        Some(_) => {
+                                            // A tap: handed to the board as the press and release GPUI would have made
+                                            // of it, once this event is through, counting a second tap close by.
+                                            let at = e.position;
+                                            let count = {
+                                                let mut b = touch_ink.borrow_mut();
+                                                let count = match b.last_tap {
+                                                    Some((when, where_, n)) if when.elapsed() < Duration::from_millis(400) && f32::from((at - where_).x).hypot(f32::from((at - where_).y)) < 16.0 => n + 1,
+                                                    _ => 1,
+                                                };
+                                                b.last_tap = Some((Instant::now(), at, count));
+                                                count
+                                            };
+                                            window.defer(cx, move |window, cx| {
+                                                let modifiers = gpui_kit::Modifiers::default();
+                                                window.dispatch_event(gpui_kit::PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: count, first_mouse: false }), cx);
+                                                window.dispatch_event(gpui_kit::PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: count }), cx);
+                                            });
+                                        }
+                                        None => {
+                                            let _ = touch_this.update(cx, |this, cx| this.tool_up(cx));
+                                        }
+                                    }
                                 }
                                 // Taken over, as by a second finger that pans and pinches: what the first had begun
                                 // to draw goes, rather than a stray mark staying behind.
                                 gpui_kit::TouchPhase::Cancelled => {
-                                    touch_ink.borrow_mut().drop_stroke();
+                                    let mut b = touch_ink.borrow_mut();
+                                    b.touch_pan = None;
+                                    b.drop_stroke();
                                     window.refresh();
                                 }
                             }
                         });
                         let mut b = ink.borrow_mut();
+                        if b.coast() {
+                            window.request_animation_frame();
+                        }
                         // What floats over the board is sized by it: a new size is drawn once more to fit it.
                         if b.canvas.size != bounds.size {
                             window.request_animation_frame();
@@ -8186,6 +8470,8 @@ impl Render for Workbench {
         let topic_offer = self.topic_hint.clone().filter(|_| self.replay.is_none() && self.editable());
         let offering = offers_latest || page_offer.is_some() || topic_offer.is_some();
         let offers = div()
+            .id("offers")
+            .occlude()
             .flex()
             .items_center()
             .gap_2()
@@ -8334,6 +8620,9 @@ impl Render for Workbench {
                         d.child(div().text_small().text_color(rgb(if l["failed"].as_bool().unwrap_or(false) { pal().danger } else { pal().faint })).child(note))
                     })
                     .when(l["failed"].as_bool().unwrap_or(false) && editable, |d| {
+                        if crate::platform::ipad_layout() {
+                            return d.child(div().mt_1().flex().child(ipad_dialogs::pill(("retry-line", i), t("draw-it-again"), ipad_dialogs::Look::Plain, Some("ipad/redo")).h(px(36.)).px(px(14.)).text_size(px(13.5)).on_click(cx.listener(move |this, _, _, cx| this.retry_line(i, cx)))));
+                        }
                         d.child(div().mt_1().child(button(("retry-line", i), t("draw-it-again")).on_click(cx.listener(move |this, _, _, cx| this.retry_line(i, cx)))))
                     })
                     // The newest line rises a little into place as it arrives. Every line keeps the same wrapper, so
@@ -9578,7 +9867,10 @@ impl Render for Workbench {
             let card_w = (WELCOME_W - (per_row - 1.0) * 8.0) / per_row;
             let rule = || div().flex_1().h(px(1.)).bg(rgb(pal().line));
             div().absolute().size_full().flex().items_center().justify_center().pb(px(TOOLS_H + TOOLS_GAP)).child(
+                // Its buttons are tapped with the Pencil too: the board under it must not take the touch for a stroke.
                 div()
+                    .id("welcome")
+                    .occlude()
                     .w(px(WELCOME_W))
                     .max_w(gpui_kit::relative(0.92))
                     .flex()
@@ -10315,6 +10607,9 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 rebuilding: None,
                 drag: None,
                 pinch_at: None,
+                touch_pan: None,
+                fling: None,
+                last_tap: None,
                 circling: false,
                 loops: vec![],
                 drawing: None,
@@ -10333,6 +10628,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 zoom_test: zoom_test.then_some(ZoomTest { started: None, frames: vec![], last: None, base: 0.0, rebuilds: vec![], peak_rss: 0 }),
                 closed_at: None,
                 instant: start_board.is_some(),
+                pace: 1.0,
             };
             let mut live = start_meeting.unwrap_or_default();
             if start_board.is_none() {
@@ -10544,6 +10840,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     share_address: 0,
                     share_note: None,
                     share_copied: None,
+                    replay_speed: 1.0,
                     inbox,
                     save: SaveState::Idle,
                     saving: None,

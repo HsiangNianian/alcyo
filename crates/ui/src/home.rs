@@ -664,7 +664,7 @@ impl Workbench {
                     .items_center()
                     .gap(px(10.))
                     .text_size(px(if narrow { 28. } else { 34. }))
-                    .child(gpui_kit::img("icons/ipad/halcy.svg").flex_none().w(px(30.)).h(px(24.)))
+                    .child(theme::app_icon(if narrow { 30. } else { 36. }))
                     .child(div().font_weight(FontWeight::BOLD).whitespace_nowrap().child(t("meetings")))
                     .map(|brand| self.intro_brand(brand, window)),
             )
@@ -949,7 +949,7 @@ impl Workbench {
             .bg(rgb(fill))
             .when_some(edge, |d, edge| d.shadow(vec![ring(rgb(edge).into(), 1.)]))
             .child(dots(6., 1.1, alpha(0xff_ff_ff, 0.16), vignette).absolute().size_full())
-            .child(gpui_kit::img("icons/ipad/halcy.svg").absolute().right(px(18.)).top(px(16.)).w(px(96.)).h(px(76.)))
+            .child(div().absolute().right(px(16.)).top(px(14.)).child(theme::app_icon(68.)))
             .child(
                 div()
                     .absolute()

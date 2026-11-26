@@ -8,10 +8,18 @@ use std::sync::Arc;
 use std::time::Instant;
 
 /// Where playback is, in seconds, shared with the output's thread as the bits of an f64.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Shared {
     at: Arc<AtomicU64>,
     playing: Arc<AtomicBool>,
+    /// How fast it plays, as the bits of an f64: 1 as it was said.
+    speed: Arc<AtomicU64>,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self { at: Arc::default(), playing: Arc::default(), speed: Arc::new(AtomicU64::new(1f64.to_bits())) }
+    }
 }
 
 impl Shared {
@@ -21,6 +29,10 @@ impl Shared {
 
     fn set(&self, seconds: f64) {
         self.at.store(seconds.to_bits(), Ordering::Relaxed);
+    }
+
+    fn speed(&self) -> f64 {
+        f64::from_bits(self.speed.load(Ordering::Relaxed))
     }
 }
 
@@ -64,7 +76,7 @@ impl Player {
     /// Where playback is, in seconds; it stops at the end.
     pub fn at(&self) -> f64 {
         let at = match self.clock {
-            Some((since, from)) if self._stream.is_none() => from + since.elapsed().as_secs_f64(),
+            Some((since, from)) if self._stream.is_none() => from + since.elapsed().as_secs_f64() * self.shared.speed(),
             _ => self.shared.get(),
         };
         at.min(self.seconds)
@@ -85,6 +97,18 @@ impl Player {
         self.shared.playing.store(false, Ordering::Relaxed);
         self.shared.set(at);
         self.clock = None;
+    }
+
+    /// Play faster or slower, from where it is: 2 is twice as fast. The sound is read faster as a tape would be, so its
+    /// pitch goes with it.
+    pub fn set_speed(&mut self, speed: f64) {
+        let at = self.at();
+        self.shared.speed.store(speed.clamp(0.25, 4.0).to_bits(), Ordering::Relaxed);
+        self.seek(at);
+    }
+
+    pub fn speed(&self) -> f64 {
+        self.shared.speed()
     }
 
     pub fn seek(&mut self, seconds: f64) {
@@ -122,7 +146,7 @@ fn open(samples: Arc<Vec<f32>>, shared: Shared) -> Result<cpal::Stream> {
                 0.0
             }
         };
-        shared.set((at + step) / f64::from(SAMPLE_RATE));
+        shared.set((at + step * shared.speed()) / f64::from(SAMPLE_RATE));
         value
     };
     let on_error = |e: cpal::Error| eprintln!("replay sound: {e}");
@@ -177,5 +201,13 @@ mod tests {
         assert_eq!(player.at(), held, "paused, it holds");
         player.seek(99.0);
         assert_eq!(player.at(), 10.0, "never past the end");
+        // Twice as fast, the time kept runs twice as fast.
+        player.seek(1.0);
+        player.set_speed(2.0);
+        player.play();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let at = player.at();
+        assert!(at > 1.18 && at < 1.6, "{at}");
+        assert_eq!(player.speed(), 2.0);
     }
 }

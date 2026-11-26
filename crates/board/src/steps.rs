@@ -183,7 +183,8 @@ pub fn steps_heard(times: &[f64], seconds: f64) -> usize {
     times.partition_point(|t| *t <= seconds)
 }
 
-pub const SPEEDS: [f64; 3] = [1.0, 2.0, 4.0];
+/// The speeds a replay offers, slow to fast; 1 is the meeting's own pace.
+pub const SPEEDS: [f64; 4] = [0.5, 1.0, 1.5, 2.0];
 
 /// Where a replay has got to. It holds no board: the steps are passed in, as they belong to the meeting.
 #[derive(Clone, Debug, PartialEq)]
@@ -210,7 +211,7 @@ fn gap_ms(steps: &[Value], i: usize) -> f64 {
 
 impl Player {
     pub fn new(total: usize) -> Self {
-        Self { at: 0, total, playing: true, speed: SPEEDS[0] }
+        Self { at: 0, total, playing: true, speed: 1.0 }
     }
 
     /// Move to a step, stopping at the end. Says how far it moved, or `None` if it did not.
@@ -356,8 +357,12 @@ mod tests {
         p.seek(2);
         assert_eq!(p.wait_ms(&steps), 3000.0, "a long silence is cut");
         p.next_speed();
+        assert_eq!(p.wait_ms(&steps), 2000.0, "1.5 times as fast");
+        p.next_speed();
         assert_eq!(p.wait_ms(&steps), 1500.0);
         p.next_speed();
+        assert_eq!(p.speed, 0.5, "round to the slowest");
+        assert_eq!(p.wait_ms(&steps), 6000.0);
         p.next_speed();
         assert_eq!(p.speed, 1.0);
     }

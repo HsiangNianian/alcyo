@@ -292,7 +292,8 @@ const PICTOGRAMS: [(&str, &str); 43] = [
 ];
 
 /// The iPad's line icons, drawn for touch at 22 pt (crates/ui/src/ipad.rs), under `icons/ipad/`.
-const IPAD_ICONS: [(&str, &str); 23] = [
+const IPAD_ICONS: [(&str, &str); 24] = [
+    ("icons/ipad/copy.svg", include_str!("../icons/ipad/copy.svg")),
     ("icons/ipad/airplay.svg", include_str!("../icons/ipad/airplay.svg")),
     ("icons/ipad/cc.svg", include_str!("../icons/ipad/cc.svg")),
     ("icons/ipad/chevron-down.svg", include_str!("../icons/ipad/chevron-down.svg")),
@@ -318,9 +319,8 @@ const IPAD_ICONS: [(&str, &str); 23] = [
     ("icons/ipad/zoom.svg", include_str!("../icons/ipad/zoom.svg")),
 ];
 
-/// The iPad's meetings page (crates/ui/src/home.rs): its line icons, and the kingfisher in its colours.
-const HOME_ICONS: [(&str, &str); 7] = [
-    ("icons/ipad/halcy.svg", include_str!("../icons/ipad/halcy.svg")),
+/// The iPad's meetings page (crates/ui/src/home.rs): its line icons.
+const HOME_ICONS: [(&str, &str); 6] = [
     ("icons/ipad/import.svg", include_str!("../icons/ipad/import.svg")),
     ("icons/ipad/pen.svg", include_str!("../icons/ipad/pen.svg")),
     ("icons/ipad/pin.svg", include_str!("../icons/ipad/pin.svg")),
@@ -371,6 +371,23 @@ impl AssetSource for Assets {
 /// An icon by its file name.
 pub fn icon(name: &str) -> Icon {
     Icon::empty().path(format!("icons/{name}.svg"))
+}
+
+/// The app's icon, as on the home screen (packaging/icons, #355): the kingfisher on its white rounded tile, `size`
+/// points square. From the 192 px picture up to 64 pt and the 512 px one above, so it stays sharp at three pixels
+/// to a point; each is decoded once.
+pub fn app_icon(size: f32) -> gpui_kit::Img {
+    use std::sync::{Arc, OnceLock};
+    static SMALL: OnceLock<Arc<gpui_kit::Image>> = OnceLock::new();
+    static LARGE: OnceLock<Arc<gpui_kit::Image>> = OnceLock::new();
+    let (cell, bytes): (_, &'static [u8]) = if size <= 64.0 {
+        (&SMALL, include_bytes!("../../../packaging/icons/source/alcyo-192.png"))
+    } else {
+        (&LARGE, include_bytes!("../../../packaging/icons/source/alcyo-512.png"))
+    };
+    let image = cell.get_or_init(|| Arc::new(gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, bytes.to_vec()))).clone();
+    use gpui_kit::Styled as _;
+    gpui_kit::img(image).flex_none().size(px(size))
 }
 
 /// The interface's fonts, built into the program (crates/fonts), registered once at start.

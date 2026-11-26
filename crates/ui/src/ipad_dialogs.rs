@@ -21,14 +21,14 @@ fn well() -> Hsla {
 
 /// What a dialog's button does: the main thing to do, something beside it, or ending something.
 #[derive(Clone, Copy, PartialEq)]
-enum Look {
+pub(super) enum Look {
     Main,
     Plain,
     Ending,
 }
 
 /// A button as the iPad draws one: a pill, 44 pt tall for a finger.
-fn pill(id: impl Into<gpui_kit::ElementId>, text: impl Into<gpui_kit::SharedString>, look: Look, glyph: Option<&str>) -> gpui_kit::Stateful<gpui_kit::Div> {
+pub(super) fn pill(id: impl Into<gpui_kit::ElementId>, text: impl Into<gpui_kit::SharedString>, look: Look, glyph: Option<&str>) -> gpui_kit::Stateful<gpui_kit::Div> {
     let p = pal();
     div()
         .id(id)
@@ -52,6 +52,24 @@ fn pill(id: impl Into<gpui_kit::ElementId>, text: impl Into<gpui_kit::SharedStri
         .active(|d| d.opacity(0.7))
         .when_some(glyph.map(str::to_string), |d, glyph| d.child(icon(&glyph).size(px(17.))))
         .child(text.into())
+}
+
+/// An icon button as the iPad draws one: round, 44 pt, with a soft fill under a finger.
+pub(super) fn round_icon(id: impl Into<gpui_kit::ElementId>, glyph: &str) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let p = pal();
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(44.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .cursor_pointer()
+        .text_color(rgb(p.text))
+        .hover(|d| d.bg(well()))
+        .active(|d| d.bg(well()).opacity(0.7))
+        .child(icon(glyph).size(px(19.)))
 }
 
 /// A short note in a rounded box of its own: what to know before going on.
@@ -192,7 +210,7 @@ impl Workbench {
         let copy = if copied {
             pill("share-copy", t("share-copied"), Look::Plain, None).text_color(rgb(p.accent))
         } else {
-            pill("share-copy", t("share-copy-link"), Look::Plain, Some("copy")).on_click(cx.listener(move |this, _, _, cx| this.copy_share_link(link.clone(), cx)))
+            pill("share-copy", t("share-copy-link"), Look::Plain, Some("ipad/copy")).on_click(cx.listener(move |this, _, _, cx| this.copy_share_link(link.clone(), cx)))
         };
         div()
             .id("share-panel")
