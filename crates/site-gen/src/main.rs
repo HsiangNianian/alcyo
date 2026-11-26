@@ -274,8 +274,9 @@ fn render(page: &Page, bundled_head: &str, bundled_body: &str, assets: &Assets) 
   <meta name="description" content="{description}">
   {social}
   <meta name="theme-color" content="#000000">
-  <link rel="icon" href="{prefix}favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="{prefix}favicon-32.png" sizes="32x32">
   <link rel="icon" href="{prefix}favicon.png" sizes="64x64">
+  <link rel="icon" href="{prefix}favicon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="{prefix}apple-touch-icon.png">
   {document_style}
   {bundled_head}
