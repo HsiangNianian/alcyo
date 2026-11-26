@@ -378,6 +378,7 @@ version = "0.34.1"
 dependencies = [
  "alcyo-agent",
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-export",
  "alcyo-import",
  "alcyo-keep",
@@ -405,6 +406,7 @@ dependencies = [
  "alcyo-agent",
  "alcyo-audio",
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-export",
  "alcyo-fonts",
  "alcyo-import",

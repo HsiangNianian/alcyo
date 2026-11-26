@@ -418,8 +418,14 @@ pub fn write(input: &Input, options: &Options, out: &Path) -> Result<Written> {
     let part = out.with_file_name(format!(".{name}.part"));
     let written = (|| -> Result<()> {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&part).with_context(|| format!("writing {}", part.display()))?);
-        let deflated = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(true);
-        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true);
+        // Dated when made, rather than the format's 1980.
+        let now = Local::now();
+        let when = {
+            use chrono::{Datelike, Timelike};
+            zip::DateTime::from_date_and_time(now.year() as u16, now.month() as u8, now.day() as u8, now.hour() as u8, now.minute() as u8, now.second() as u8).unwrap_or_default()
+        };
+        let deflated = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(true).last_modified_time(when);
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true).last_modified_time(when);
         zip.start_file("manifest.json", deflated)?;
         zip.write_all(manifest.as_bytes())?;
         for entry in &entries {
@@ -551,6 +557,10 @@ mod tests {
         let (input, _) = sample(&dir);
         let out = dir.join("out.zip");
         let written = write(&input, &Options::default(), &out).unwrap();
+        // To look at one, or try `alcyo-tools diag` on it.
+        if let Some(keep) = std::env::var_os("ALCYO_KEEP_SAMPLE_BUNDLE") {
+            std::fs::copy(&out, keep).unwrap();
+        }
         let files = read_all(&out);
         let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
         for name in ["manifest.json", "meeting/meeting.json", "meeting/settings.json", "transcript/transcript.jsonl", "transcript/transcript.txt", "board/page-1/steps.jsonl", "board/page-1/graph.json", "board/page-1/annotations.json", "board/page-1/final.png", "board/page-1/final.svg", "board/consolidations.jsonl", "events/events.jsonl", "logs/app.log", "config/remote.json", "audio/audio-1.opus"] {

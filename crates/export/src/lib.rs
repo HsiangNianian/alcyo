@@ -293,6 +293,20 @@ impl Frozen {
     }
 }
 
+impl Frozen {
+    /// Every board as it looks, as a PNG (`None` if it could not be drawn) and an SVG: for a diagnostic bundle.
+    pub fn every_board(self) -> Vec<(Option<Vec<u8>>, String)> {
+        let title = self.doc.title.clone();
+        self.pages
+            .into_iter()
+            .map(|page| {
+                let drawn = page.draw();
+                (ink::png(&drawn).ok(), ink::svg(&drawn, &title))
+            })
+            .collect()
+    }
+}
+
 /// `alcyo-20260102-0304.md`.
 pub fn file_name(kind: Kind) -> String {
     format!("alcyo-{}.{}", chrono::Local::now().format("%Y%m%d-%H%M"), kind.extension())

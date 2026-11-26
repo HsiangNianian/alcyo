@@ -205,7 +205,7 @@ pub fn report(bundle: &Bundle, summary: &Summary, stall_ms: u64) -> String {
         }
     };
     section(&mut out, "model lifecycle", &summary.lifecycle);
-    section(&mut out, &format!("stalls of {} s or more", stall_ms / 1000), &summary.stalls);
+    section(&mut out, &format!("stalls of {} s or more", stall_ms as f64 / 1000.0), &summary.stalls);
     section(&mut out, "errors", &summary.errors);
     out += &format!("\n== speakers over time ({} in all)\n", summary.speakers.last().map_or(0, |s| s.1));
     for (minute, n) in &summary.speakers {

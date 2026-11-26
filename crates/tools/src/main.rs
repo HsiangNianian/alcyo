@@ -15,6 +15,8 @@
 //!   score-board <case.json> <meeting.json>   A board as a meeting keeps it, scored against a case's answer the way
 //!              agent-eval scores a model's: for a board drawn by hand as a target, or one a model drew.
 //!   ink-sample <root> <out.png> [--size <px>] [--messy <0..1>]... <text>...   A sheet of the board's handwriting.
+//!   diag <bundle.zip> [--stall <s>] [--render <root> <out-dir>]   A diagnostic bundle's timeline: the model's
+//!              lifecycle, stalls, errors, speakers over time; --render draws each board after each step.
 //!   demo-record <root> <sample-id> <out.json> <model> --title … --name … --audio … --credit …
 //!   <model> is --llm <url> | --deepseek | --remote <url> --model <name> | --saved; see model_flags.rs.
 
@@ -22,6 +24,7 @@ mod agent_eval;
 mod eval_report;
 mod check;
 mod demo_record;
+mod diag;
 mod ink_sample;
 mod onboarding_art;
 mod export;
@@ -47,6 +50,7 @@ fn main() -> Result<()> {
         Some("summary-eval") => summary_eval::run(args),
         Some("meetings-check") => meetings::run(args),
         Some("export") => export::run(args),
+        Some("diag") => diag::run(args),
         Some("read-pdf") => read_pdf::run(args),
         Some("fetch") => fetch::run(args),
         Some("sign") => release::sign(args),

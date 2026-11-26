@@ -82,6 +82,7 @@ impl Workbench {
             Kind::SearchIndex => t("storage-search-index").to_string(),
             Kind::Meetings => t("storage-meetings").to_string(),
             Kind::Temporary => t("storage-temporary").to_string(),
+            Kind::Logs => t("storage-logs").to_string(),
         }
     }
 
@@ -98,6 +99,7 @@ impl Workbench {
             Kind::SearchIndex => t("storage-hint-search-index"),
             Kind::Meetings => t("storage-hint-meetings"),
             Kind::Temporary => t("storage-hint-temporary"),
+            Kind::Logs => t("storage-hint-logs"),
         }
     }
 
@@ -108,7 +110,7 @@ impl Workbench {
             then(self, cx);
             return;
         }
-        self.session().pause_local();
+        self.session().pause_local_because("storage delete");
         cx.spawn(async move |this, cx| {
             let started = Instant::now();
             loop {
@@ -272,7 +274,7 @@ impl Workbench {
             (t("storage-models"), |k| matches!(k, Kind::BoardModel(_) | Kind::ImageReader(_) | Kind::SearchModel | Kind::Unfinished(_) | Kind::Speech)),
             (t("compile-cache"), |k| matches!(k, Kind::CompileCache(_))),
             (t("storage-your-data"), |k| matches!(k, Kind::Meetings)),
-            (t("storage-other"), |k| matches!(k, Kind::SearchIndex | Kind::Temporary)),
+            (t("storage-other"), |k| matches!(k, Kind::SearchIndex | Kind::Temporary | Kind::Logs)),
         ];
         let mut index = 0;
         for (title, belongs) in sections {

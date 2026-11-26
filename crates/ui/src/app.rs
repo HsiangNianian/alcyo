@@ -72,6 +72,9 @@ mod ipad_dialogs;
 // Settings › Storage, on the iPad and the desktop.
 #[path = "storage_page.rs"]
 mod storage_page;
+// Export diagnostic bundle (#360), on the iPad and the desktop.
+#[path = "diag_sheet.rs"]
+mod diag_sheet;
 // The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
 #[path = "home.rs"]
 mod home;
@@ -1369,6 +1372,8 @@ enum Panel {
     Speakers,
     Settings,
     Share,
+    /// Export diagnostic bundle (#360).
+    Diagnostics,
 }
 
 impl Panel {
@@ -1856,6 +1861,7 @@ struct Workbench {
     voice_dir: PathBuf,
     /// Settings › Storage.
     storage: storage_page::StorageState,
+    diag: diag_sheet::DiagState,
     binaries: PathBuf,
     download: Option<Download>,
     /// Counts proxy changes, so a download restarts once typing stops rather than at every key.
@@ -2686,6 +2692,9 @@ impl Workbench {
 
     fn pump(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
+        // What happens from here on is put down to the meeting open now, and memory is watched while listening.
+        alcyo_diag::set_meeting(Some(self.live.id()));
+        alcyo_diag::set_listening(self.pipeline.listening());
         {
             let mut ink = self.ink.borrow_mut();
             let before = (ink.base.level, ink.detail.as_ref().map(|(t, c)| (t.level, *c)));
@@ -2710,6 +2719,7 @@ impl Workbench {
             changed = true;
             match event {
                 Event::Agent(Update::Loading) => {
+                    alcyo_diag::event("model.compile_cache", serde_json::json!({ "hit": shaders_ready(&self.models) }));
                     self.status = ModelStatus::Loading;
                     self.preparing = Some(Preparing { started: Instant::now(), first_time: !shaders_ready(&self.models), done: 0, total: 0, dismissed: false });
                 }
@@ -2740,6 +2750,10 @@ impl Workbench {
                     }
                 }
                 Event::Draft { meeting, draft } => {
+                    if self.diag.drafted != Some(draft.utterance) {
+                        self.diag.drafted = Some(draft.utterance);
+                        alcyo_diag::event("speech.draft", serde_json::json!({ "utterance": draft.utterance }));
+                    }
                     if meeting == self.session().meeting() && self.editable() {
                         let (offset, max) = (f32::from(self.transcript_scroll.offset().y), f32::from(self.transcript_scroll.max_offset().y));
                         self.draft_follow = -offset >= max - 24.0;
@@ -2758,6 +2772,11 @@ impl Workbench {
                         let also = self.also_speaking(&sentence.also, speaker.as_deref());
                         let mut sentence = sentence;
                         sentence.text = self.as_glossary_writes(&sentence.text);
+                        alcyo_diag::event("speech.line", serde_json::json!({
+                            "line": self.live.lines.len(), "utterance": sentence.utterance, "start": sentence.start, "end": sentence.start + sentence.seconds,
+                            "engine": format!("{:?}", sentence.engine), "asr_ms": sentence.asr_ms as u64, "speaker": speaker, "slot": sentence.slot, "also": also,
+                            "final": true, "chars": sentence.text.chars().count(),
+                        }));
                         self.live.add_line(speaker.as_deref(), &sentence.text, Some(sentence.asr_ms));
                         self.live.mark_also(&also);
                         self.line_arrived(true);
@@ -2816,6 +2835,7 @@ impl Workbench {
                     self.notice = Some(t("local-model-slow-to-stop").to_string());
                 }
                 Event::Hearing { with, note } => {
+                    alcyo_diag::event("speech.engine", serde_json::json!({ "with": with, "note": note }));
                     if let Some(note) = note {
                         self.notice = Some(crate::ta!("apple-s-speech-recognition-did", error = format!("{note}")));
                     }
@@ -3314,10 +3334,12 @@ impl Workbench {
     /// checks again that no request is under way (`Session::shed_local`).
     fn memory_warning(&mut self) {
         eprintln!("memory warning: {:?} bytes left to the app", alcyo_llama::available_memory());
+        let (listening, waiting, summary) = (self.pipeline.listening(), self.lines_waiting(), self.summary.job.is_some());
+        alcyo_diag::event("mem.warning", serde_json::json!({ "listening": listening, "lines_waiting": waiting, "summary": summary, "model_kept": listening || waiting > 0 || summary }));
         if let Some(search) = &self.search {
             let _ = search.jobs.send(alcyo_search::service::Job::Unload);
         }
-        if self.pipeline.listening() || self.lines_waiting() > 0 || self.summary.job.is_some() {
+        if listening || waiting > 0 || summary {
             return;
         }
         self.session().shed_local(t("ipad-model-unloaded-memory").to_string());
@@ -5602,6 +5624,9 @@ impl Workbench {
             self.inputs = alcyo_audio::microphones();
             self.outputs = alcyo_audio::computer_sounds();
         }
+        if self.panel == Panel::Diagnostics {
+            self.diag_opened(cx);
+        }
         if self.panel == Panel::Library {
             if let Some(store) = &self.store {
                 match store.list() {
@@ -5838,7 +5863,19 @@ impl Workbench {
             return self.speaker.clone();
         }
         let slot_name = slot.and_then(|slot| self.slots.get(&slot)).cloned();
+        let voices_before = self.live.speakers().len();
         let by_voice = voiceprint.and_then(|print| self.live.identify_voice(print, seconds, slot_name.as_deref()));
+        let cap = self.live.participants().unwrap_or(MOST_SPEAKERS);
+        let how = match (&by_voice, slot) {
+            (Some(_), _) => "voice",
+            (None, Some(slot)) if self.slots.contains_key(&slot) => "slot",
+            _ => "last speaker",
+        };
+        let voices = self.live.speakers().len();
+        alcyo_diag::event("speech.speaker", serde_json::json!({
+            "how": how, "name": by_voice.as_ref().or(slot.and_then(|s| self.slots.get(&s))).or(self.speaker.as_ref()), "slot": slot, "slot_name": slot_name,
+            "seconds": seconds, "voiceprint": voiceprint.is_some(), "voices": voices, "new_voice": voices > voices_before, "cap": cap, "at_cap": voices >= cap,
+        }));
         match (by_voice, slot) {
             (Some(name), slot) => {
                 if let Some(slot) = slot {
@@ -6830,6 +6867,21 @@ impl Workbench {
             })
             .children(rows)
             .when_some(result, |d, result| d.child(result))
+            // For testing: what a developer needs to see what happened in this meeting (#360).
+            .child(
+                div()
+                    .id("export-diagnostics")
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(rgb(pal().selected)))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Diagnostics, cx)))
+                    .child(div().flex_1().min_w_0().child(div().text_ui().child(t("diag-title"))).child(div().text_small().text_color(rgb(pal().muted)).child(t("diag-row-hint"))))
+                    .child(div().pt(px(2.)).font_family(theme::MONO).text_small().text_color(rgb(pal().faint)).whitespace_nowrap().child(".zip →")),
+            )
     }
 
     fn summary_panel(&mut self, editable: bool, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
@@ -9713,6 +9765,7 @@ impl Render for Workbench {
         let summary_panel = (self.panel == Panel::Summary).then(|| self.summary_panel(editable, cx));
         let export_panel = (self.panel == Panel::Export).then(|| self.export_panel(cx));
         let share_panel = (self.panel == Panel::Share).then(|| self.share_panel(cx));
+        let diag_panel = (self.panel == Panel::Diagnostics).then(|| self.diag_panel(cx));
         let import_panel = (self.panel == Panel::Import).then(|| self.import_panel(cx));
         let speakers_panel = (self.panel == Panel::Speakers).then(|| self.speakers_panel(editable, cx));
         // A dialog for what is done in one go, over a dimmed window; clicking outside closes it.
@@ -9771,10 +9824,11 @@ impl Render for Workbench {
                         .child(body.px_5().pb_5().pt_2()),
                 )
         };
-        let in_dialog = matches!(self.panel, Panel::Export | Panel::Import | Panel::Share);
+        let in_dialog = matches!(self.panel, Panel::Export | Panel::Import | Panel::Share | Panel::Diagnostics);
         let mut overlay: Option<gpui_kit::AnyElement> = match self.panel {
             Panel::Export => export_panel.map(|body| dialog(t("export"), body, cx).into_any_element()),
             Panel::Share => share_panel.map(|body| dialog(t("share"), body, cx).into_any_element()),
+            Panel::Diagnostics => diag_panel.map(|body| dialog(t("diag-title"), body, cx).into_any_element()),
             Panel::Import => import_panel.map(|body| dialog(t("import"), body, cx).into_any_element()),
             Panel::Library => Some(
                 div()
@@ -10555,6 +10609,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     Some("speakers") => Panel::Speakers,
                     Some("settings") => Panel::Settings,
                     Some("share") => Panel::Share,
+                    Some("diagnostics") => Panel::Diagnostics,
                     _ => Panel::Transcript,
                 }
             }
@@ -10617,6 +10672,12 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     let inbox = store.as_ref().filter(|_| INBOX_ON).map(|_| Inbox::new(data.clone()));
     let reopen = if turns.is_empty() && wav.is_none() { open.or_else(|| store.as_ref().and_then(Store::last_opened)) } else { None };
     let reads_meetings = store.is_some();
+    // The app log and the events behind a diagnostic bundle (#360): for real use, not a sample or measurement.
+    if store.is_some() {
+        alcyo_diag::init(&data);
+        alcyo_diag::capture_stderr();
+        alcyo_diag::set_memory_probe(alcyo_llama::available_memory);
+    }
     let speech = Speech { helper: Speech::helper_path(), system: settings.system_speech, language: settings.speech_language.clone() };
     let pipeline = Pipeline::start(backend, guidance, resources.voice, speech, Script { turns, wav });
     pipeline.session().set_glossary(Glossary::parse(&settings.glossary));
@@ -10985,6 +11046,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     search_dir,
                     voice_dir,
                     storage: Default::default(),
+                    diag: Default::default(),
                     binaries,
                     download: None,
                     proxy_generation: 0,
@@ -11034,6 +11096,14 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 if cfg!(target_os = "ios") {
                     let lifecycle = cx.entity().downgrade();
                     cx.on_app_lifecycle(move |phase, cx| {
+                        let name = match &phase {
+                            AppLifecyclePhase::Background => "background",
+                            AppLifecyclePhase::Disconnected => "disconnected",
+                            AppLifecyclePhase::Foreground => "foreground",
+                            AppLifecyclePhase::Active => "active",
+                            AppLifecyclePhase::Inactive => "inactive",
+                        };
+                        alcyo_diag::event("app.lifecycle", serde_json::json!({ "phase": name }));
                         let _ = lifecycle.update(cx, |this, _| match phase {
                             AppLifecyclePhase::Background | AppLifecyclePhase::Disconnected => this.session().pause_local(),
                             AppLifecyclePhase::Foreground | AppLifecyclePhase::Active => this.session().resume_local(),
@@ -11048,6 +11118,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     .detach();
                     #[cfg(target_os = "ios")]
                     cx.on_app_quit(|_, _| {
+                        alcyo_diag::event("app.quit", serde_json::json!({}));
+                        alcyo_diag::flush(Duration::from_millis(300));
                         alcyo_llama::quitting();
                         async {}
                     })

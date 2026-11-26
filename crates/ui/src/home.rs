@@ -466,6 +466,15 @@ impl Workbench {
         }
     }
 
+    /// A meeting's diagnostic bundle from its card (#360): it opens, with the bundle's sheet over it.
+    fn home_diagnostics(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.home.menu = None;
+        self.open_meeting(id, cx);
+        if self.live.id() == id {
+            self.toggle_panel(Panel::Diagnostics, cx);
+        }
+    }
+
     /// The meeting screen on the iPad, with a card still growing into it.
     pub(super) fn home_zoom_over(&mut self, screen: AnyElement, window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
         self.home.shown = false;
@@ -1288,7 +1297,7 @@ impl Workbench {
         let screen = window.viewport_size();
         const W: f32 = 232.;
         const ROW: f32 = 44.;
-        let h = ROW * 4. + 9.;
+        let h = ROW * 5. + 9.;
         let x = (f32::from(at.x) - 12.).clamp(12., f32::from(screen.width) - W - 12.);
         let y = (f32::from(at.y) + 8.).min(f32::from(screen.height) - h - 24.).max(12.);
         let row = |key: &'static str, name: &'static str, label: &'static str, danger: bool| {
@@ -1307,7 +1316,7 @@ impl Workbench {
                 .child(label)
                 .child(icon(&format!("ipad/{name}")).size(px(20.)))
         };
-        let (a, b, c, d) = (id.clone(), id.clone(), id.clone(), id.clone());
+        let (a, b, c, d, e) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         Some(
             div()
                 .absolute()
@@ -1335,6 +1344,7 @@ impl Workbench {
                         })))
                         .child(row("home-menu-rename", "pen", t("rename"), false).on_click(cx.listener(move |this, _, window, cx| this.home_start_rename(&b, window, cx))))
                         .child(row("home-menu-export", "export", t("export"), false).on_click(cx.listener(move |this, _, _, cx| this.home_export(&c, cx))))
+                        .child(row("home-menu-diag", "info", t("diag-export-menu"), false).on_click(cx.listener(move |this, _, _, cx| this.home_diagnostics(&e, cx))))
                         .child(div().h(px(1.)).mx(px(0.)).my(px(0.5)).bg(rgb(p.line)))
                         .child(row("home-menu-delete", "trash", t("delete"), true).on_click(cx.listener(move |this, _, _, cx| {
                             this.home.menu = None;
