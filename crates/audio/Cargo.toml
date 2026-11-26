@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 alcyo-keep.workspace = true
+alcyo-diag.workspace = true
 cpal = "0.18"
 sherpa-onnx = "2.0.1"
 serde_json.workspace = true

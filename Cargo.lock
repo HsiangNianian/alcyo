@@ -158,6 +158,7 @@ name = "alcyo-agent"
 version = "0.34.1"
 dependencies = [
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-llama",
  "alcyo-models",
  "anyhow",
@@ -195,6 +196,7 @@ name = "alcyo-audio"
 version = "0.34.1"
 dependencies = [
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-keep",
  "anyhow",
  "cpal",

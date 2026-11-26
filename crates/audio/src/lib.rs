@@ -851,11 +851,13 @@ impl Ear {
         // Waiting at every step is for measuring, where the machine's load must not change the result.
         if !self.wait_for_turns && turns.too_slow() {
             eprintln!("the diarization model cannot keep up on this machine, so sentences are no longer split between speakers");
+            alcyo_diag::event("speech.diarization", serde_json::json!({ "what": "too slow, given up", "waiting": self.waiting.len() }));
             self.turns = None;
             return self.release(all, heard);
         }
         if turns.stalled() {
             eprintln!("the diarization model stopped answering, so sentences are no longer split between speakers");
+            alcyo_diag::event("speech.diarization", serde_json::json!({ "what": "stalled, given up", "waiting": self.waiting.len() }));
             self.turns = None;
             return self.release(all, heard);
         }
@@ -865,6 +867,8 @@ impl Ear {
         let behind = !self.wait_for_turns && turns.behind();
         if behind {
             eprintln!("the diarization model fell behind; dropping what it has not heard and starting a new stream");
+            let backlog: usize = self.waiting.iter().map(|(samples, _, _)| samples.len()).sum();
+            alcyo_diag::event("speech.diarization", serde_json::json!({ "what": "behind, catching up", "waiting": self.waiting.len(), "backlog_s": backlog as f64 / f64::from(SAMPLE_RATE) }));
         }
         while let Some((samples, start, _)) = self.waiting.front() {
             let Some(turns) = self.turns.as_ref() else { break };

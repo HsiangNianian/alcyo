@@ -239,6 +239,69 @@ impl Provider {
     fn send_within(&self, url: &str, body: &Value, limit: Duration, attempts: u32) -> Result<Value> {
         let mut last = anyhow!("no attempt made");
         for attempt in 0..attempts {
+            let started = Instant::now();
+            let result = self.attempt(url, body, limit);
+            self.note_request(body, attempt + 1, started.elapsed(), &result);
+            match result {
+                Ok(reply) => return Ok(reply),
+                Err(Attempt::Final(e)) => return Err(e),
+                Err(Attempt::Again(e)) => last = e,
+            }
+            if attempt + 1 < attempts {
+                thread::sleep(Duration::from_secs(2_u64.pow(attempt + 1)));
+            }
+        }
+        Err(last)
+    }
+
+    /// One request and its reply, noted in the diagnostic events: what it was for, its size, its words (kept, and left
+    /// out of a bundle unless asked for), how long it took and what it used.
+    fn note_request(&self, body: &Value, attempt: u32, took: Duration, result: &std::result::Result<Value, Attempt>) {
+        let messages = body["messages"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let prompt_chars: usize = messages.iter().map(|m| m["content"].as_str().map_or_else(|| m["content"].to_string().len(), |c| c.chars().count())).sum();
+        let purpose = match alcyo_diag::purpose() {
+            "" if body.get("grammar").is_some() || body.get("tools").is_some() => "turn",
+            "" => "chat",
+            said => said,
+        };
+        let model = match self {
+            Self::Remote { model, .. } => model.clone(),
+            Self::Local { .. } => "local".into(),
+            #[cfg(test)]
+            Self::Scripted(_) => "scripted".into(),
+        };
+        let mut fields = json!({
+            "purpose": purpose,
+            "model": model,
+            "attempt": attempt,
+            "ms": took.as_millis() as u64,
+            "messages": messages.len(),
+            "prompt_chars": prompt_chars,
+            "max_tokens": body["max_tokens"],
+            "prompt": alcyo_diag::clip(&Value::from(messages.to_vec()).to_string(), alcyo_diag::KEEP_CHARS),
+        });
+        match result {
+            Ok(reply) => {
+                let said = &reply["choices"][0]["message"];
+                let words = said["content"].as_str().map(str::to_string).unwrap_or_default();
+                let calls = said.get("tool_calls").filter(|c| !c.is_null()).map(Value::to_string).unwrap_or_default();
+                fields["response"] = json!(alcyo_diag::clip(&format!("{words}{calls}"), alcyo_diag::KEEP_CHARS));
+                if let Some(thinking) = reasoning(reply) {
+                    fields["thinking"] = json!(alcyo_diag::clip(thinking, alcyo_diag::KEEP_CHARS));
+                }
+                fields["tokens_in"] = reply["usage"]["prompt_tokens"].clone();
+                fields["tokens_out"] = reply["usage"]["completion_tokens"].clone();
+                fields["tokens_cached"] = reply["usage"]["prompt_cache_hit_tokens"].clone();
+                fields["finish"] = reply["choices"][0]["finish_reason"].clone();
+            }
+            Err(Attempt::Final(e) | Attempt::Again(e)) => fields["error"] = json!(alcyo_diag::clip(&format!("{e:#}"), 600)),
+        }
+        alcyo_diag::event("model.request", fields);
+    }
+
+    /// One try at a request: its reply, or why not and whether another try may do better.
+    fn attempt(&self, url: &str, body: &Value, limit: Duration) -> std::result::Result<Value, Attempt> {
+        {
             let mut call = http(url).post(url).timeout(limit);
             if let Self::Remote { key, .. } = self {
                 call = call.set("Authorization", &format!("Bearer {key}"));
@@ -248,33 +311,33 @@ impl Provider {
                 Ok(reply) => {
                     let kind = reply.content_type().to_string();
                     match reply.into_string() {
-                        Ok(text) => {
-                            return serde_json::from_str(&text).map_err(|e| {
-                                anyhow!("the model's reply is not JSON ({kind}, {} bytes, {} ms): {e}; it began: {}", text.len(), started.elapsed().as_millis(), self.excerpt(&text))
-                            });
-                        }
+                        Ok(text) => serde_json::from_str(&text).map_err(|e| {
+                            Attempt::Final(anyhow!("the model's reply is not JSON ({kind}, {} bytes, {} ms): {e}; it began: {}", text.len(), started.elapsed().as_millis(), self.excerpt(&text)))
+                        }),
                         // The connection broke mid-reply; another attempt may get all of it.
-                        Err(e) => last = anyhow!("the model's reply broke off after {} ms: {e}", started.elapsed().as_millis()),
+                        Err(e) => Err(Attempt::Again(anyhow!("the model's reply broke off after {} ms: {e}", started.elapsed().as_millis()))),
                     }
                 }
                 // A rejected request will not improve by retrying, and its body names the reason.
                 Err(ureq::Error::Status(code, reply)) if code != 429 && code < 500 => {
-                    return Err(anyhow!("model answered {code}: {}", self.excerpt(&reply.into_string().unwrap_or_default())));
+                    Err(Attempt::Final(anyhow!("model answered {code}: {}", self.excerpt(&reply.into_string().unwrap_or_default()))))
                 }
                 // The model inside this app being stopped (503), not there (refused), or out of time: asking it again
                 // here only waits longer. The session asks again once the model is back (`Model::ask`).
                 Err(ureq::Error::Status(code, reply)) if code == 503 && matches!(self, Self::Local { .. }) => {
-                    return Err(anyhow!("model answered {code}: {}", self.excerpt(&reply.into_string().unwrap_or_default())));
+                    Err(Attempt::Final(anyhow!("model answered {code}: {}", self.excerpt(&reply.into_string().unwrap_or_default()))))
                 }
-                Err(e @ ureq::Error::Transport(_)) if matches!(self, Self::Local { .. }) => return Err(anyhow!("model request failed: {e}")),
-                Err(e) => last = anyhow!("model request failed: {e}"),
-            }
-            if attempt + 1 < attempts {
-                thread::sleep(Duration::from_secs(2_u64.pow(attempt + 1)));
+                Err(e @ ureq::Error::Transport(_)) if matches!(self, Self::Local { .. }) => Err(Attempt::Final(anyhow!("model request failed: {e}"))),
+                Err(e) => Err(Attempt::Again(anyhow!("model request failed: {e}"))),
             }
         }
-        Err(last)
     }
+}
+
+/// Why a try at a request did not answer, and whether to try again.
+enum Attempt {
+    Final(anyhow::Error),
+    Again(anyhow::Error),
 }
 
 impl Provider {
@@ -937,10 +1000,10 @@ impl Model {
         Busy(self.busy.clone())
     }
 
-    /// Stop a server taken out of `server`. One that does not stop in time is told about once, plainly: the next start
-    /// waits for it, and lines wait meanwhile.
-    fn stop(&self, running: Running) {
-        if let Err(e) = running.stop() {
+    /// Stop a server taken out of `server`, for `cause` (noted in the diagnostic events). One that does not stop in time
+    /// is told about once, plainly: the next start waits for it, and lines wait meanwhile.
+    fn stop(&self, running: Running, cause: &str) {
+        if let Err(e) = stop_noted(running, cause) {
             eprintln!("stopping the local model: {e:#}");
             let _ = self.updates.send(Update::SlowToStop);
         }
@@ -967,11 +1030,11 @@ impl Model {
                     }
                     // Another model chosen since the check above, which the running server cannot switch to; or the
                     // server ended by itself.
-                    let stale = server.as_mut().is_some_and(|(running, _, model)| model != &local.model || running.ended());
-                    if stale {
+                    let stale = server.as_mut().and_then(|(running, _, model)| if model != &local.model { Some("switch") } else if running.ended() { Some("ended by itself") } else { None });
+                    if let Some(cause) = stale {
                         *self.local_base.lock().expect("base lock") = None;
                         if let Some((running, _, _)) = server.take() {
-                            self.stop(running);
+                            self.stop(running, cause);
                         }
                     }
                     if server.is_none() && !self.may_start_here() {
@@ -987,8 +1050,20 @@ impl Model {
                     }
                     if server.is_none() {
                         let _ = self.updates.send(Update::Loading);
-                        let (running, base) = start_llama(&local)?;
+                        let started = Instant::now();
+                        let name = local.model.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        alcyo_diag::event("model.start", json!({ "model": name, "bytes": std::fs::metadata(&local.model).map(|m| m.len()).ok() }));
+                        let (running, base) = match start_llama(&local) {
+                            Ok(up) => up,
+                            Err(e) => {
+                                alcyo_diag::event("model.start_failed", json!({ "model": name, "ms": started.elapsed().as_millis() as u64, "error": format!("{e:#}") }));
+                                return Err(e);
+                            }
+                        };
+                        let loaded = started.elapsed();
+                        alcyo_diag::event("model.loaded", json!({ "model": name, "ms": loaded.as_millis() as u64 }));
                         prepare_prompt(&base, &self.updates);
+                        alcyo_diag::event("model.ready", json!({ "model": name, "ms": started.elapsed().as_millis() as u64, "prepare_ms": (started.elapsed() - loaded).as_millis() as u64 }));
                         let _ = self.updates.send(Update::Ready);
                         *self.local_base.lock().expect("base lock") = Some(base.clone());
                         *server = Some((running, base, local.model.clone()));
@@ -1012,16 +1087,17 @@ impl Model {
         }
         if let Some((running, _, _)) = held.take() {
             *self.local_base.lock().expect("base lock") = None;
-            self.stop(running);
+            self.stop(running, "switch");
         }
     }
 
-    /// Stop the local server whatever is chosen, as when the iPad goes to the background. Whether one was running.
-    fn release_now(&self) -> bool {
+    /// Stop the local server whatever is chosen, as when the iPad goes to the background (`cause`). Whether one was
+    /// running.
+    fn release_now(&self, cause: &str) -> bool {
         let mut held = self.server.lock().expect("server lock");
         let Some((running, _, _)) = held.take() else { return false };
         *self.local_base.lock().expect("base lock") = None;
-        self.stop(running);
+        self.stop(running, cause);
         true
     }
 
@@ -1030,12 +1106,14 @@ impl Model {
         // Checked under the server's lock, which a request takes (in `provider`) after it is counted busy and before it
         // is sent: no request can start between the check and the stop.
         let mut held = self.server.lock().expect("server lock");
-        if self.busy.load(Ordering::SeqCst) > 0 {
+        let busy = self.busy.load(Ordering::SeqCst);
+        if busy > 0 {
+            alcyo_diag::event("model.shed_skipped", json!({ "cause": "memory warning", "busy": busy }));
             return false;
         }
         let Some((running, _, _)) = held.take() else { return false };
         *self.local_base.lock().expect("base lock") = None;
-        self.stop(running);
+        self.stop(running, "memory warning");
         true
     }
 
@@ -1049,8 +1127,9 @@ impl Model {
         };
         if dead {
             *self.local_base.lock().expect("base lock") = None;
+            alcyo_diag::event("model.recover", json!({ "why": "a request found nobody answering; it starts again on the next" }));
             if let Some((running, _, _)) = held.take() {
-                self.stop(running);
+                self.stop(running, "not answering");
             }
         }
     }
@@ -1081,8 +1160,38 @@ impl Model {
                 return (provider, result);
             }
             tries += 1;
+            let error = match (&provider, &result) {
+                (Err(e), _) | (_, Err(e)) => format!("{e:#}"),
+                _ => String::new(),
+            };
+            alcyo_diag::event("model.retry", json!({ "try": tries, "of": UNAVAILABLE_RETRIES, "error": alcyo_diag::clip(&error, 400) }));
             eprintln!("the local model was not there to answer; asking again ({tries} of {UNAVAILABLE_RETRIES})");
         }
+    }
+}
+
+/// Stop a server, noting in the diagnostic events why, and how long it took or that it was given up on.
+fn stop_noted(running: Running, cause: &str) -> Result<()> {
+    let started = Instant::now();
+    alcyo_diag::event("model.stop", json!({ "cause": cause }));
+    let result = running.stop();
+    let ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(()) => alcyo_diag::event("model.stopped", json!({ "cause": cause, "ms": ms })),
+        Err(e) => alcyo_diag::event("model.stop_timeout", json!({ "cause": cause, "ms": ms, "error": format!("{e:#}") })),
+    }
+    result
+}
+
+/// A backend as the diagnostic events name it: the local model's file, or the remote model.
+fn backend_name(backend: &Backend) -> String {
+    match backend {
+        Backend::ManagedLocal(local) => local.model.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        Backend::Ready(Provider::Remote { model, .. }) => format!("remote {model}"),
+        Backend::Ready(Provider::Local { base }) => format!("local server at {base}"),
+        #[cfg(test)]
+        Backend::Ready(Provider::Scripted(_)) => "scripted".into(),
+        Backend::NoModel => "none".into(),
     }
 }
 
@@ -1131,9 +1240,12 @@ impl Switcher {
             *self.local_base.lock().expect("base lock") = None;
             // A line being drawn is cut short and asked again of the new model. A stop given up on is waited for a
             // while longer: its thread ends once what held it lets go.
-            if let Err(e) = running.stop() {
+            if let Err(e) = stop_noted(running, "switch") {
                 eprintln!("stopping the old model: {e:#}");
-                if !wait_stopped(SWITCH_LINGER) {
+                let lingered = Instant::now();
+                let ended = wait_stopped(SWITCH_LINGER);
+                alcyo_diag::event("model.linger", json!({ "ended": ended, "ms": lingered.elapsed().as_millis() as u64 }));
+                if !ended {
                     return Err(e).context(NOT_FREED);
                 }
             }
@@ -1143,8 +1255,10 @@ impl Switcher {
             _ => None,
         };
         if !freed_enough(needed, available_memory()) {
+            alcyo_diag::event("model.switch_refused", json!({ "needed": needed, "available": available_memory() }));
             bail!("{NOT_FREED}");
         }
+        alcyo_diag::event("model.switch", json!({ "to": backend_name(&to) }));
         *self.backend.lock().expect("backend lock") = to;
         Ok(())
     }
@@ -1280,18 +1394,23 @@ fn prepare_prompt(base: &str, updates: &Sender<Update>) {
     let Some(mut messages) = prompts()["zh"].as_array().cloned() else { return };
     messages.push(json!({ "role": "user", "content": "你好" }));
     let body = json!({ "model": "local", "messages": messages, "temperature": 0, "max_tokens": 1, "cache_prompt": true, "stream": true, "return_progress": true, "chat_template_kwargs": { "enable_thinking": false } });
+    let started = Instant::now();
     let response = match http(&chat_url(base)).post(&chat_url(base)).send_json(&body) {
         Ok(response) => response,
         Err(e) => {
             eprintln!("could not prepare the prompt: {e}");
+            alcyo_diag::event("model.prepare", json!({ "ms": started.elapsed().as_millis() as u64, "error": format!("{e}") }));
             return;
         }
     };
+    let mut tokens = 0;
     for line in BufReader::new(response.into_reader()).lines().map_while(std::result::Result::ok) {
         if let Some((done, total)) = prompt_progress(&line) {
+            tokens = total;
             let _ = updates.send(Update::Preparing { done, total });
         }
     }
+    alcyo_diag::event("model.prepare", json!({ "ms": started.elapsed().as_millis() as u64, "tokens": tokens }));
 }
 
 /// Wait for the server to answer, giving up early if it has already exited.
@@ -1355,14 +1474,17 @@ fn consolidate_live(provider: &Provider, graph: &Mutex<Graph>, history: &Mutex<V
     let heard = history.lock().expect("history lock").clone();
     let Some(last) = heard.last() else { return };
     let english = board_is_english(&heard[heard.len().saturating_sub(CONTEXT_LINES + 1)..heard.len() - 1], last);
+    let started = Instant::now();
     let done = match consolidate::consolidate(provider, &asked, &heard, english, None, "high", when) {
         Ok(Some(done)) => done,
         Ok(None) => return,
         Err(e) => {
             eprintln!("consolidating the board failed: {e:#}");
+            alcyo_diag::event("board.consolidate", json!({ "ok": false, "lines": heard.len(), "ms": started.elapsed().as_millis() as u64, "before": asked, "error": format!("{e:#}") }));
             return;
         }
     };
+    alcyo_diag::event("board.consolidate", json!({ "ok": true, "lines": heard.len(), "ms": done.ms as u64, "tokens_in": done.tokens_in, "before": asked, "after": done.graph, "outline": alcyo_diag::clip(&done.outline, alcyo_diag::KEEP_CHARS) }));
     let mut board = graph.lock().expect("graph lock");
     if meeting.load(Ordering::SeqCst) != current {
         return;
@@ -1808,13 +1930,20 @@ impl Session {
     /// soonest: the local model stops now, and lines that need it wait, queued, until [`Session::resume_local`]. A
     /// line being drawn as it stops fails with an error rather than taking the app with it. A remote model goes on.
     pub fn pause_local(&self) {
+        self.pause_local_because("background");
+    }
+
+    /// As [`Session::pause_local`], for another `cause`, as Settings › Storage deleting the model's file.
+    pub fn pause_local_because(&self, cause: &'static str) {
+        alcyo_diag::event("model.paused", json!({ "cause": cause }));
         self.model.pause.set(true);
         let model = self.model.clone();
-        thread::spawn(move || model.release_now());
+        thread::spawn(move || model.release_now(cause));
     }
 
     /// Back in the foreground: the local model starts again when a line next needs it, showing it loading.
     pub fn resume_local(&self) {
+        alcyo_diag::event("model.resumed", json!({}));
         self.model.pause.set(false);
     }
 
@@ -2587,7 +2716,7 @@ mod embedded {
     impl Drop for Meeting {
         /// The server stopped before the next test starts one: the session's thread lets go of it only later.
         fn drop(&mut self) {
-            self.session.model().release_now();
+            self.session.model().release_now("shutdown");
         }
     }
 

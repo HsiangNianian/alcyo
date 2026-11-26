@@ -455,6 +455,14 @@ fn ask(provider: &Provider, messages: &[Value], tokens: u32, cancel: &AtomicBool
 pub fn summarize(provider: &Provider, boards: &[Graph], lines: &[Line], cancel: &AtomicBool, progress: &mut dyn FnMut(Step)) -> Result<String> {
     let english = is_english(lines.iter().map(|l| l.text.as_str()));
     let w = words(english);
+    let _purpose = alcyo_diag::Purpose::set("summary");
+    let started = std::time::Instant::now();
+    // Each step noted in the diagnostic events, as well as shown.
+    let mut progress = |step: Step| {
+        let Step::Writing { done, total } = step;
+        alcyo_diag::event("summary.step", serde_json::json!({ "done": done, "total": total, "lines": lines.len(), "ms": started.elapsed().as_millis() as u64 }));
+        progress(step);
+    };
     // A remote model may reason before writing, so it gets more room.
     let remote = matches!(provider, Provider::Remote { .. });
     let parts = chunks(lines, CHUNK);
@@ -479,6 +487,7 @@ pub fn summarize(provider: &Provider, boards: &[Graph], lines: &[Line], cancel: 
     progress(Step::Writing { done: total - 1, total });
     let reply = ask(provider, &messages(boards, &said, false, english), if remote { 4096 } else { 1024 }, cancel)?;
     let tidied = no_letter_owners(&name_ids(&tidy(&reply, english), boards));
+    alcyo_diag::event("summary.done", serde_json::json!({ "ms": started.elapsed().as_millis() as u64, "chars": tidied.chars().count() }));
     if tidied.is_empty() {
         bail!("The model returned no summary.");
     }
