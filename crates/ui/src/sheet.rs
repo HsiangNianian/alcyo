@@ -646,10 +646,11 @@ impl Workbench {
 
     /// The tabs down the left, under the sheet's name, with the version at the foot.
     fn sheet_nav(&self, sheet_h: f32, cx: &mut Context<Self>) -> AnyElement {
-        let tabs: [(SettingsTab, &str, u32, &str); 5] = [
+        let tabs: [(SettingsTab, &str, u32, &str); 6] = [
             (SettingsTab::Model, "sparkle", 0x3b_5b_db, t("board-model")),
             (SettingsTab::Speech, "waveform", 0xe8_43_2a, t("speech")),
             (SettingsTab::General, "sliders", 0x63_63_66, t("general")),
+            (SettingsTab::Storage, "import", 0x34_a8_53, t("storage")),
             (SettingsTab::Shortcuts, "keyboard", 0x8e_8e_93, t("shortcuts")),
             (SettingsTab::About, "info", 0x0a_7e_a4, t("about")),
         ];
@@ -726,6 +727,7 @@ impl Workbench {
             SettingsTab::Model => t("board-model"),
             SettingsTab::Speech => t("speech"),
             SettingsTab::General => t("general"),
+            SettingsTab::Storage => t("storage"),
             SettingsTab::Shortcuts => t("shortcuts"),
             SettingsTab::About => t("about"),
         };
@@ -785,6 +787,7 @@ impl Workbench {
             SettingsTab::Model => self.sheet_model(cx),
             SettingsTab::Speech => self.sheet_speech(cx),
             SettingsTab::General => self.sheet_general(cx),
+            SettingsTab::Storage => self.sheet_storage(cx),
             SettingsTab::Shortcuts => self.sheet_shortcuts(cx),
             SettingsTab::About => self.sheet_about(cx),
         };

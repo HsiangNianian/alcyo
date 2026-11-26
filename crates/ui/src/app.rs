@@ -69,6 +69,9 @@ mod ipad;
 mod ipad_card;
 #[path = "ipad_dialogs.rs"]
 mod ipad_dialogs;
+// Settings › Storage, on the iPad and the desktop.
+#[path = "storage_page.rs"]
+mod storage_page;
 // The iPad's meetings page, a grid of boards; beside the iPad's screen, for the same reason.
 #[path = "home.rs"]
 mod home;
@@ -1430,6 +1433,7 @@ enum SettingsTab {
     Model,
     Speech,
     General,
+    Storage,
     Shortcuts,
     About,
 }
@@ -1848,6 +1852,10 @@ struct Workbench {
     models: PathBuf,
     /// Where the package keeps the meeting search model.
     search_dir: PathBuf,
+    /// Where the speech models that came with the app are.
+    voice_dir: PathBuf,
+    /// Settings › Storage.
+    storage: storage_page::StorageState,
     binaries: PathBuf,
     download: Option<Download>,
     /// Counts proxy changes, so a download restarts once typing stops rather than at every key.
@@ -4278,37 +4286,6 @@ impl Workbench {
             None => None,
         };
         cx.notify();
-    }
-
-    /// The compile cache in the desktop's Settings: a row to clear it all, then a row for each entry.
-    fn compile_cache_rows(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
-        let entries = self.compile_cache_view();
-        let line = |title: String, hint: String| {
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_6()
-                .px_4()
-                .py_3()
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_ui().child(title)).child(div().text_small().text_color(rgb(pal().muted)).child(hint)))
-        };
-        let clearable = entries.iter().any(|(_, _, used)| !used);
-        let mut out = vec![line(t("compile-cache").to_string(), if entries.is_empty() { t("compile-cache-empty").to_string() } else { t("compile-cache-hint").to_string() })
-            .child(button("clear-compile-cache", t("compile-cache-clear-all")).disabled(!clearable).on_click(cx.listener(|this, _, _, cx| this.clear_compile_cache(None, cx))))
-            .into_any_element()];
-        out.extend(entries.into_iter().enumerate().map(|(i, (entry, name, used))| {
-            let kind = entry.kind.clone();
-            line(name, Self::compile_cache_detail(&entry))
-                .pl_8()
-                .child(if used {
-                    div().text_small().text_color(rgb(pal().muted)).child(t("compile-cache-in-use")).into_any_element()
-                } else {
-                    button(("clear-compile-cache-entry", i), t("compile-cache-clear")).on_click(cx.listener(move |this, _, _, cx| this.clear_compile_cache(Some(kind.clone()), cx))).into_any_element()
-                })
-                .into_any_element()
-        }));
-        out
     }
 
     /// Put a meeting on screen. Anything still in flight for the previous one is discarded.
@@ -9596,6 +9573,7 @@ impl Render for Workbench {
                     })
                     .into_any_element()
             }
+            SettingsTab::Storage => self.desktop_storage(cx),
             SettingsTab::About => {
                 let update: gpui_kit::AnyElement = match &self.update {
                     _ if self.prefix.is_none() => div().text_small().text_color(rgb(pal().muted)).child(t("installed-copies-update")).into_any_element(),
@@ -9672,11 +9650,6 @@ impl Render for Workbench {
                             .into_any_element(),
                     );
                 }
-                // What the graphics compiled, model by model. Metal keeps its own shaders, so there is nothing here for a
-                // Mac to manage.
-                if cfg!(not(target_os = "macos")) {
-                    storage.extend(self.compile_cache_rows(cx));
-                }
                 div()
                     .flex()
                     .flex_col()
@@ -9690,6 +9663,7 @@ impl Render for Workbench {
             (SettingsTab::Model, "chip", t("board-model")),
             (SettingsTab::Speech, "mic", t("speech")),
             (SettingsTab::General, "settings", t("general")),
+            (SettingsTab::Storage, "folder", t("storage")),
             (SettingsTab::Shortcuts, "keyboard", t("shortcuts")),
             (SettingsTab::About, "info", t("about")),
         ];
@@ -10633,6 +10607,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     let hanzi = resources.hanzi.clone();
     let pdfium = resources.pdfium.clone();
     let search_dir = resources.search.clone();
+    let voice_dir = resources.voice.clone();
     let start_board = match &demo {
         Some(name) => Some(demo_board(root.as_ref().context("--demo needs --root <checkout>")?, name)?),
         None => synthetic.map(synthetic_board),
@@ -11008,6 +10983,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     forced_backend,
                     models,
                     search_dir,
+                    voice_dir,
+                    storage: Default::default(),
                     binaries,
                     download: None,
                     proxy_generation: 0,
