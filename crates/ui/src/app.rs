@@ -32,7 +32,7 @@ use alcyo_agent::vision::VisionServer;
 use alcyo_export::Kind as ExportKind;
 use alcyo_import::pdf::NewPage;
 use alcyo_board::spans::{span_at, Unit};
-use alcyo_board::speakers::{by_of_edge, by_of_node, first_seen, initial, said_at};
+use alcyo_board::speakers::{by_of_edge, by_of_node, first_seen, initial, said_at, MOST_SPEAKERS};
 use alcyo_board::steps::{clock, replay_to, sound_times, steps_heard, Player};
 use gpui_kit::base::input::{Textarea, TextareaState};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -126,6 +126,20 @@ fn listen_name(listen: Listen) -> &'static str {
         Listen::Computer => t("device-sound"),
         Listen::Both => t("both"),
     }
+}
+
+/// How many people a meeting is said to have, as its menu says it.
+fn participants_name(n: Option<usize>) -> String {
+    match n {
+        None => ta!("participants-auto", n = MOST_SPEAKERS),
+        Some(n) => ta!("participants-count", n = n),
+    }
+}
+
+/// How many people take part, for the menu beside listening: Auto, then one to [`MOST_SPEAKERS`]. Speakers are told
+/// apart up to that many and no more (`Live::identify_voice`).
+fn participants_choices(chosen: Option<usize>) -> Vec<(String, Option<usize>, bool)> {
+    std::iter::once(None).chain((1..=MOST_SPEAKERS).map(Some)).map(|n| (participants_name(n), n, n == chosen)).collect()
 }
 
 /// What listening this way hears, in a line.
@@ -3299,6 +3313,14 @@ impl Workbench {
             return;
         }
         self.session().shed_local(t("ipad-model-unloaded-memory").to_string());
+    }
+
+    /// Say how many people take part in this meeting (`None`: Auto), kept with it: no more speakers are told apart.
+    pub(crate) fn set_participants(&mut self, participants: Option<usize>, cx: &mut Context<Self>) {
+        if self.editable() {
+            self.live.set_participants(participants);
+            cx.notify();
+        }
     }
 
     /// Lines heard and on their way to the board: neither drawn, nor failed, nor typed by hand.
@@ -8376,6 +8398,7 @@ impl Render for Workbench {
                 // Where the sound comes from, beside the button that starts hearing it; the devices are in Settings.
                 .child({
                     let listen = Listen::from_setting(&self.form.saved.listen);
+                    let participants = self.live.participants();
                     let workbench = cx.entity().downgrade();
                     Button::new("listen-to")
                         .map(|b| if listening { b.danger() } else { b.primary() })
@@ -8395,6 +8418,13 @@ impl Render for Workbench {
                                 let workbench = workbench.clone();
                                 menu.item(PopupMenuItem::new(listen_name(choice_of)).checked(listen == choice_of).on_click(move |_, _, cx| {
                                     let _ = workbench.update(cx, |this, cx| this.choose_listening(move |s| s.listen = choice_of.setting().into(), cx));
+                                }))
+                            });
+                            // How many people take part, chosen as listening starts: no more speakers are told apart.
+                            let menu = participants_choices(participants).into_iter().fold(menu.separator().label(t("participants")), |menu, (label, n, on)| {
+                                let workbench = workbench.clone();
+                                menu.item(PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                                    let _ = workbench.update(cx, |this, cx| this.set_participants(n, cx));
                                 }))
                             });
                             let workbench = workbench.clone();

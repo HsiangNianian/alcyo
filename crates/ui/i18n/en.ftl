@@ -279,6 +279,13 @@ the-room-and-the-online = The room and the online meeting together. With speaker
 on-a-mac-hearing-the = On a Mac, hearing the device's sound needs macOS 14.6 or later, and asks for permission the first time.
 listening-to = Sound from: { $what }
 choose-devices = Choose devices…
+# How many people take part in a meeting, chosen beside listening: speakers are told apart up to that many.
+participants = People in this meeting
+participants-auto = Auto (up to { $n })
+participants-count = { $n ->
+    [one] 1 person
+   *[other] { $n } people
+}
 speech = Speech
 what-is-heard-and-how = What is heard, and how it is written down.
 tell-speakers-apart-by-voice = Tell speakers apart by voice

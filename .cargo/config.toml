@@ -11,5 +11,5 @@ SHERPA_ONNX_SHA256SUMS = { value = ".cargo/sherpa-onnx.sha256", relative = true 
 # llama.cpp's server as static libraries, which the iPad's app runs inside itself (crates/llama), from the release of
 # our fork's tag of that name, built by scripts/build-llama-embedded.sh. Checked the same way: an archive whose
 # SHA-256 differs from the one recorded here is not linked.
-ALCYO_LLAMA_RELEASE_URL = "https://github.com/HsiangNianian/llama.cpp/releases/download/alcyo-b11954-2"
+ALCYO_LLAMA_RELEASE_URL = "https://github.com/HsiangNianian/llama.cpp/releases/download/alcyo-b11954-3"
 ALCYO_LLAMA_SHA256SUMS = { value = ".cargo/llama-embedded.sha256", relative = true }
