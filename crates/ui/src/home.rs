@@ -94,6 +94,9 @@ pub(super) struct Home {
     /// The app's name as the splash wrote it, and when the page took over from the splash: on a cold start
     /// the name flows into the page's title and the rest follows.
     intro: Option<(Vec<Inked>, Instant)>,
+    /// Who said the first line of each transcript passage found, and when, by meeting and line: read from the
+    /// meeting once for each set of results.
+    said: (u64, HashMap<(String, usize), (Option<String>, Option<f64>)>),
 }
 
 impl Home {
@@ -116,8 +119,39 @@ impl Home {
             rename_input: None,
             placeholder: false,
             intro: None,
+            said: (u64::MAX, HashMap::new()),
         }
     }
+}
+
+/// How wide the panel of passages found is, beside the cards.
+const RESULTS_W: f32 = 400.0;
+
+/// Where `terms` occur in `text`, as byte ranges, case left aside. Text whose lowercase is not as long as itself (a
+/// few letters change length) is left unmarked rather than marked in the wrong place.
+fn marked(text: &str, terms: &[String]) -> Vec<std::ops::Range<usize>> {
+    let lower = text.to_lowercase();
+    if lower.len() != text.len() {
+        return vec![];
+    }
+    let mut out: Vec<std::ops::Range<usize>> = vec![];
+    for term in terms.iter().filter(|t| !t.is_empty()) {
+        let mut from = 0;
+        while let Some(at) = lower[from..].find(term.as_str()) {
+            let start = from + at;
+            out.push(start..start + term.len());
+            from = start + term.len();
+        }
+    }
+    out.sort_by_key(|r| r.start);
+    // Overlaps would confuse the text's runs: the earlier wins.
+    let mut kept: Vec<std::ops::Range<usize>> = vec![];
+    for r in out {
+        if kept.last().is_none_or(|k| r.start >= k.end) {
+            kept.push(r);
+        }
+    }
+    kept
 }
 
 /// A meeting as a card shows it.
@@ -521,7 +555,12 @@ impl Workbench {
         let width = f32::from(size.width);
         let safe = crate::platform::safe_area(window);
         let top = f32::from(safe.top);
-        let columns: usize = if width < 900. { 2 } else if width >= 1300. { 5 } else { 4 };
+        // What was found by meaning, shown beside the cards as the desktop shows it: the passages themselves.
+        let typed_now = self.library_query.read(cx).value().trim().to_string();
+        let results_shown = self.searching_by_meaning() && typed_now.chars().count() >= 2 && self.search.as_ref().is_some_and(|s| s.asking || !s.hits.is_empty());
+        let beside = results_shown && width >= 900.;
+        let grid_width = if beside { width - RESULTS_W - GUTTER } else { width };
+        let columns: usize = if grid_width < 900. { 2 } else if grid_width >= 1300. { 5 } else { 4 };
         let listening = self.pipeline.listening();
         let p = pal();
         let dark = theme::is_dark();
@@ -786,13 +825,15 @@ impl Workbench {
 
         let list_top = top + 72. + 34.;
         let bottom = f32::from(safe.bottom);
+        let results = results_shown.then(|| self.home_results(&typed_now, list_top, bottom, beside, cx));
         let list = div()
             .id("home-grid")
             .absolute()
             .top(px(list_top))
             .left_0()
-            .right_0()
+            .right(px(if beside { RESULTS_W + SIDE } else { 0. }))
             .bottom_0()
+            .when(results_shown && !beside, |d| d.invisible())
             .overflow_y_scroll()
             .child(div().pt(px(20.)).px(px(SIDE)).pb(px(bottom + 60.)).flex().flex_col().children(sections).when_some(nothing, |d, n| d.child(n)));
         let fade = div().absolute().left_0().right_0().bottom_0().h(px(70.)).bg(gpui_kit::linear_gradient(
@@ -855,6 +896,7 @@ impl Workbench {
             .text_color(rgb(p.text))
             .child(list)
             .child(fade)
+            .when_some(results, |d, results| d.child(results))
             .when_some(self.intro_word(window), |d, word| d.child(word))
             .child(header)
             .child(chips.map(|chips| follow(chips, "home-intro-chips", after)))
@@ -900,6 +942,130 @@ impl Workbench {
             .overflow_hidden()
             .bg(rgb(p.paper))
             .shadow(vec![ring(rgb(p.line).into(), 1.), BoxShadow { color: alpha(0, 0.04), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false }])
+    }
+
+    /// The passages search by meaning found, as a panel beside the cards (or over them in a narrow window): where
+    /// things stand first, then what was said, each with its meeting, where in it, who said it and when, its words
+    /// with the query's marked, and a tap to open the meeting there.
+    fn home_results(&mut self, query: &str, top: f32, bottom: f32, beside: bool, cx: &mut Context<Self>) -> AnyElement {
+        let p = pal();
+        let (hits, asking, ticket) = self.search.as_ref().map(|s| (s.hits.clone(), s.asking, s.ticket)).unwrap_or_default();
+        // Who said a transcript passage's first line, and when: read once for these results.
+        let key = ticket.wrapping_mul(1 << 20).wrapping_add(hits.len() as u64);
+        if self.home.said.0 != key {
+            let mut said = HashMap::new();
+            let mut loaded: HashMap<String, Option<serde_json::Map<String, serde_json::Value>>> = HashMap::new();
+            for found in &hits {
+                if let alcyo_search::Source::Transcript { first, .. } = found.source {
+                    let raw = loaded.entry(found.meeting.clone()).or_insert_with(|| self.store.as_ref().and_then(|s| s.load(&found.meeting).ok().flatten()).map(|l| l.raw));
+                    let line = raw.as_ref().and_then(|r| r.get("lines")).and_then(|l| l.get(first)).cloned();
+                    let speaker = line.as_ref().and_then(|l| l["speaker"].as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+                    let ms = line.as_ref().and_then(|l| l["ms"].as_f64());
+                    said.insert((found.meeting.clone(), first), (speaker, ms));
+                }
+            }
+            self.home.said = (key, said);
+        }
+        let terms: Vec<String> = {
+            let lower = query.to_lowercase();
+            let words: Vec<String> = lower.split_whitespace().filter(|w| w.chars().count() >= 2).map(str::to_string).collect();
+            if words.is_empty() { vec![lower] } else { words }
+        };
+        let mark = gpui_kit::HighlightStyle { background_color: Some(alpha(p.accent, if theme::is_dark() { 0.32 } else { 0.18 })), color: Some(rgb(p.text).into()), ..Default::default() };
+        let row = |i: usize, found: alcyo_search::service::Found, said: Option<&(Option<String>, Option<f64>)>, cx: &mut Context<Self>| {
+            let place = match &found.source {
+                alcyo_search::Source::Transcript { .. } => t("transcript"),
+                alcyo_search::Source::Board { .. } => t("board-2"),
+                alcyo_search::Source::Summary { .. } => t("summary"),
+            };
+            // A transcript passage as it was said: its lines without the speaker in front, who is said above.
+            let text: String = found.text.lines().map(|l| match found.source {
+                alcyo_search::Source::Transcript { .. } => l.split_once(": ").map_or(l, |(_, said)| said).trim(),
+                _ => l.trim(),
+            }).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+            let text: String = text.chars().take(240).collect();
+            let ranges = marked(&text, &terms);
+            let words = gpui_kit::StyledText::new(text).with_highlights(ranges.into_iter().map(|r| (r, mark)));
+            let who = said.and_then(|(who, _)| who.clone());
+            let when = said.and_then(|(_, ms)| *ms).map(alcyo_board::steps::clock);
+            let open = found.clone();
+            div()
+                .id(("home-found", i))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .px(px(14.))
+                .py(px(12.))
+                .rounded(px(14.))
+                .cursor_pointer()
+                .hover(|d| d.bg(ipad_dialogs::well()))
+                .active(|d| d.bg(ipad_dialogs::well()).opacity(0.8))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .min_w_0()
+                        .text_size(px(12.5))
+                        .text_color(rgb(p.faint))
+                        .child(div().flex_none().max_w(px(180.)).overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.text)).text_size(px(14.)).child(found.title.clone()))
+                        .child(div().flex_none().child(place))
+                        .when_some(who, |d, who| d.child(div().flex_none().child("·")).child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(who)))
+                        .when_some(when, |d, when| d.child(div().flex_none().font_family(theme::MONO).child(when))),
+                )
+                .child(div().text_size(px(14.)).line_height(gpui_kit::relative(1.45)).text_color(rgb(p.muted)).child(words))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_found(&open, cx)))
+        };
+        let said = self.home.said.1.clone();
+        let heading = |text: &'static str| div().px(px(14.)).pt(px(14.)).pb(px(4.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.faint)).child(text.to_uppercase());
+        let (stands, spoken): (Vec<_>, Vec<_>) = hits.into_iter().enumerate().partition(|(_, f)| f.stands());
+        let count = stands.len() + spoken.len();
+        let head = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(18.))
+            .h(px(52.))
+            .border_b_1()
+            .border_color(rgb(p.line))
+            .child(icon("ipad/search").size(px(16.)).text_color(rgb(p.muted)))
+            .child(div().flex_1().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(if asking && count == 0 { t("searching-what-was-said").to_string() } else { ta!("home-found-passages", n = count) }));
+        let body = div()
+            .id("home-found-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p(px(6.))
+            .flex()
+            .flex_col()
+            .when(!stands.is_empty(), |d| d.child(heading(t("where-things-stand"))).children(stands.into_iter().map(|(i, f)| {
+                // A board or the summary was not said by one person at one moment.
+                row(i, f, None, cx)
+            })))
+            .when(!spoken.is_empty(), |d| d.child(heading(t("what-was-said"))).children(spoken.into_iter().map(|(i, f)| {
+                let key = match f.source {
+                    alcyo_search::Source::Transcript { first, .. } => (f.meeting.clone(), first),
+                    _ => (String::new(), 0),
+                };
+                let s = said.get(&key).cloned();
+                row(i, f, s.as_ref(), cx)
+            })));
+        glass(div(), true)
+            .id("home-found")
+            .occlude()
+            .absolute()
+            .top(px(top + 12.))
+            .bottom(px(bottom + 16.))
+            .right(px(SIDE))
+            .map(|d| if beside { d.w(px(RESULTS_W)) } else { d.left(px(SIDE)) })
+            .flex()
+            .flex_col()
+            .rounded(px(20.))
+            .overflow_hidden()
+            .child(head)
+            .child(body)
+            .into_any_element()
     }
 
     /// Record where a card's board is laid out, and open its actions on a long press there.
@@ -1288,5 +1454,18 @@ impl Workbench {
                 })
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_querys_words_are_marked_where_they_occur() {
+        assert_eq!(marked("Ship it on Tuesday, ship!", &["ship".into()]), vec![0..4, 20..24]);
+        assert_eq!(marked("物业费下个月起按季度收", &["季度".into()]), vec![24..30]);
+        assert!(marked("anything", &[String::new()]).is_empty());
+        assert_eq!(marked("abc", &["ab".into(), "b".into()]), vec![0..2], "overlaps keep the first");
     }
 }

@@ -118,6 +118,8 @@ pub(super) struct Chrome {
     /// The last word search where search by meaning cannot run: the query and the library as it was, and the
     /// meetings it found.
     word_search: (String, Vec<String>),
+    /// Which of the iPad's floating menus is open (ipad_dialogs::ipad_menu), by its id.
+    pub(super) menu: Option<&'static str>,
     /// The corner the board's map sits in while zoomed in.
     map_corner: Corner,
     /// The transcript sheet's height when upright or narrow.
@@ -150,6 +152,7 @@ impl Chrome {
             // Out of the way at first: above the dock, beside the palette, where nothing else sits.
             map_corner: Corner::BottomLeft,
             word_search: (String::new(), vec![]),
+            menu: None,
             newest_for: None,
             touched: Rc::new(Cell::new(Instant::now())),
             faded: Rc::new(Cell::new(false)),
@@ -1672,46 +1675,36 @@ impl Workbench {
     /// desktop's dock gives way.
     fn ipad_compact_nav(&self, f: &Frame, cx: &mut Context<Self>) -> gpui_kit::Div {
         let circle_in_bar = matches!(f.mode, Mode::Compact { circle: true, .. });
-        let this = cx.entity().downgrade();
-        let more = Button::new("ipad-more").ghost().child(icon("ipad/more").size(px(22.))).w(px(TARGET)).h(px(TARGET)).rounded_full().dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
-            let act = |label: &'static str, f: fn(&mut Workbench, &mut Context<Workbench>)| {
-                let this = this.clone();
-                PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                    let _ = this.update(cx, |w, cx| f(w, cx));
-                })
-            };
-            let menu = menu.min_w(px(220.));
-            let menu = if circle_in_bar {
-                menu
-            } else {
-                menu.item(act(t("circle"), |w, cx| {
-                    let mut ink = w.ink.borrow_mut();
-                    ink.put_tools_down();
-                    ink.circling = true;
-                    drop(ink);
-                    cx.notify();
-                }))
-            };
-            menu.item(act(t("mark"), |w, cx| {
+        // What has no room in the bars, as the iPad's own floating menu.
+        let mut rows = vec![];
+        if !circle_in_bar {
+            rows.push(super::ipad_dialogs::MenuRow::new(t("circle"), |w, _, cx| {
                 let mut ink = w.ink.borrow_mut();
                 ink.put_tools_down();
-                ink.marking = true;
-                ink.mark_tool = w.ipad.pen;
+                ink.circling = true;
                 drop(ink);
                 cx.notify();
-            }))
-            .item(act(t("crop"), |w, cx| {
-                let mut ink = w.ink.borrow_mut();
-                ink.put_tools_down();
-                ink.cropping = true;
-                drop(ink);
-                cx.notify();
-            }))
-            .item(act(t("tidy-the-layout"), |w, cx| w.tidy(cx)))
-            .separator()
-            .item(act(t("export"), |w, cx| w.toggle_panel(Panel::Export, cx)))
-            .item(act(t("share"), |w, cx| w.toggle_panel(Panel::Share, cx)))
-        });
+            }).glyph("ipad/lasso"));
+        }
+        rows.push(super::ipad_dialogs::MenuRow::new(t("mark"), |w, _, cx| {
+            let mut ink = w.ink.borrow_mut();
+            ink.put_tools_down();
+            ink.marking = true;
+            ink.mark_tool = w.ipad.pen;
+            drop(ink);
+            cx.notify();
+        }).glyph("ipad/pen"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("crop"), |w, _, cx| {
+            let mut ink = w.ink.borrow_mut();
+            ink.put_tools_down();
+            ink.cropping = true;
+            drop(ink);
+            cx.notify();
+        }).glyph("ipad/crop"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("tidy-the-layout"), |w, _, cx| w.tidy(cx)).glyph("ipad/tidy"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("export"), |w, _, cx| w.toggle_panel(Panel::Export, cx)).glyph("ipad/export").apart());
+        rows.push(super::ipad_dialogs::MenuRow::new(t("share"), |w, _, cx| w.toggle_panel(Panel::Share, cx)).glyph("ipad/live"));
+        let more = self.ipad_menu("ipad-more", round_button("ipad-more", "more", false), rows, false, cx);
         glass(div(), false)
             .occlude()
             .absolute()

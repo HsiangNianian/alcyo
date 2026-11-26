@@ -4167,7 +4167,7 @@ impl Workbench {
             Err(()) => (None, true),
         };
         let catalog = alcyo_models::catalog();
-        compile_cache::entries(&compile_cache::root(&self.models), compile_cache::system_dir(data).as_deref())
+        compile_cache::entries(&compile_cache::root(&self.models), &compile_cache::system_dirs(data))
             .into_iter()
             .map(|entry| {
                 let name = match &entry.kind {
@@ -4182,14 +4182,20 @@ impl Workbench {
     }
 
     /// How big an entry is and when it was built, for its row.
+    /// A model's own folder holding no more than the note that it was built (as on the iPad, where Metal keeps what it
+    /// compiled for every model in one place) says when, and no size that would mislead.
     pub(crate) fn compile_cache_detail(entry: &compile_cache::Entry) -> String {
+        const NOTE_ONLY: u64 = 16 * 1024;
         let size = if entry.bytes < 1_000_000 { format!("{:.0} KB", (entry.bytes as f64 / 1e3).ceil()) } else { format!("{:.1} MB", entry.bytes as f64 / 1e6) };
-        match entry.built {
-            Some(at) => {
-                let when: chrono::DateTime<chrono::Local> = at.into();
-                ta!("compile-cache-built", size = size, when = when.format("%Y-%m-%d %H:%M").to_string())
-            }
-            None => size,
+        let when = entry.built.map(|at| {
+            let when: chrono::DateTime<chrono::Local> = at.into();
+            when.format("%Y-%m-%d %H:%M").to_string()
+        });
+        match (when, cfg!(target_os = "ios") && matches!(entry.kind, compile_cache::Kind::Model(_)) && entry.bytes < NOTE_ONLY) {
+            (Some(when), true) => ta!("compile-cache-built-when", when = when),
+            (Some(when), false) => ta!("compile-cache-built", size = size, when = when),
+            (None, true) => t("compile-cache-noted").to_string(),
+            (None, false) => size,
         }
     }
 
@@ -5941,6 +5947,26 @@ impl Workbench {
                 ta!(id, from = from.to_string(), to = to.to_string())
             });
             let next = from.clone();
+            // On the iPad: a rounded field and pill buttons (#341).
+            if crate::platform::ipad_layout() {
+                let rename = ipad_dialogs::pill("rename-speaker", if merging { t("merge-speakers") } else { t("rename") }, ipad_dialogs::Look::Main, None);
+                let rename = if to.is_empty() || to == from { rename.opacity(0.4).into_any_element() } else { rename.on_click(cx.listener(|this, _, window, cx| this.rename_speaker(window, cx))).into_any_element() };
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .pt(px(6.))
+                    .child(div().px(px(4.)).text_size(px(13.)).text_color(rgb(pal().muted)).child(t("new-name")))
+                    .child(div().h(px(44.)).flex().items_center().px(px(14.)).rounded(px(14.)).bg(ipad_dialogs::well()).child(div().flex_1().min_w_0().child(Input::new(&self.speaker_name).appearance(false))))
+                    .child(div().px(px(4.)).text_size(px(12.5)).text_color(rgb(pal().muted)).child(affects))
+                    .when_some(notice, |d, text| d.child(div().px(px(4.)).text_size(px(12.5)).text_color(rgb(if merging { pal().warning } else { pal().muted })).child(text)))
+                    .child(
+                        div().flex().flex_wrap().gap(px(8.)).pt(px(2.)).child(rename).child(ipad_dialogs::pill("use-speaker", t("use-for-next-line"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(move |this, _, _, cx| {
+                            this.speaker = Some(next.clone());
+                            cx.notify();
+                        }))),
+                    );
+            }
             div()
                 .flex()
                 .flex_col()
@@ -6251,23 +6277,9 @@ impl Workbench {
                 .map(|d| {
                     let speed = self.replay_speed;
                     if crate::platform::ipad_layout() {
-                        let this = cx.entity().downgrade();
-                        return d.child(
-                            Button::new("replay-speed")
-                                .ghost()
-                                .child(div().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).child(speed_label(speed)))
-                                .h(px(44.))
-                                .min_w(px(52.))
-                                .rounded_full()
-                                .dropdown_menu_with_anchor(gpui_kit::Anchor::BottomRight, move |menu, _, _| {
-                                    alcyo_board::steps::SPEEDS.iter().fold(menu.min_w(px(140.)), |menu, &each| {
-                                        let this = this.clone();
-                                        menu.item(PopupMenuItem::new(speed_label(each)).checked(each == speed).on_click(move |_, _, cx| {
-                                            let _ = this.update(cx, |w, cx| w.set_replay_speed(each, cx));
-                                        }))
-                                    })
-                                }),
-                        );
+                        let rows = alcyo_board::steps::SPEEDS.iter().map(|&each| ipad_dialogs::MenuRow::new(speed_label(each), move |w, _, cx| w.set_replay_speed(each, cx)).checked(each == speed)).collect();
+                        let trigger = div().id("replay-speed").h(px(44.)).min_w(px(52.)).px(px(12.)).flex().items_center().justify_center().rounded_full().cursor_pointer().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).hover(|d| d.bg(ipad_dialogs::well())).child(speed_label(speed));
+                        return d.child(self.ipad_menu("replay-speed", trigger, rows, true, cx));
                     }
                     d.child(Quiet::new("replay-speed").label(speed_label(speed)).tooltip(t("speed")).on_click(cx.listener(move |this, _, _, cx| {
                         let speeds = alcyo_board::steps::SPEEDS;
@@ -6822,6 +6834,45 @@ impl Workbench {
         };
         let ipad = crate::platform::ipad_layout();
         // On the iPad, the same things as the iPad does them (#341): pills, and round icon buttons a finger's size.
+        // While the summary is being written, on the iPad: a calm row with what it is doing and how far, a thin
+        // line filling under it (or drifting while it cannot tell), and Stop as a quiet pill at its end.
+        let step = self.summary.job.as_ref().and_then(|job| job.step).filter(|(_, total)| *total > 1).map(|(done, total)| ((done as f32 + 0.5) / total as f32).clamp(0.05, 1.0));
+        let ipad_progress = (ipad && busy.is_some()).then(|| {
+            let p = pal();
+            let line = div().h(px(3.)).w_full().rounded(px(2.)).bg(ipad_dialogs::well()).overflow_hidden().child(match step {
+                Some(share) => div().h_full().rounded(px(2.)).bg(rgb(p.accent)).with_spring("summary-progress", SpringAnimation::new(motion::GLIDE).to(share), |d, v| d.w(gpui_kit::relative(v.clamp(0., 1.)))).into_any_element(),
+                None => div().h_full().w(gpui_kit::relative(0.3)).rounded(px(2.)).bg(rgb(p.accent)).with_animation("summary-drift", gpui_kit::Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.ml(gpui_kit::relative(-0.3 + 1.3 * t))).into_any_element(),
+            });
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .px(px(16.))
+                .pt(px(12.))
+                .pb(px(14.))
+                .border_b_1()
+                .border_color(rgb(p.line))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(p.accent)).with_animation("summary-busy", motion::pulse(), |d, t| d.opacity(t)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(div().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).text_color(rgb(p.text)).child(t("ipad-summary-writing")))
+                                .child(div().text_size(px(13.)).text_color(rgb(p.muted)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(busy.clone().unwrap_or_default())),
+                        )
+                        .when(editable, |d| d.child(ipad_dialogs::pill("stop-summary", t("stop"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))))),
+                )
+                .child(line)
+        });
         let ipad_bar = ipad.then(|| {
             let mut left: Vec<gpui_kit::AnyElement> = vec![];
             if editable && busy.is_some() {
@@ -6834,26 +6885,11 @@ impl Workbench {
             let mut right: Vec<gpui_kit::AnyElement> = vec![];
             if has_text && !editing {
                 let (markdown, plain) = (text.clone(), summary::plain_text(&text));
-                let workbench = cx.entity().downgrade();
-                right.push(
-                    Button::new("copy-summary")
-                        .ghost()
-                        .child(icon("ipad/copy").size(px(19.)))
-                        .w(px(44.))
-                        .h(px(44.))
-                        .rounded_full()
-                        .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
-                            let (plain, markdown, a, b) = (plain.clone(), markdown.clone(), workbench.clone(), workbench.clone());
-                            menu.min_w(px(240.))
-                                .item(PopupMenuItem::new(t("copy-as-plain-text")).on_click(move |_, _, cx| {
-                                    let _ = a.update(cx, |this, cx| this.copy_summary(plain.clone(), t("copied-as-plain-text"), cx));
-                                }))
-                                .item(PopupMenuItem::new(t("copy-the-markdown-source")).on_click(move |_, _, cx| {
-                                    let _ = b.update(cx, |this, cx| this.copy_summary(markdown.clone(), t("copied-the-markdown-source"), cx));
-                                }))
-                        })
-                        .into_any_element(),
-                );
+                let rows = vec![
+                    ipad_dialogs::MenuRow::new(t("copy-as-plain-text"), move |this, _, cx| this.copy_summary(plain.clone(), t("copied-as-plain-text"), cx)).glyph("ipad/copy"),
+                    ipad_dialogs::MenuRow::new(t("copy-the-markdown-source"), move |this, _, cx| this.copy_summary(markdown.clone(), t("copied-the-markdown-source"), cx)).glyph("ipad/export"),
+                ];
+                right.push(self.ipad_menu("copy-summary", ipad_dialogs::round_icon("copy-summary", "ipad/copy"), rows, false, cx).into_any_element());
             }
             if editable && has_text && !editing {
                 right.push(ipad_dialogs::round_icon("edit-summary", "ipad/pen").on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
@@ -7055,9 +7091,10 @@ impl Workbench {
                         ),
                 )
             });
-        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().map(|d| match ipad_bar {
-            Some(ipad_bar) => d.child(ipad_bar),
-            None => d.child(bar),
+        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().map(|d| match (ipad_progress, ipad_bar) {
+            (Some(progress), _) => d.child(progress),
+            (None, Some(ipad_bar)) => d.child(ipad_bar),
+            (None, None) => d.child(bar),
         }).child(body)
     }
 }
