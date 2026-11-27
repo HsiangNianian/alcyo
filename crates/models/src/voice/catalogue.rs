@@ -1,11 +1,7 @@
-//! The speech models shipped in every package, about 1.2 GB: SenseVoice, the Silero VAD, the CAM++
-//! speaker model, Nemotron-3-Diarization for telling speakers apart as they talk, a streaming Chinese
-//! zipformer for drafts while someone speaks, Parakeet for English and ReazonSpeech for Japanese. CI caches them by this file's hash. The speaker model is not on ModelScope,
-//! so it comes from Hugging Face, pinned to the revision the app was tested with; the diarization model, exported to ONNX by our sherpa-onnx
-//! fork's CI, only from that fork's release. Every file is also on Alcyo's mirror (see `alcyo_models::MIRROR`),
-//! tried first and raced against ModelScope where it has the file.
+//! Every speech model file: where it goes, its size and hash, and where it can be downloaded. CI caches the files
+//! by this file's hash, so it holds the list and nothing else.
 
-use alcyo_models::Source;
+use crate::Source;
 
 pub struct VoiceFile {
     /// Where it goes under `resources/`.
@@ -20,9 +16,14 @@ pub struct VoiceFile {
 }
 
 impl VoiceFile {
+    /// Its path in a folder of speech models, as `sense-voice/model.int8.onnx`.
+    pub fn path(&self) -> &'static str {
+        self.name.strip_prefix("voice/").unwrap_or(self.name)
+    }
+
     /// Its key on the mirror: `voice/<hash>/<its path under voice/>`.
     pub fn key(&self) -> String {
-        alcyo_models::mirror_key("voice", self.sha256, self.name.strip_prefix("voice/").unwrap_or(self.name))
+        crate::mirror_key("voice", self.sha256, self.path())
     }
 
     /// Every place it can be downloaded from, in the order the downloader treats them.

@@ -3,7 +3,7 @@
 use alcyo_agent::{Backend, Guidance, Said, Session, Update};
 use anyhow::{bail, Result};
 use alcyo_audio::system::SystemSpeech;
-use alcyo_audio::{capture, play_wav, Ear, Language, Recognizers, Sentence, Sources, Warning};
+use alcyo_audio::{capture, play_wav, Ear, Language, Models, Recognizers, Sentence, Sources, Warning};
 use alcyo_board::graph::Utterance;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +24,8 @@ pub enum Event {
     Failed(String),
     /// What recognizes speech now, and why it isn't what was chosen, if it isn't.
     Hearing { with: String, note: Option<String> },
+    /// Nothing can recognize speech yet: no voice pack is here and the platform has no recognizer of its own.
+    NothingHears,
     /// A scripted source has finished and every queued line has been drawn.
     Done,
 }
@@ -54,7 +56,7 @@ impl Speech {
 
 /// An ear for the choice, falling back to whatever can hear: the models when the system's recognizer
 /// fails, and the system's when there are no models.
-fn ear_for(models: &Path, speech: &Speech) -> Result<(Ear, String, Option<String>)> {
+fn ear_for(models: &Models, speech: &Speech) -> Result<(Ear, String, Option<String>)> {
     let system = |helper: &Path| -> Result<(Ear, String)> {
         let recognizer = SystemSpeech::start(helper, &speech.language)?;
         let with = format!("Apple {}", if recognizer.engine == "analyzer" { "SpeechAnalyzer" } else { "SFSpeechRecognizer" });
@@ -102,7 +104,7 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn start(backend: Backend, guidance: Option<Guidance>, voice_models: PathBuf, speech: Speech, script: Script) -> Self {
+    pub fn start(backend: Backend, guidance: Option<Guidance>, voice_models: Models, speech: Speech, script: Script) -> Self {
         let (event_tx, events) = channel();
         let (said, said_rx) = channel::<Said>();
         let (drained_tx, drained_rx) = channel::<()>();
@@ -126,10 +128,15 @@ impl Pipeline {
                 Ok((ear, with, note)) => {
                     let _ = tx.send(Event::Hearing { with, note });
                     let (drafts, stamp) = (tx.clone(), stamp.clone());
-                    let draft_with = alcyo_audio::DraftWith::ByLanguage(voice_models.join(alcyo_audio::DRAFT_MODEL));
+                    let draft_with = alcyo_audio::DraftWith::ByLanguage(voice_models.folder_of(&format!("{}/encoder.int8.onnx", alcyo_audio::DRAFT_MODEL)));
                     Some(ear.drafts(draft_with, Box::new(move |draft| {
                         let _ = drafts.send(Event::Draft { meeting: stamp.load(Ordering::SeqCst), draft });
                     })))
+                }
+                // Before any voice pack is here, that is said where listening starts, not as an error.
+                Err(e) if e.to_string() == alcyo_audio::NO_RECOGNIZER => {
+                    let _ = tx.send(Event::NothingHears);
+                    None
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Failed(format!("{e:#}")));

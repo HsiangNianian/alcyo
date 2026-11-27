@@ -137,19 +137,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: resources/voice
-          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+          key: voice-${{ hashFiles('crates/models/src/voice/catalogue.rs') }}
       - name: Cache the meeting search model
         uses: actions/cache@v4
         with:
           path: resources/search
           key: search-${{ hashFiles('crates/models/src/lib.rs') }}
-      # The script ends by running each packaged app's self-check. A second variant checks the model selection.
+      # The script ends by running the packaged app's self-check.
       - run: sh packaging/linux/package.sh
-        env:
-          VARIANTS: all ja
+      # The package carries only the voice detector; the tests below hear with every model.
+      - run: target/release/alcyo-tools fetch voice
       # Its own target folder: the cache keeps compiled crates but not the speech library they were
       # built against, so rebuilding that crate in the restored folder cannot find it.
-      - name: How speech is heard, with the packaged models
+      - name: How speech is heard, with every voice pack
         run: cargo test -p alcyo-audio
         env:
           ALCYO_VOICE_DIR: ${{ github.workspace }}/resources/voice
@@ -192,7 +192,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: resources/voice
-          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+          key: voice-${{ hashFiles('crates/models/src/voice/catalogue.rs') }}
       - name: Cache the meeting search model
         uses: actions/cache@v4
         with:
@@ -203,14 +203,16 @@ jobs:
       # hand, as that takes minutes per package.
       - run: sh packaging/macos/package.sh
         env:
-          VARIANTS: all none
           NOTARIZE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-      - name: Core crates and speech, with the packaged models
+      # The package carries only the voice detector; the tests below hear with every model, fetched after
+      # packaging so none of them goes into the app.
+      - run: target/release/alcyo-tools fetch voice
+      - name: Core crates and speech, with every voice pack
         run: cargo test -p alcyo-board -p alcyo-agent -p alcyo-meetings -p alcyo-models -p alcyo-audio
         env:
           ALCYO_VOICE_DIR: ${{ github.workspace }}/resources/voice
@@ -256,7 +258,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: resources/voice
-          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+          key: voice-${{ hashFiles('crates/models/src/voice/catalogue.rs') }}
       - name: Cache the meeting search model
         uses: actions/cache@v4
         with:
@@ -287,15 +289,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: resources/voice
-          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+          key: voice-${{ hashFiles('crates/models/src/voice/catalogue.rs') }}
       - name: Cache the meeting search model
         uses: actions/cache@v4
         with:
           path: resources/search
           key: search-${{ hashFiles('crates/models/src/lib.rs') }}
       - run: sh packaging/windows/package.sh
-        env:
-          VARIANTS: all
       - uses: actions/upload-artifact@v4
         with:
           name: alcyo-windows

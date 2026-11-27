@@ -1,6 +1,7 @@
 #!/bin/sh
-# Build the iPad app: target/package/alcyo-<version>-ipados.ipa, holding Alcyo.app with every speech model
-# (variant "all", see packaging/models.sh) and the meeting search model.
+# Build the iPad app: target/package/alcyo-<version>-ipados.ipa, holding Alcyo.app with the voice detector and the
+# meeting search model. The speech models are voice packs the app downloads, Apple's recognizer listening meanwhile
+# (see packaging/models.sh).
 #
 # With an Apple Distribution certificate (IOS_CERT_P12, base64, and IOS_CERT_PASSWORD) and an App Store
 # provisioning profile for app.alcyo.board (IOS_PROFILE, base64), it is signed for the App Store, and with
@@ -23,7 +24,7 @@ min_os=17.0
 export IPHONEOS_DEPLOYMENT_TARGET=$min_os
 
 cargo build --release -p alcyo-tools
-for what in glyphs voice search; do
+for what in glyphs voice-bundled search; do
   target/release/alcyo-tools fetch $what
 done
 cargo build --release --target $target -p alcyo-ui
@@ -35,7 +36,7 @@ name="alcyo-$version-ipados"
 out="target/package/$name"
 app="$out/Payload/Alcyo.app"
 rm -rf "$out"
-mkdir -p "$app/Frameworks" "$app/assets/voice/speaker" "$app/assets/licenses"
+mkdir -p "$app/Frameworks" "$app/assets/licenses"
 
 install -m755 "target/$target/release/alcyo" "$app/alcyo"
 strip -x "$app/alcyo" 2>/dev/null || true
@@ -97,11 +98,8 @@ echo "built with Xcode $xcode_version ($xcode_build), iOS SDK $sdk_version ($sdk
 # codesign, with every file beside it taken for code.
 lib="$app/assets"
 target/release/alcyo-tools pack-glyphs assets/hanzi "$lib/glyphs.pack"
-cp resources/voice/silero_vad.onnx "$lib/voice/"
-cp resources/voice/speaker/campplus_zh_en.onnx resources/voice/speaker/nemotron-3-diarization.int8.onnx "$lib/voice/speaker/"
-copy_models all "$lib/voice"
+copy_voice "$lib/voice"
 copy_search "$lib/search"
-printf 'all\n' > "$lib/variant"
 cp LICENSE assets/licenses/* crates/fonts/files/OFL-*.txt assets/hanzi/ARPHICPL.TXT "$lib/licenses/"
 
 # Only the program and the framework are code. codesign takes any other file marked executable, or

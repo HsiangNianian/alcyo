@@ -21,6 +21,8 @@ pub struct Places {
     pub models: PathBuf,
     /// The speech models that came with the app.
     pub voice: PathBuf,
+    /// The voice packs downloaded, each a row.
+    pub packs: Option<alcyo_models::voice::Places>,
     /// The meeting search model that came with the app.
     pub search: PathBuf,
     /// The app's own temporary folder (the iPad's `tmp`), listed only when `temp_is_own`.
@@ -43,8 +45,10 @@ pub enum Kind {
     Unfinished(String),
     /// What the graphics compiled (compile_cache).
     CompileCache(compile_cache::Kind),
-    /// The speech models.
+    /// What came with the app for speech: the voice detector.
     Speech,
+    /// A voice pack downloaded, by its id.
+    VoicePack(String),
     /// The meeting search indexes, made again from the meetings.
     SearchIndex,
     /// The meetings, with their sound and pages, and the inbox.
@@ -107,7 +111,20 @@ pub fn survey(places: &Places) -> Vec<Item> {
     for entry in compile_cache::entries(&compile_cache::root(&places.models), &places.metal) {
         out.push(Item { kind: Kind::CompileCache(entry.kind.clone()), paths: std::iter::once(entry.path.clone()).chain(entry.more.clone()).collect(), bytes: entry.bytes, built_in: false, cache: Some(entry) });
     }
-    if places.voice.is_dir() {
+    if let Some(packs) = &places.packs {
+        for pack in alcyo_models::voice::Pack::ALL {
+            let bytes = packs.on_disk(pack);
+            // Live captions are said with Chinese, in its row.
+            if bytes == 0 || pack == alcyo_models::voice::Pack::Live && packs.on_disk(alcyo_models::voice::Pack::Zh) > 0 {
+                continue;
+            }
+            let folders = std::iter::once(pack).chain((pack == alcyo_models::voice::Pack::Zh).then_some(alcyo_models::voice::Pack::Live));
+            let paths: Vec<PathBuf> = folders.map(|p| packs.packs.join(p.folder())).filter(|p| p.exists()).collect();
+            let bytes = bytes + if pack == alcyo_models::voice::Pack::Zh { packs.on_disk(alcyo_models::voice::Pack::Live) } else { 0 };
+            out.push(Item { kind: Kind::VoicePack(pack.id().to_string()), paths, bytes, built_in: false, cache: None });
+        }
+    }
+    if places.voice.is_dir() && places.packs.as_ref().is_none_or(|p| p.packs != places.voice) {
         out.push(item(Kind::Speech, vec![places.voice.clone()], true));
     }
     let index = places.data.join("search");
@@ -188,6 +205,7 @@ mod tests {
             data: root.join("data"),
             models: root.join("data/models"),
             voice: root.join("app/voice"),
+            packs: None,
             search: root.join("app/search"),
             temp: root.join("tmp"),
             temp_is_own: true,
@@ -264,6 +282,28 @@ mod tests {
         assert_eq!(freed, 8100);
         assert!(!p.models.join("a.gguf").exists() && !p.data.join("meetings").exists());
         assert!(p.voice.join("x.onnx").exists(), "built in, kept");
+        let _ = std::fs::remove_dir_all(p.data.parent().unwrap());
+    }
+
+    /// Each downloaded voice pack is a row to delete, Chinese with its live captions; the voice detector that came
+    /// with the app stays built in.
+    #[test]
+    fn voice_packs_are_rows_of_their_own() {
+        let mut p = scratch("packs");
+        let packs = p.models.join("voice");
+        p.packs = Some(alcyo_models::voice::Places { packs: packs.clone(), bundled: p.voice.clone() });
+        write(&p.voice.join("silero_vad.onnx"), 300);
+        write(&packs.join("sense-voice/model.int8.onnx"), 1000);
+        write(&packs.join("draft-zh/encoder.int8.onnx.part"), 500);
+        write(&packs.join("speaker/campplus_zh_en.onnx"), 200);
+        let items = survey(&p);
+        let find = |id: &str| items.iter().find(|i| i.kind == Kind::VoicePack(id.into()));
+        let zh = find("zh").expect("Chinese");
+        assert!(zh.bytes == 1500 && zh.deletable(), "with its live captions, unfinished as they are: {zh:?}");
+        assert!(find("live").is_none(), "in Chinese's row");
+        assert_eq!(find("spk").map(|i| i.bytes), Some(200));
+        assert!(find("en").is_none(), "nothing of English is here");
+        assert!(items.iter().any(|i| i.kind == Kind::Speech && i.built_in && i.bytes == 300));
         let _ = std::fs::remove_dir_all(p.data.parent().unwrap());
     }
 

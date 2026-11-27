@@ -27,7 +27,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: resources/voice
-          key: voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+          key: voice-${{ hashFiles('crates/models/src/voice/catalogue.rs') }}
       - name: Cache the meeting search model
         uses: actions/cache@v4
         with:

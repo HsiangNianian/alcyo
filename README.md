@@ -30,19 +30,20 @@ The desktop app is a native rewrite in Rust on [GPUI](crates/README.md). The ear
 
 ## Get started
 
-1. Download a package from [Releases](https://github.com/HsiangNianian/alcyo/releases/latest). They hold the same app and differ in the speech models inside:
+1. Download the package for your system from [Releases](https://github.com/HsiangNianian/alcyo/releases/latest): `…-macos.dmg` (or `.zip`), `…-linux.tar.gz` or `…-windows.zip`. Speech models are not inside: on first launch you tick the languages your meetings use, and their **voice packs** download together in the background:
 
-   | Package | Recognizes | Speech models |
+   | Voice pack | For | Size |
    |---|---|---|
-   | `…-macos.zip`, `…-linux.tar.gz`, `…-windows.zip` | Japanese, English and Chinese, each with its best model | about 1.1 GB |
-   | `…-ja` | Japanese, with ReazonSpeech | about 160 MB |
-   | `…-en` | English, with Parakeet | about 660 MB |
-   | `…-macos-none.zip` | Whatever your Mac's own recognizer supports | none |
+   | 中文 | Chinese, with SenseVoice, which also hears English, Japanese, Korean and Cantonese | about 240 MB |
+   | Live captions | Chinese words appearing as people speak (comes with 中文) | about 167 MB |
+   | English | English, more accurately, with Parakeet | about 663 MB |
+   | 日本語 | Japanese, with ReazonSpeech | about 160 MB |
+   | Tell speakers apart | Naming new voices A, B, C (CAM++ and Nemotron) | about 132 MB |
 
-   Every package also carries the 334 MB model behind meeting search. Packages are built for macOS (Apple Silicon and Intel), Linux x64 and Windows x64.
+   On a Mac, Apple's own recognizer works without any of them and listens until they arrive. Packs can be added or deleted any time in Settings › Speech. Every package carries the 334 MB model behind meeting search. Packages are built for macOS (Apple Silicon and Intel), Linux x64 and Windows x64.
 
 2. **macOS:** open the `.dmg` and drag Alcyo to Applications; it is signed and notarized, so it opens like any other app. Each package also comes as a `.zip` holding the same app. **Linux:** unpack the archive and run `./install.sh` (into `~/.local`, no root needed; `--uninstall` removes it and keeps your data). Later versions then install themselves. **Windows:** unpack the archive and run `bin\alcyo.exe`; there is no installer, and it does not update itself yet.
-3. On first launch, Settings opens on **Board model**: download a model that runs on this computer, or set up a remote one. Speech recognition is already included.
+3. On first launch, Settings opens on **Board model**: download a model that runs on this computer, or set up a remote one. The voice packs keep downloading meanwhile.
 4. Click **Start listening** (or press `Space`), or type a line in the transcript's input and press Enter.
 
 An installed copy looks for a new version shortly after starting. It installs in the background and waits for you to restart, so a meeting is never interrupted.

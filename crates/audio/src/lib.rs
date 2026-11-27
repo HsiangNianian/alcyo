@@ -22,7 +22,62 @@ mod drafts;
 pub use drafts::{Draft, DraftWith, MODEL as DRAFT_MODEL};
 pub use listen::{capture, computer_sounds, microphones, Input, Listen, Sources, Warning};
 
+/// Where the speech models are: one folder or several, each laid out like `resources/voice`, searched in turn for
+/// each model. The app looks in the voice packs it downloaded first, then in what came with it (the voice detector,
+/// or every model in a checkout).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Models(Vec<PathBuf>);
+
+impl Models {
+    pub fn new(dirs: Vec<PathBuf>) -> Self {
+        Self(dirs)
+    }
+
+    /// The first folder that has `path` (a file or a folder in it), or else the first folder.
+    pub fn dir_of(&self, path: &str) -> PathBuf {
+        self.0.iter().find(|d| d.join(path).exists()).or(self.0.first()).cloned().unwrap_or_default()
+    }
+
+    /// `path` in the first folder that has it.
+    pub fn file(&self, path: &str) -> PathBuf {
+        self.dir_of(path).join(path)
+    }
+
+    /// The folder holding `path`, a model's main file, from the first folder that has that file: a model's folder
+    /// with only an unfinished download in it does not count.
+    pub fn folder_of(&self, path: &str) -> PathBuf {
+        let file = self.file(path);
+        file.parent().map(Path::to_path_buf).unwrap_or(file)
+    }
+}
+
+impl From<&Models> for Models {
+    fn from(models: &Models) -> Self {
+        models.clone()
+    }
+}
+
+impl From<&Path> for Models {
+    fn from(dir: &Path) -> Self {
+        Self(vec![dir.to_path_buf()])
+    }
+}
+
+impl From<&PathBuf> for Models {
+    fn from(dir: &PathBuf) -> Self {
+        Self(vec![dir.clone()])
+    }
+}
+
+impl From<PathBuf> for Models {
+    fn from(dir: PathBuf) -> Self {
+        Self(vec![dir])
+    }
+}
+
 pub const SAMPLE_RATE: i32 = alcyo_keep::SAMPLE_RATE;
+/// What an ear says when there is nothing to recognize speech with.
+pub const NO_RECOGNIZER: &str = "no speech recognizer: neither a speech model nor the system's recognizer is there";
 const VAD_WINDOW: usize = 512;
 /// Same pause as the desktop app: this long a silence ends a sentence.
 const MIN_SILENCE: f32 = 0.45;
@@ -417,12 +472,16 @@ pub struct Recognizers {
 }
 
 impl Recognizers {
-    /// Whatever models are in `models`: `sense-voice/`, `parakeet-en/` and `reazon-ja/`.
-    pub fn load(models: &Path) -> Self {
-        let dir = models.join("sense-voice");
+    /// Whatever models are in `models`: `sense-voice/`, `parakeet-en/` and `reazon-ja/`, each from the first folder
+    /// that has it.
+    pub fn load(models: impl Into<Models>) -> Self {
+        let models = models.into();
+        let dir = models.folder_of("sense-voice/model.int8.onnx");
         let sense_voice = load_sense_voice_if_there(&dir);
         let sense_voice_dir = sense_voice.is_some().then_some(dir);
-        Self { system: None, sense_voice, english: load_parakeet(&models.join("parakeet-en")), japanese: load_reazon(&models.join("reazon-ja")), sense_voice_dir, chinese: None, language: Language::Auto }
+        let english = load_parakeet(&models.folder_of("parakeet-en/encoder.int8.onnx"));
+        let japanese = load_reazon(&models.folder_of("reazon-ja/encoder-epoch-99-avg-1.int8.onnx"));
+        Self { system: None, sense_voice, english, japanese, sense_voice_dir, chinese: None, language: Language::Auto }
     }
 
     /// The same recognizers, hearing `language`.
@@ -576,16 +635,18 @@ pub struct Ear {
 impl Ear {
     /// `models` holds `silero_vad.onnx`, `speaker/` and the recognizers' folders (see [`Recognizers::load`]).
     /// Without the speaker model, speech is still heard, but speakers are not told apart.
-    pub fn load(models: &Path) -> Result<Self> {
-        Self::with(models, Recognizers::load(models))
+    pub fn load(models: impl Into<Models>) -> Result<Self> {
+        let models = models.into();
+        Self::with(&models, Recognizers::load(models.clone()))
     }
 
     /// An ear with the recognizers given, and the detector and speaker model from `models`.
-    pub fn with(models: &Path, asr: Recognizers) -> Result<Self> {
+    pub fn with(models: impl Into<Models>, asr: Recognizers) -> Result<Self> {
         if asr.is_empty() {
-            return Err(anyhow!("no speech recognizer: neither a speech model nor the system's recognizer is there"));
+            return Err(anyhow!(NO_RECOGNIZER));
         }
-        let path = |p: &str| models.join(p).to_string_lossy().to_string();
+        let models: Models = models.into();
+        let path = |p: &str| models.file(p).to_string_lossy().to_string();
         let vad_config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
                 model: Some(path("silero_vad.onnx")),
@@ -604,7 +665,7 @@ impl Ear {
         if speaker.is_none() {
             eprintln!("the speaker model did not load, so speakers will not be told apart");
         }
-        let turns_wanted = chosen_latency().map(|latency| (models.to_path_buf(), latency));
+        let turns_wanted = chosen_latency().map(|latency| (models.dir_of(turns::MODEL), latency));
         Ok(Self {
             vad,
             asr,
@@ -637,9 +698,10 @@ impl Ear {
     }
 
     /// Tell speakers apart at this latency instead, or not split sentences at all with `None`.
-    pub fn turns(mut self, models: &Path, latency: Option<Latency>) -> Self {
+    pub fn turns(mut self, models: impl Into<Models>, latency: Option<Latency>) -> Self {
+        let models: Models = models.into();
         self.turns = None;
-        self.turns_wanted = latency.map(|l| (models.to_path_buf(), l));
+        self.turns_wanted = latency.map(|l| (models.dir_of(turns::MODEL), l));
         self
     }
 
@@ -1026,6 +1088,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_model_comes_from_the_first_folder_that_has_it() {
+        let root = std::env::temp_dir().join(format!("alcyo-models-dirs-{}", std::process::id()));
+        let (packs, bundled) = (root.join("packs"), root.join("bundled"));
+        for dir in [packs.join("sense-voice"), bundled.join("sense-voice"), bundled.join("parakeet-en")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(bundled.join("silero_vad.onnx"), b"x").unwrap();
+        std::fs::write(bundled.join("sense-voice/model.int8.onnx"), b"x").unwrap();
+        // Only an unfinished download in the packs' folder: the finished copy is used.
+        std::fs::write(packs.join("sense-voice/model.int8.onnx.part"), b"x").unwrap();
+        let models = Models::new(vec![packs.clone(), bundled.clone()]);
+        assert_eq!(models.file("silero_vad.onnx"), bundled.join("silero_vad.onnx"));
+        assert_eq!(models.folder_of("sense-voice/model.int8.onnx"), bundled.join("sense-voice"));
+        // Downloaded, it comes first.
+        std::fs::write(packs.join("sense-voice/model.int8.onnx"), b"x").unwrap();
+        assert_eq!(models.folder_of("sense-voice/model.int8.onnx"), packs.join("sense-voice"));
+        // Nowhere: the first folder, where it would go.
+        assert_eq!(models.file("reazon-ja/tokens.txt"), packs.join("reazon-ja/tokens.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn english_goes_to_parakeet_and_chinese_with_english_terms_does_not() {
         assert!(is_english("The gateway forwards the request."));
         assert!(!is_english("小程序把请求发给后端的异步 API。"));
@@ -1103,7 +1187,8 @@ mod tests {
         assert_eq!(asr.hear(&[0.0; 16_000]), ("こんにちは".to_string(), Engine::System));
         let none = Recognizers { system: None, sense_voice: None, english: None, japanese: None, sense_voice_dir: None, chinese: None, language: Language::Auto };
         assert!(none.is_empty());
-        assert!(Ear::with(Path::new("/nowhere"), none).is_err());
+        let error = Ear::with(Path::new("/nowhere"), none).err().expect("nothing to hear with");
+        assert_eq!(error.to_string(), NO_RECOGNIZER, "the app tells this apart from other failures");
     }
 
     #[test]

@@ -102,7 +102,7 @@ fn name(prefix: &str, part: impl std::fmt::Display) -> ElementId {
 }
 
 /// A group's name over its rows, in small capitals, with something said at its right.
-fn label(text: &str, aside: Option<AnyElement>) -> gpui_kit::Div {
+pub(super) fn label(text: &str, aside: Option<AnyElement>) -> gpui_kit::Div {
     div()
         .flex()
         .items_center()
@@ -116,7 +116,7 @@ fn label(text: &str, aside: Option<AnyElement>) -> gpui_kit::Div {
 }
 
 /// Rows that go together, inset on the chrome's grey, with a hairline between them that starts at the text.
-fn group(rows: Vec<AnyElement>) -> gpui_kit::Div {
+pub(super) fn group(rows: Vec<AnyElement>) -> gpui_kit::Div {
     div().flex().flex_col().rounded(px(16.)).bg(rgb(pal().chrome)).overflow_hidden().children(rows.into_iter().enumerate().map(|(i, row)| {
         div().relative().when(i > 0, |d| d.child(div().absolute().top_0().left(px(16.)).right_0().h(px(1.)).bg(rgb(pal().line)))).child(row)
     }))
@@ -150,7 +150,7 @@ fn chevron(name: &str) -> gpui_kit::Div {
 }
 
 /// The system's switch, its knob gliding across and its green filling in.
-fn switch(id: &str, on: bool) -> gpui_kit::Div {
+pub(super) fn switch(id: &str, on: bool) -> gpui_kit::Div {
     let green = if theme::is_dark() { 0x30_d1_58 } else { 0x34_c7_59 };
     let off = tint(0x78_78_80, if theme::is_dark() { 0.32 } else { 0.16 });
     let key = id;
@@ -187,7 +187,7 @@ fn radio(on: bool, size: f32) -> gpui_kit::Div {
 }
 
 /// A small round button, grey or in the accent.
-fn pill_button(id: impl Into<ElementId>, text: &str, accent: bool, glyph: Option<&str>) -> Stateful<gpui_kit::Div> {
+pub(super) fn pill_button(id: impl Into<ElementId>, text: &str, accent: bool, glyph: Option<&str>) -> Stateful<gpui_kit::Div> {
     div()
         .id(id)
         .flex_none()
@@ -422,6 +422,23 @@ impl Workbench {
             self.panel = Panel::Settings;
         }
         let shown = open || self.sheet.sinking.is_some();
+        // The voice packs: a toast under the status bar after an update, a note over the dock while Apple's recognizer
+        // listens for them, and their sheet.
+        let packs_note = self.packs_dock_note(cx);
+        let packs_toast = self.ipad_packs_toast(cx);
+        let packs_sheet = self.ipad_packs_sheet(window, cx);
+        let screen = if packs_note.is_some() || packs_toast.is_some() || packs_sheet.is_some() {
+            div()
+                .relative()
+                .size_full()
+                .child(screen)
+                .when_some(packs_toast, |d, toast| d.child(div().absolute().top(px(12.)).left_0().right_0().flex().justify_center().child(toast)))
+                .when_some(packs_note, |d, note| d.child(div().absolute().bottom(px(96.)).left_0().right_0().flex().justify_center().child(note)))
+                .when_some(packs_sheet, |d, sheet| d.child(sheet))
+                .into_any_element()
+        } else {
+            screen
+        };
         let intro = self.onboarding(window, cx);
         if !shown && intro.is_none() {
             return screen;
@@ -1138,10 +1155,18 @@ impl Workbench {
         let names: Vec<String> = glossary.terms.iter().take(3).map(|term| term.text.clone()).collect();
         let glossary_hint = if names.is_empty() { t("ipad-glossary-hint").to_string() } else { ta!("ipad-glossary-hint-names", names = format!("{}{}", names.join(", "), if glossary.terms.len() > 3 { "…" } else { "" })) };
         let count = glossary.terms.len();
+        let speakers_here = self.packs.usable(alcyo_models::voice::Pack::Spk);
         let keep = group(vec![
             row()
-                .child(titled(t("tell-speakers-apart-by-voice"), None))
-                .child(switch("ipad-diarize", self.form.saved.diarize).id("ipad-diarize-switch").cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                .child(titled(t("tell-speakers-apart-by-voice"), (!speakers_here).then(|| t("vp-needs-spk").to_string())))
+                // Without its pack the switch is grey, and the pack is offered beside it.
+                .when(!speakers_here, |d| {
+                    d.child(pill_button("ipad-diarize-get", &ta!("vp-download-size", size = voice_packs::mb(alcyo_models::voice::Pack::Spk.size())), true, Some("download")).on_click(cx.listener(|this, _, _, cx| this.packs_download(&[alcyo_models::voice::Pack::Spk], cx))))
+                })
+                .child(switch("ipad-diarize", self.form.saved.diarize && speakers_here).id("ipad-diarize-switch").when(!speakers_here, |d| d.opacity(0.4)).when(speakers_here, |d| d.cursor_pointer()).on_click(cx.listener(move |this, _, _, cx| {
+                    if !speakers_here {
+                        return;
+                    }
                     this.form.saved.diarize = !this.form.saved.diarize;
                     if let Err(e) = this.form.saved.save() {
                         this.form.note = Some(format!("{e:#}"));
@@ -1169,12 +1194,15 @@ impl Workbench {
                 }))
                 .into_any_element(),
         ]);
-        vec![
-            div().flex().flex_col().gap(px(8.)).child(label(t("ipad-recognize-with"), None)).child(recognizers).into_any_element(),
+        let packs = self.sheet_packs(cx);
+        let mut out = vec![div().flex().flex_col().gap(px(8.)).child(label(t("ipad-recognize-with"), None)).child(recognizers).into_any_element()];
+        out.extend(packs);
+        out.extend([
             devices.into_any_element(),
             div().mt(px(-8.)).px(px(4.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(p.muted)).child(t("ipad-speech-note")).into_any_element(),
             keep.into_any_element(),
-        ]
+        ]);
+        out
     }
 
     /// General: the look and the language, what happens while listening, and the Pencil.
