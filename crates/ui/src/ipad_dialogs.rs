@@ -73,6 +73,36 @@ pub(super) fn round_icon(id: impl Into<gpui_kit::ElementId>, glyph: &str) -> gpu
         .child(icon(glyph).size(px(19.)))
 }
 
+/// A switch as iOS draws one: a 51 × 31 pt capsule, green with its knob to the right when on, grey with it to the
+/// left when off; dimmed when it cannot be changed. The caller says what a tap does.
+pub(super) fn ios_switch(id: &'static str, on: bool, enabled: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+    const GREEN: u32 = 0x34_c7_59;
+    let dark = theme::is_dark();
+    let track = if on { rgb(GREEN).into() } else if dark { alpha(0x78_78_80, 0.36) } else { alpha(0x78_78_80, 0.16) };
+    let knob = div()
+        .absolute()
+        .top(px(2.))
+        .size(px(27.))
+        .rounded_full()
+        .bg(rgb(0xff_ff_ff))
+        .shadow(vec![
+            BoxShadow { color: alpha(0, 0.15), offset: point(px(0.), px(3.)), blur_radius: px(8.), spread_radius: px(0.), inset: false },
+            BoxShadow { color: alpha(0, 0.06), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false },
+        ])
+        .with_spring(ElementId::Name(format!("{id}-knob").into()), gpui_kit::SpringAnimation::new(motion::GLIDE).to(if on { 1.0 } else { 0.0 }), |d, v| d.left(px(2. + 20. * v.clamp(0., 1.))));
+    div()
+        .id(id)
+        .flex_none()
+        .relative()
+        .w(px(51.))
+        .h(px(31.))
+        .rounded_full()
+        .bg(track)
+        .when(enabled, |d| d.cursor_pointer())
+        .when(!enabled, |d| d.opacity(0.45))
+        .child(knob)
+}
+
 /// One choice in an iPad floating menu.
 pub(super) struct MenuRow {
     pub(super) label: String,
@@ -81,12 +111,19 @@ pub(super) struct MenuRow {
     pub(super) checked: bool,
     /// A hairline above it, between groups.
     pub(super) apart: bool,
+    /// Not a choice: a line of small grey text at the top, saying what the menu is for.
+    pub(super) heading: bool,
     pub(super) act: Rc<dyn Fn(&mut Workbench, &mut Window, &mut Context<Workbench>)>,
 }
 
 impl MenuRow {
     pub(super) fn new(label: impl Into<String>, act: impl Fn(&mut Workbench, &mut Window, &mut Context<Workbench>) + 'static) -> Self {
-        Self { label: label.into(), glyph: None, checked: false, apart: false, act: Rc::new(act) }
+        Self { label: label.into(), glyph: None, checked: false, apart: false, heading: false, act: Rc::new(act) }
+    }
+
+    /// A line of small grey text at the top of a menu, not a choice.
+    pub(super) fn heading(text: impl Into<String>) -> Self {
+        Self { label: text.into(), glyph: None, checked: false, apart: false, heading: true, act: Rc::new(|_, _, _| {}) }
     }
 
     pub(super) fn glyph(mut self, glyph: &'static str) -> Self {
@@ -135,6 +172,20 @@ impl Workbench {
             return holder;
         }
         let rows = rows.into_iter().enumerate().map(|(i, row)| {
+            if row.heading {
+                return div()
+                    .id(ElementId::Name(format!("{id}-{i}").into()))
+                    .max_w(px(260.))
+                    .px(px(14.))
+                    .pt(px(8.))
+                    .pb(px(8.))
+                    .border_b_1()
+                    .border_color(rgb(p.line))
+                    .text_size(px(12.5))
+                    .line_height(gpui_kit::relative(1.35))
+                    .text_color(rgb(p.muted))
+                    .child(row.label);
+            }
             let act = row.act.clone();
             div()
                 .id(ElementId::Name(format!("{id}-{i}").into()))

@@ -69,6 +69,9 @@ mod ipad;
 mod ipad_card;
 #[path = "ipad_dialogs.rs"]
 mod ipad_dialogs;
+// The Speakers tab on the iPad: one list, a menu on each row.
+#[path = "ipad_speakers.rs"]
+mod ipad_speakers;
 // Settings › Storage, on the iPad and the desktop.
 #[path = "storage_page.rs"]
 mod storage_page;
@@ -1625,8 +1628,10 @@ struct SummaryPanel {
     job: Option<SummaryJob>,
     /// A generated draft waiting for the choice to replace or keep. Text, then its source.
     draft: Option<(String, String)>,
-    /// What "undo" brings back after deleting.
-    cleared: Option<(String, Option<String>)>,
+    /// When the draft was written, in milliseconds since 1970: noted with it if it is used.
+    draft_written: Option<i64>,
+    /// What "undo" brings back after deleting: the text, its source, and when it was written.
+    cleared: Option<(String, Option<String>, Option<i64>)>,
     edits: u64,
     note: Option<String>,
     /// The fingerprint of the meeting now: meeting, its change count, then the value.
@@ -1798,6 +1803,8 @@ struct Workbench {
     speaker_chosen: Option<String>,
     /// The transcript line whose speaker was clicked, which can be given to someone else alone.
     speaker_line: Option<usize>,
+    /// Rename… or Merge, asked as an alert over the iPad's Speakers tab.
+    speaker_alert: Option<ipad_speakers::SpeakerAlert>,
     speaker_name: Entity<InputState>,
     /// The meeting's name while it is being changed in the title bar.
     title_input: Entity<InputState>,
@@ -2983,8 +2990,10 @@ impl Workbench {
                 println!("{{\"summary\":{}}}", serde_json::Value::from(text.clone()));
                 if job.had_text || !self.live.summary().trim().is_empty() || self.summary.edits != job.edits {
                     self.summary.draft = Some((text, job.source));
+                    self.summary.draft_written = Some(chrono::Utc::now().timestamp_millis());
                 } else {
                     self.live.set_summary(&text, Some(&job.source));
+                    self.live.note_summary_written(chrono::Utc::now().timestamp_millis());
                     self.summary.cleared = None;
                 }
             }
@@ -3081,7 +3090,7 @@ impl Workbench {
         if !self.editable() {
             return;
         }
-        self.summary.cleared = Some((self.live.summary().to_string(), self.live.summary_source().map(str::to_string)));
+        self.summary.cleared = Some((self.live.summary().to_string(), self.live.summary_source().map(str::to_string), self.live.summary_written()));
         self.summary.editing = false;
         self.summary.edits += 1;
         self.live.set_summary("", None);
@@ -3090,9 +3099,12 @@ impl Workbench {
     }
 
     fn undo_clear(&mut self, cx: &mut Context<Self>) {
-        if let Some((text, source)) = self.summary.cleared.take() {
+        if let Some((text, source, written)) = self.summary.cleared.take() {
             if self.editable() {
                 self.live.set_summary(&text, source.as_deref());
+                if let Some(at) = written {
+                    self.live.note_summary_written(at);
+                }
                 self.summary.edits += 1;
             }
         }
@@ -3103,6 +3115,7 @@ impl Workbench {
         if let Some((text, source)) = self.summary.draft.take() {
             if self.editable() {
                 self.live.set_summary(&text, Some(&source));
+                self.live.note_summary_written(self.summary.draft_written.take().unwrap_or_else(|| chrono::Utc::now().timestamp_millis()));
                 self.summary.edits += 1;
                 self.summary.editing = false;
                 self.summary.cleared = None;
@@ -5931,24 +5944,16 @@ impl Workbench {
     }
 
     fn rename_speaker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let to = self.speaker_name.read(cx).value().trim().to_string();
+        let to = self.speaker_name.read(cx).value().to_string();
         let Some(from) = self.speaker_chosen.clone() else { return };
-        if !self.editable() || to.is_empty() || to == from {
-            return;
-        }
-        self.session().rename_speaker(&from, &to);
-        self.live.rename_speaker(&from, &to);
-        self.speaker_hovered = None;
-        if self.speaker.as_deref() == Some(from.as_str()) {
-            self.speaker = Some(to.clone());
-        }
-        for name in self.slots.values_mut().filter(|name| **name == from) {
-            *name = to.clone();
-        }
-        self.choose_speaker(to, window, cx);
+        self.rename_speaker_to(&from, &to, window, cx);
     }
 
     fn speakers_panel(&self, editable: bool, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        // On the iPad, one list with a menu on each row (round 6, C).
+        if crate::platform::ipad_layout() {
+            return self.ipad_speakers_panel(editable, cx);
+        }
         let names = self.live.speakers();
         let rows = names.iter().enumerate().map(|(i, name)| {
             let chosen = self.speaker_chosen.as_deref() == Some(name.as_str());
@@ -6921,95 +6926,95 @@ impl Workbench {
             None => (self.summary.note.clone(), pal().muted),
         };
         let ipad = crate::platform::ipad_layout();
-        // On the iPad, the same things as the iPad does them (#341): pills, and round icon buttons a finger's size.
-        // While the summary is being written, on the iPad: a calm row with what it is doing and how far, a thin
-        // line filling under it (or drifting while it cannot tell), and Stop as a quiet pill at its end.
+        // On the iPad (round 6, B): a toolbar along the foot of the card, as Mail has one. Tinted icons for what can
+        // be done, and between them one short line on where the summary stands, never more: what it is writing,
+        // that the meeting has moved on, a note such as "Copied", or when it was written. Editing turns the bar
+        // into Delete, "Editing" and Done, as Notes does. A long note (a failure) is said in the card instead.
+        let note_short = self.summary.note.clone().filter(|note| note.chars().count() <= SUMMARY_NOTE_FITS);
+        let ipad_note = self.summary.note.clone().filter(|_| ipad && note_short.is_none());
+        let written = self.live.summary_written().map(summary_written_label);
         let step = self.summary.job.as_ref().and_then(|job| job.step).filter(|(_, total)| *total > 1).map(|(done, total)| ((done as f32 + 0.5) / total as f32).clamp(0.05, 1.0));
-        let ipad_progress = (ipad && busy.is_some()).then(|| {
+        let ipad_foot = (ipad && (has_text || busy.is_some() || note_short.is_some())).then(|| {
             let p = pal();
-            let line = div().h(px(3.)).w_full().rounded(px(2.)).bg(ipad_dialogs::well()).overflow_hidden().child(match step {
-                Some(share) => div().h_full().rounded(px(2.)).bg(rgb(p.accent)).with_spring("summary-progress", SpringAnimation::new(motion::GLIDE).to(share), |d, v| d.w(gpui_kit::relative(v.clamp(0., 1.)))).into_any_element(),
-                None => div().h_full().w(gpui_kit::relative(0.3)).rounded(px(2.)).bg(rgb(p.accent)).with_animation("summary-drift", gpui_kit::Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.ml(gpui_kit::relative(-0.3 + 1.3 * t))).into_any_element(),
-            });
-            div()
-                .flex_none()
+            let tinted = |id: &'static str, glyph: &'static str, enabled: bool| {
+                div()
+                    .id(id)
+                    .flex_none()
+                    .size(px(40.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .text_color(rgb(p.accent))
+                    .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(ipad_dialogs::well())).active(|d| d.opacity(0.6)))
+                    .when(!enabled, |d| d.opacity(0.35))
+                    .child(icon(glyph).size(px(21.)))
+            };
+            let foot = div().flex_none().h(px(56.)).flex().items_center().gap(px(4.)).px(px(10.)).border_t_1().border_color(rgb(p.line));
+            if editing {
+                let word = |id: &'static str, text: &'static str, color: u32, bold: bool| {
+                    div().id(id).flex_none().h(px(44.)).px(px(8.)).flex().items_center().text_size(px(16.)).text_color(rgb(color)).when(bold, |d| d.font_weight(gpui_kit::FontWeight::SEMIBOLD)).cursor_pointer().active(|d| d.opacity(0.6)).child(text)
+                };
+                return foot
+                    .child(word("clear-summary", t("delete"), p.danger, false).on_click(cx.listener(|this, _, window, cx| this.clear_summary(window, cx))))
+                    .child(div().flex_1().min_w_0().text_center().text_size(px(13.)).font_weight(gpui_kit::FontWeight::MEDIUM).text_color(rgb(p.text)).whitespace_nowrap().child(t("summary-editing")))
+                    .child(word("edit-summary", t("done"), p.accent, true).on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))));
+            }
+            let left: gpui_kit::AnyElement = match () {
+                _ if editable && busy.is_some() => tinted("stop-summary", "ipad/stop", true).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))).into_any_element(),
+                _ if editable && has_text => {
+                    let again = tinted("make-summary", "ipad/rewrite", can_make);
+                    if can_make { again.on_click(cx.listener(|this, _, _, cx| this.make_summary(cx))).into_any_element() } else { again.into_any_element() }
+                }
+                _ => div().flex_none().size(px(40.)).into_any_element(),
+            };
+            // One line, short enough to fit whole.
+            let (status, color, dot): (Option<String>, u32, bool) = match (&busy, &note_short) {
+                (Some(status), _) => (Some(status.clone()), p.text, true),
+                (None, Some(note)) => (Some(note.clone()), p.muted, false),
+                (None, None) if stale => (Some(t("the-meeting-has-moved-on").to_string()), p.warning, false),
+                (None, None) => (written.clone(), p.muted, false),
+            };
+            let middle = div()
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .px(px(16.))
-                .pt(px(12.))
-                .pb(px(14.))
-                .border_b_1()
-                .border_color(rgb(p.line))
+                .items_center()
+                .gap(px(5.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
-                        .child(div().flex_none().size(px(8.)).rounded_full().bg(rgb(p.accent)).with_animation("summary-busy", motion::pulse(), |d, t| d.opacity(t)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.))
-                                .child(div().text_size(px(15.)).font_weight(gpui_kit::FontWeight::MEDIUM).text_color(rgb(p.text)).child(t("ipad-summary-writing")))
-                                .child(div().text_size(px(13.)).text_color(rgb(p.muted)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(busy.clone().unwrap_or_default())),
-                        )
-                        .when(editable, |d| d.child(ipad_dialogs::pill("stop-summary", t("stop"), ipad_dialogs::Look::Plain, None).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))))),
+                        .gap(px(6.))
+                        .text_size(px(12.5))
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(rgb(color))
+                        .whitespace_nowrap()
+                        .when(dot, |d| d.child(div().flex_none().size(px(6.)).rounded_full().bg(rgb(p.accent)).with_animation("summary-busy", motion::pulse(), |d, t| d.opacity(t))))
+                        .when_some(status, |d, status| d.child(status)),
                 )
-                .child(line)
-        });
-        let ipad_bar = ipad.then(|| {
-            let mut left: Vec<gpui_kit::AnyElement> = vec![];
-            if editable && busy.is_some() {
-                left.push(ipad_dialogs::pill("stop-summary", t("stop"), ipad_dialogs::Look::Ending, None).on_click(cx.listener(|this, _, _, cx| this.stop_summary(cx))).into_any_element());
-            }
-            if editable && busy.is_none() && has_text && !editing {
-                let again = ipad_dialogs::pill("make-summary", t("write-again"), ipad_dialogs::Look::Plain, Some("ipad/sparkle"));
-                left.push(if can_make { again.on_click(cx.listener(|this, _, _, cx| this.make_summary(cx))).into_any_element() } else { again.opacity(0.4).into_any_element() });
-            }
+                .when(busy.is_some(), |d| {
+                    d.child(div().w(px(96.)).h(px(3.)).rounded(px(2.)).bg(ipad_dialogs::well()).overflow_hidden().child(match step {
+                        Some(share) => div().h_full().rounded(px(2.)).bg(rgb(p.accent)).with_spring("summary-progress", SpringAnimation::new(motion::GLIDE).to(share), |d, v| d.w(gpui_kit::relative(v.clamp(0., 1.)))).into_any_element(),
+                        None => div().h_full().w(gpui_kit::relative(0.3)).rounded(px(2.)).bg(rgb(p.accent)).with_animation("summary-drift", gpui_kit::Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.ml(gpui_kit::relative(-0.3 + 1.3 * t))).into_any_element(),
+                    }))
+                });
             let mut right: Vec<gpui_kit::AnyElement> = vec![];
-            if has_text && !editing {
+            if has_text {
                 let (markdown, plain) = (text.clone(), summary::plain_text(&text));
                 let rows = vec![
                     ipad_dialogs::MenuRow::new(t("copy-as-plain-text"), move |this, _, cx| this.copy_summary(plain.clone(), t("copied-as-plain-text"), cx)).glyph("ipad/copy"),
                     ipad_dialogs::MenuRow::new(t("copy-the-markdown-source"), move |this, _, cx| this.copy_summary(markdown.clone(), t("copied-the-markdown-source"), cx)).glyph("ipad/export"),
                 ];
-                right.push(self.ipad_menu("copy-summary", ipad_dialogs::round_icon("copy-summary", "ipad/copy"), rows, false, cx).into_any_element());
+                right.push(self.ipad_menu("copy-summary", tinted("copy-summary", "ipad/copy", true), rows, true, cx).into_any_element());
             }
-            if editable && has_text && !editing {
-                right.push(ipad_dialogs::round_icon("edit-summary", "ipad/pen").on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
-                right.push(ipad_dialogs::round_icon("clear-summary", "ipad/trash").on_click(cx.listener(|this, _, window, cx| this.clear_summary(window, cx))).into_any_element());
+            if editable && has_text {
+                right.push(tinted("edit-summary", "ipad/compose", true).on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
             }
-            if editing {
-                right.push(ipad_dialogs::pill("edit-summary", t("done"), ipad_dialogs::Look::Main, None).on_click(cx.listener(|this, _, window, cx| this.edit_summary(window, cx))).into_any_element());
-            }
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .px(px(12.))
-                .min_h(px(56.))
-                .flex_none()
-                .border_b_1()
-                .border_color(rgb(pal().line))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .text_size(px(13.))
-                        .text_color(rgb(state_color))
-                        .children(left)
-                        .when_some(state.clone(), |d, state| {
-                            d.when(busy.is_some() || stale, |d| d.child(div().size(px(6.)).flex_none().rounded_full().bg(rgb(state_color)))).child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().child(state))
-                        }),
-                )
-                .child(div().flex().items_center().gap(px(2.)).flex_none().children(right))
+            // The middle stays centred: the sides take the same room.
+            let side = |items: Vec<gpui_kit::AnyElement>, end: bool| div().flex_none().w(px(84.)).flex().items_center().gap(px(4.)).when(end, |d| d.justify_end()).children(items);
+            foot.child(side(vec![left], false)).child(middle).child(side(right, true))
         });
         let bar = div()
             .flex()
@@ -7103,7 +7108,8 @@ impl Workbench {
                 }
                 d.child(div().flex().items_center().justify_between().gap_2().mb_3().px_3().py_2().bg(rgb(pal().selected)).child(div().text_small().child(t("summary-deleted"))).child(button("undo-clear", t("undo")).on_click(cx.listener(|this, _, _, cx| this.undo_clear(cx)))))
             })
-            .when(busy.is_some() && has_text, |d| d.child(div().mb_3().text_small().text_color(rgb(pal().muted)).child(t("your-current-text-stays-here"))))
+            .when(!ipad && busy.is_some() && has_text, |d| d.child(div().mb_3().text_small().text_color(rgb(pal().muted)).child(t("your-current-text-stays-here"))))
+            .when_some(ipad_note, |d, note| d.child(div().mb_3().text_size(px(13.)).line_height(gpui_kit::relative(1.4)).text_color(rgb(pal().danger)).child(note)))
             // Nothing yet: what it will hold, and the one thing to do.
             .when(empty, |d| {
                 d.child(
@@ -7179,12 +7185,19 @@ impl Workbench {
                         ),
                 )
             });
-        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().map(|d| match (ipad_progress, ipad_bar) {
-            (Some(progress), _) => d.child(progress),
-            (None, Some(ipad_bar)) => d.child(ipad_bar),
-            (None, None) => d.child(bar),
-        }).child(body)
+        div().id("summary-panel").flex_1().min_h_0().flex().flex_col().when(!ipad, |d| d.child(bar)).child(body).when_some(ipad_foot, |d, foot| d.child(foot))
     }
+}
+
+/// How long a note may be to stand in the iPad summary's toolbar, whole.
+const SUMMARY_NOTE_FITS: usize = 28;
+
+/// "Written 19:24" for a summary written today, with its date for one written before.
+fn summary_written_label(at_ms: i64) -> String {
+    let Some(at) = chrono::DateTime::from_timestamp_millis(at_ms) else { return String::new() };
+    let at: chrono::DateTime<chrono::Local> = at.into();
+    let when = if at.date_naive() == chrono::Local::now().date_naive() { at.format("%H:%M").to_string() } else { at.format("%Y-%m-%d").to_string() };
+    ta!("summary-written", when = when)
 }
 
 /// A speaker's letter in their color, which follows the order people first spoke in.
@@ -9770,7 +9783,7 @@ impl Render for Workbench {
         let summary_panel = (self.panel == Panel::Summary).then(|| self.summary_panel(editable, cx));
         let export_panel = (self.panel == Panel::Export).then(|| self.export_panel(cx));
         let share_panel = (self.panel == Panel::Share).then(|| self.share_panel(cx));
-        let diag_panel = (self.panel == Panel::Diagnostics).then(|| self.diag_panel(cx));
+        let diag_panel = (self.panel == Panel::Diagnostics && !ipad).then(|| self.diag_panel(cx));
         let import_panel = (self.panel == Panel::Import).then(|| self.import_panel(cx));
         let speakers_panel = (self.panel == Panel::Speakers).then(|| self.speakers_panel(editable, cx));
         // A dialog for what is done in one go, over a dimmed window; clicking outside closes it.
@@ -9833,6 +9846,8 @@ impl Render for Workbench {
         let mut overlay: Option<gpui_kit::AnyElement> = match self.panel {
             Panel::Export => export_panel.map(|body| dialog(t("export"), body, cx).into_any_element()),
             Panel::Share => share_panel.map(|body| dialog(t("share"), body, cx).into_any_element()),
+            // On the iPad a popover from the export button (round 6, C); a desktop keeps its dialog.
+            Panel::Diagnostics if ipad => Some(self.ipad_diag_popover(window, cx)),
             Panel::Diagnostics => diag_panel.map(|body| dialog(t("diag-title"), body, cx).into_any_element()),
             Panel::Import => import_panel.map(|body| dialog(t("import"), body, cx).into_any_element()),
             Panel::Library => Some(
@@ -10307,7 +10322,7 @@ impl Render for Workbench {
                 offers: offers.into_any_element(),
                 notices: notices.map(IntoElement::into_any_element),
                 page,
-                dialog: overlay.take_if(|_| in_dialog),
+                dialog: overlay.take_if(|_| in_dialog).or_else(|| self.ipad_speaker_alert(cx)),
                 preparing: preparing_page.map(IntoElement::into_any_element),
                 replay_bar: replay_bar.map(IntoElement::into_any_element),
                 shortcuts: self.shortcuts_shown.then(|| self.shortcuts_window(cx)),
@@ -11004,7 +11019,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     library_query,
                     label_input,
                     form: SettingsForm { glossary, glossary_name: glossary_name.clone(), glossary_heard: glossary_heard.clone(), glossary_editing: None, glossary_as_text: false, glossary_note: None, base_url, model, key, remote, messy: messy.clone(), proxy_url, proxy_user, proxy_password, proxy_note: None, saved: settings, note: None, probing: None },
-                    summary: SummaryPanel { editor, editing: false, job: None, draft: None, cleared: None, edits: 0, note: None, current: None },
+                    summary: SummaryPanel { editor, editing: false, job: None, draft: None, draft_written: None, cleared: None, edits: 0, note: None, current: None },
                     replay: None,
                     import: ImportState::Idle,
                     arxiv_input,
@@ -11016,6 +11031,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     draft_at: Instant::now(),
                     speaker_chosen: None,
                     speaker_line: None,
+                    speaker_alert: None,
                     speaker_name,
                     title_input,
                     editing_title: false,

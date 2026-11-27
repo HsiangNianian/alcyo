@@ -319,6 +319,16 @@ const IPAD_ICONS: [(&str, &str); 24] = [
     ("icons/ipad/zoom.svg", include_str!("../icons/ipad/zoom.svg")),
 ];
 
+/// The iPad's round 6 panels (summary toolbar, speakers' menus, the diagnostic popover): their line icons.
+const ROUND6_ICONS: [(&str, &str); 6] = [
+    ("icons/ipad/compose.svg", include_str!("../icons/ipad/compose.svg")),
+    ("icons/ipad/person-plus.svg", include_str!("../icons/ipad/person-plus.svg")),
+    ("icons/ipad/rewrite.svg", include_str!("../icons/ipad/rewrite.svg")),
+    ("icons/ipad/stop.svg", include_str!("../icons/ipad/stop.svg")),
+    ("icons/ipad/updown.svg", include_str!("../icons/ipad/updown.svg")),
+    ("icons/ipad/zip.svg", include_str!("../icons/ipad/zip.svg")),
+];
+
 /// The iPad's meetings page (crates/ui/src/home.rs): its line icons.
 const HOME_ICONS: [(&str, &str); 6] = [
     ("icons/ipad/import.svg", include_str!("../icons/ipad/import.svg")),
@@ -350,7 +360,7 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).chain(&ROUND6_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {
