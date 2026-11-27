@@ -110,6 +110,14 @@ pub fn entries(root: &Path, system: &[PathBuf]) -> Vec<Entry> {
     out
 }
 
+/// Whether `entry` is a model's own folder holding no more than the note that it was built, as on the iPad (`apple`),
+/// where Metal keeps what was compiled for every model in one place (`Kind::System`). Its row says that, and no size
+/// of a few bytes that would mislead.
+pub fn only_noted(entry: &Entry, apple: bool) -> bool {
+    const NOTE_ONLY: u64 = 16 * 1024;
+    apple && matches!(entry.kind, Kind::Model(_)) && entry.bytes < NOTE_ONLY
+}
+
 /// Remove an entry from disk. For `Older` that is everything at the root but the models' folders.
 pub fn clear(entry: &Entry) -> std::io::Result<()> {
     match entry.kind {
@@ -268,6 +276,20 @@ mod tests {
         assert!(in_use(&entry(Kind::Older), running, false), "shared by the model that runs");
         assert!(!in_use(&entry(Kind::System), None, false));
         assert!(in_use(&entry(Kind::Model("b.gguf".into())), None, true), "starting or stopping: wait");
+    }
+
+    /// On the iPad a model's folder only notes that it was built; what it compiled is counted in Metal's row.
+    #[test]
+    fn a_model_row_that_only_notes_says_no_size() {
+        let root = scratch("noted");
+        note_ready(&root, Path::new("a.gguf"), "0.35.0").unwrap();
+        let found = entries(&root, &[]);
+        assert!(found[0].bytes < 100);
+        assert!(only_noted(&found[0], true));
+        assert!(!only_noted(&found[0], false), "a desktop driver keeps its cache in the model's folder");
+        let older = Entry { kind: Kind::Older, path: PathBuf::new(), more: vec![], bytes: 7, built: None, versions: vec![] };
+        assert!(!only_noted(&older, true));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Metal's cache is found wherever the system put it under Caches, and its folders are counted and cleared as one.

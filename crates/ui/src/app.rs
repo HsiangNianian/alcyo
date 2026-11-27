@@ -2731,6 +2731,7 @@ impl Workbench {
                 Event::Agent(Update::Ready) => {
                     if self.preparing.take().is_some() {
                         note_shaders_ready(&self.models);
+                        self.storage.changed();
                     }
                     self.status = ModelStatus::Quiet;
                     self.needs_model = false;
@@ -3785,6 +3786,8 @@ impl Workbench {
         let Some(result) = finished else { return };
         let (id, label, restart, model) = (download.id, download.label, download.restart, download.model.clone());
         self.download = None;
+        // A model arrived, or what was left unfinished went.
+        self.storage.changed();
         match result {
             // Stopped for a new proxy: on again from where it was, trying every source through it first.
             Ok(Outcome::Cancelled) if restart => self.begin_download(model),
@@ -4073,6 +4076,8 @@ impl Workbench {
             }
             Err(e) => self.form.note = Some(format!("{e:#}")),
         }
+        // Which caches are in use, and the model chosen, changed.
+        self.storage.changed();
         cx.notify();
     }
 
@@ -4270,13 +4275,12 @@ impl Workbench {
     /// A model's own folder holding no more than the note that it was built (as on the iPad, where Metal keeps what it
     /// compiled for every model in one place) says when, and no size that would mislead.
     pub(crate) fn compile_cache_detail(entry: &compile_cache::Entry) -> String {
-        const NOTE_ONLY: u64 = 16 * 1024;
         let size = if entry.bytes < 1_000_000 { format!("{:.0} KB", (entry.bytes as f64 / 1e3).ceil()) } else { format!("{:.1} MB", entry.bytes as f64 / 1e6) };
         let when = entry.built.map(|at| {
             let when: chrono::DateTime<chrono::Local> = at.into();
             when.format("%Y-%m-%d %H:%M").to_string()
         });
-        match (when, cfg!(target_os = "ios") && matches!(entry.kind, compile_cache::Kind::Model(_)) && entry.bytes < NOTE_ONLY) {
+        match (when, compile_cache::only_noted(entry, cfg!(target_os = "ios"))) {
             (Some(when), true) => ta!("compile-cache-built-when", when = when),
             (Some(when), false) => ta!("compile-cache-built", size = size, when = when),
             (None, true) => t("compile-cache-noted").to_string(),
@@ -4298,7 +4302,7 @@ impl Workbench {
             }
             if let Err(e) = compile_cache::clear(&entry) {
                 self.form.note = Some(format!("{e:#}"));
-                cx.notify();
+                self.storage_changed(cx);
                 return;
             }
         }
@@ -4307,7 +4311,7 @@ impl Workbench {
             Some(name) => Some(ta!("compile-cache-kept", model = name.clone())),
             None => None,
         };
-        cx.notify();
+        self.storage_changed(cx);
     }
 
     /// Put a meeting on screen. Anything still in flight for the previous one is discarded.
@@ -7414,6 +7418,7 @@ fn rss_mb() -> u64 {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.storage.next_frame();
         self.load_clip_images();
         self.ink.borrow_mut().inbox_ready = self.inbox.is_some() && self.editable();
         // Only animate while there is ink to write, the view is moving or a line is being typed; an idle board
