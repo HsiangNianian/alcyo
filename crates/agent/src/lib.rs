@@ -7,6 +7,7 @@
 //! Hints from the checker did not help on either model, so they stay opt-in.
 
 pub mod consolidate;
+pub mod redraw;
 pub mod turns;
 pub mod secrets;
 pub mod settings;
@@ -672,6 +673,8 @@ fn propose_once(provider: &Provider, graph: &Graph, recent: &[Utterance], next: 
 }
 
 pub struct Said {
+    /// The transcript line this is, by its id, so the answer finds it whatever its words.
+    pub id: Option<String>,
     pub line: Utterance,
     /// When speech ended or the line was submitted; end-to-end timings start here.
     pub ended: Instant,
@@ -712,8 +715,13 @@ pub enum Update {
     Ready,
     /// Nothing is installed and no remote model is set up, so the user has to choose.
     NoModel,
-    Drawn { meeting: u64, graph: Graph, ops: String, lines: Vec<Utterance>, asr_ms: Option<u128>, llm_ms: u128, ended: Instant },
-    Failed { meeting: u64, message: String, lines: Vec<Utterance> },
+    /// `ids` are the lines' transcript ids, beside `lines`.
+    Drawn { meeting: u64, graph: Graph, ops: String, lines: Vec<Utterance>, ids: Vec<Option<String>>, asr_ms: Option<u128>, llm_ms: u128, ended: Instant },
+    Failed { meeting: u64, message: String, lines: Vec<Utterance>, ids: Vec<Option<String>> },
+    /// An edit's redraw came back with this board for `page` (#362).
+    Redrawn { meeting: u64, edit: u64, page: usize, graph: Graph, scope: &'static str, ms: u128 },
+    /// An edit's redraw failed: the edited words stay, the board as it was.
+    RedrawFailed { meeting: u64, edit: u64, page: usize, message: String },
     /// Something went wrong outside any line, like the local model failing to start.
     Broken(String),
     /// The local model did not stop in time when it was asked to. It is waited for, and started again when a line
@@ -1469,7 +1477,9 @@ const CONSOLIDATE_EVERY: usize = 8;
 /// thinks for a minute or two, and the lines heard meanwhile are drawn as usual and kept
 /// ([`consolidate::catch_up`]). The result arrives as an ordinary drawing, so it can be undone. A board that
 /// does not need it, a failed reply, or another meeting opened meanwhile leaves the board alone.
-fn consolidate_live(provider: &Provider, graph: &Mutex<Graph>, history: &Mutex<Vec<Utterance>>, meeting: &AtomicU64, current: u64, updates: &Sender<Update>, when: consolidate::When) {
+#[allow(clippy::too_many_arguments)]
+fn consolidate_live(provider: &Provider, graph: &Mutex<Graph>, history: &Mutex<Vec<Utterance>>, meeting: &AtomicU64, current: u64, updates: &Sender<Update>, when: consolidate::When, board_edits: &AtomicU64) {
+    let edits = board_edits.load(Ordering::SeqCst);
     let asked = graph.lock().expect("graph lock").clone();
     let heard = history.lock().expect("history lock").clone();
     let Some(last) = heard.last() else { return };
@@ -1489,8 +1499,13 @@ fn consolidate_live(provider: &Provider, graph: &Mutex<Graph>, history: &Mutex<V
     if meeting.load(Ordering::SeqCst) != current {
         return;
     }
+    // An edit's redraw came meanwhile: this rewrite was asked with the words before it, and would write them back.
+    // The next consolidation asks again.
+    if board_edits.load(Ordering::SeqCst) != edits {
+        return;
+    }
     *board = consolidate::catch_up(&asked, &board, &done.graph);
-    let _ = updates.send(Update::Drawn { meeting: current, graph: board.clone(), ops: String::new(), lines: vec![], asr_ms: None, llm_ms: done.ms, ended: Instant::now() });
+    let _ = updates.send(Update::Drawn { meeting: current, graph: board.clone(), ops: String::new(), lines: vec![], ids: vec![], asr_ms: None, llm_ms: done.ms, ended: Instant::now() });
 }
 
 /// The running session: one request at a time, with lines heard meanwhile merged into the next.
@@ -1519,6 +1534,10 @@ pub struct Session {
     consolidating: Arc<std::sync::atomic::AtomicBool>,
     /// Where a last consolidation sends its board, as the worker does.
     updates: Sender<Update>,
+    /// Held while a turn or a redraw asks the model and draws its answer: one request at a time on the board.
+    turn: Arc<Mutex<()>>,
+    /// Bumped by every redraw of an edit, so a consolidation asked before it does not write its old words back.
+    board_edits: Arc<AtomicU64>,
 }
 
 fn rename_line(line: &mut Utterance, renames: &[(String, String)]) {
@@ -1555,6 +1574,8 @@ impl Session {
             speaking: Arc::new(Mutex::new(None)),
             consolidating: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             updates: updates.clone(),
+            turn: Arc::new(Mutex::new(())),
+            board_edits: Arc::new(AtomicU64::new(0)),
         };
         let (graph, history, hint, guidance, meeting) = (session.graph.clone(), session.history.clone(), session.hint.clone(), session.guidance.clone(), session.meeting.clone());
         let glossary = session.glossary.clone();
@@ -1563,6 +1584,8 @@ impl Session {
         let renames = session.renames.clone();
         let speaking = session.speaking.clone();
         let consolidating = session.consolidating.clone();
+        let turn = session.turn.clone();
+        let board_edits = session.board_edits.clone();
         thread::spawn(move || {
             // A child's death signal is tied to this thread, which starts it; a server inside the app stops when the
             // last of the session goes.
@@ -1671,6 +1694,7 @@ impl Session {
                 };
                 let seen = graph.lock().expect("graph lock").clone();
                 let note = hint.lock().expect("hint lock").take();
+                let held = turn.lock().expect("turn lock");
                 let busy = model.busy();
                 // A line the local model was not there to answer, as when it was stopped under the request or ended, is
                 // asked again once it is back, rather than failing: the lines wait meanwhile.
@@ -1702,18 +1726,20 @@ impl Session {
                 }
                 history.lock().expect("history lock").extend(lines.iter().cloned());
                 let tail = &batch[batch.len() - 1];
+                let ids: Vec<Option<String>> = batch.iter().map(|s| s.id.clone()).collect();
                 let update = match result {
                     Ok(reply) => {
                         let before = board.clone();
                         board.apply(&parse_ops(&reply.ops));
                         // New nodes belong to who said the turn, not to whoever said "对" in the middle of it.
                         attribute(&before, &mut board, if said_turns.is_empty() { &lines } else { &said_turns });
-                        Update::Drawn { meeting: current, graph: board.clone(), ops: reply.ops, lines, asr_ms: tail.asr_ms, llm_ms: reply.ms, ended: batch[0].ended }
+                        Update::Drawn { meeting: current, graph: board.clone(), ops: reply.ops, lines, ids, asr_ms: tail.asr_ms, llm_ms: reply.ms, ended: batch[0].ended }
                     }
-                    Err(e) => Update::Failed { meeting: current, message: format!("{e:#}"), lines },
+                    Err(e) => Update::Failed { meeting: current, message: format!("{e:#}"), lines, ids },
                 };
                 drop(board);
                 let _ = updates.send(update);
+                drop(held);
                 if since_meeting != current {
                     (since, since_meeting) = (0, current);
                 }
@@ -1723,8 +1749,9 @@ impl Session {
                         since = 0;
                         let provider = provider.as_ref().expect("checked above").clone();
                         let (graph, history, meeting, updates, consolidating) = (graph.clone(), history.clone(), meeting.clone(), updates.clone(), consolidating.clone());
+                        let board_edits = board_edits.clone();
                         thread::spawn(move || {
-                            consolidate_live(&provider, &graph, &history, &meeting, current, &updates, consolidate::When::Piled);
+                            consolidate_live(&provider, &graph, &history, &meeting, current, &updates, consolidate::When::Piled, &board_edits);
                             consolidating.store(false, Ordering::SeqCst);
                         });
                     }
@@ -1746,11 +1773,12 @@ impl Session {
         }
         let (graph, history, meeting, consolidating) = (self.graph.clone(), self.history.clone(), self.meeting.clone(), self.consolidating.clone());
         let updates = self.updates.clone();
+        let board_edits = self.board_edits.clone();
         let current = self.meeting();
         thread::spawn(move || {
             // The last turn is held until its speaker has been quiet, then drawn: it should be on the board.
             thread::sleep(QUIET_WITHOUT_DRAFTS + Duration::from_millis(500));
-            consolidate_live(&provider, &graph, &history, &meeting, current, &updates, consolidate::When::Final);
+            consolidate_live(&provider, &graph, &history, &meeting, current, &updates, consolidate::When::Final, &board_edits);
             consolidating.store(false, Ordering::SeqCst);
         });
     }
@@ -1778,6 +1806,79 @@ impl Session {
         *self.history.lock().expect("history lock") = history;
         *self.hint.lock().expect("hint lock") = None;
         self.renames.lock().expect("renames lock").clear();
+    }
+
+    /// What the model has heard, again, after an edit of the transcript: the board and anything in flight stay.
+    pub fn set_history(&self, history: Vec<Utterance>) {
+        *self.history.lock().expect("history lock") = history;
+    }
+
+    /// The board on screen was changed for an edit without the model (a line given to someone else, lines deleted
+    /// with what they drew): a consolidation asked before it would undo it.
+    pub fn edited_board(&self, graph: Graph) {
+        let mut board = self.graph.lock().expect("graph lock");
+        self.board_edits.fetch_add(1, Ordering::SeqCst);
+        *board = graph;
+    }
+
+    /// Redraw what an edit of the transcript changed, after the turn being asked now and before the next one
+    /// (#362). The answer comes as [`Update::Redrawn`], or [`Update::RedrawFailed`] with the board left alone; a
+    /// meeting opened meanwhile drops it. The board on screen is brought up to what was drawn while the model
+    /// thought, as a consolidation is.
+    pub fn redraw(&self, req: redraw::Redraw) {
+        let (graph, meeting, model, turn, updates, board_edits) = (self.graph.clone(), self.meeting.clone(), self.model.clone(), self.turn.clone(), self.updates.clone(), self.board_edits.clone());
+        let (guidance, glossary, references) = (self.guidance.clone(), self.glossary.clone(), self.references.clone());
+        thread::spawn(move || {
+            let held = turn.lock().expect("turn lock");
+            if meeting.load(Ordering::SeqCst) != req.meeting {
+                return;
+            }
+            let started = Instant::now();
+            let (_, result) = model.ask(
+                || meeting.load(Ordering::SeqCst) == req.meeting,
+                |provider| {
+                    let chosen = guidance.lock().expect("guidance lock").unwrap_or_else(|| provider.default_guidance());
+                    let terms = glossary.lock().expect("glossary lock").clone();
+                    let cited = references.lock().expect("references lock").clone();
+                    redraw::redraw(provider, &req, chosen, &terms, &cited)
+                },
+            );
+            let event = |ok: bool, after: Option<&Graph>, extra: serde_json::Value| {
+                let mut e = json!({ "ok": ok, "edit": req.edit, "page": req.page, "change": format!("{:?}", req.change), "scope": req.scope.name(), "traced": req.traced.len(), "confident": req.traced.confident, "ms": started.elapsed().as_millis() as u64, "before": req.board });
+                if let Some(after) = after {
+                    e["after"] = json!(after);
+                }
+                if let (Some(fields), Some(more)) = (e.as_object_mut(), extra.as_object()) {
+                    fields.extend(more.clone());
+                }
+                alcyo_diag::event("board.redraw", e);
+            };
+            let update = match result {
+                Ok(done) => {
+                    let mut board = graph.lock().expect("graph lock");
+                    if meeting.load(Ordering::SeqCst) != req.meeting {
+                        return;
+                    }
+                    let drawn = if req.on_screen {
+                        let caught = consolidate::catch_up(&req.board, &board, &done.graph);
+                        *board = caught.clone();
+                        board_edits.fetch_add(1, Ordering::SeqCst);
+                        caught
+                    } else {
+                        done.graph.clone()
+                    };
+                    drop(board);
+                    event(true, Some(&drawn), json!({ "asked": alcyo_diag::clip(&done.asked, alcyo_diag::KEEP_CHARS), "answer": alcyo_diag::clip(&done.answer, alcyo_diag::KEEP_CHARS), "tokens_in": done.tokens_in, "tokens_out": done.tokens_out }));
+                    Update::Redrawn { meeting: req.meeting, edit: req.edit, page: req.page, graph: drawn, scope: req.scope.name(), ms: done.ms }
+                }
+                Err(e) => {
+                    event(false, None, json!({ "error": format!("{e:#}") }));
+                    Update::RedrawFailed { meeting: req.meeting, edit: req.edit, page: req.page, message: format!("{e:#}") }
+                }
+            };
+            let _ = updates.send(update);
+            drop(held);
+        });
     }
 
     /// Give a speaker a new name, or join them to the speaker who has it, including in anything in flight.
@@ -2463,7 +2564,7 @@ mod tests {
 
     impl Harness {
         fn say(&self, text: &str) {
-            self.said.send(Said { line: Utterance { speaker: None, text: text.into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: self.session.meeting(), renames: 0, span: None }).unwrap();
+            self.said.send(Said { id: None, line: Utterance { speaker: None, text: text.into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: self.session.meeting(), renames: 0, span: None }).unwrap();
         }
 
         fn wait(&self) {
@@ -2492,6 +2593,50 @@ mod tests {
         let body: Value = serde_json::from_str(&asked.lock().unwrap()[0]).unwrap();
         assert!(body["tools"].as_array().is_some_and(|t| t.iter().any(|t| t["function"]["name"] == "link")), "offered the tools");
         assert!(body.get("grammar").is_none(), "no grammar for a remote model");
+    }
+
+    fn edit_request(h: &Harness, board: Graph, scope: alcyo_board::trace::Scope) -> redraw::Redraw {
+        let u = |who: &str, text: &str| Utterance { speaker: Some(who.into()), text: text.into(), pointing: vec![] };
+        redraw::Redraw {
+            meeting: h.session.meeting(),
+            edit: 7,
+            page: 0,
+            on_screen: true,
+            change: alcyo_board::trace::Change::Words,
+            scope,
+            board,
+            traced: alcyo_board::trace::Traced { nodes: vec!["n2".into()], edges: vec![], confident: true },
+            before: vec![u("E", "删掉选项一")],
+            after: vec![u("E", "先留着选项一")],
+            context: vec![],
+            history: vec![],
+        }
+    }
+
+    #[test]
+    fn an_edits_redraw_draws_on_the_board_and_says_so() {
+        let h = harness(|said| Ok(if said.contains("只改这几项") { "R n2 「先留着选项一」\nD n3".into() } else { "-".into() }));
+        let mut board = Graph::default();
+        board.apply(&parse_ops("T 「两个选项」\nL 「两个选项」 「删掉选项一」\nL 「两个选项」 「选项二」"));
+        h.session.set_graph(board.clone());
+        h.session.redraw(edit_request(&h, board, alcyo_board::trace::Scope::Items));
+        let Update::Redrawn { edit, graph, scope, .. } = h.updates.recv_timeout(Duration::from_secs(5)).unwrap() else { panic!("expected a redraw") };
+        assert_eq!((edit, scope), (7, "items"));
+        assert_eq!(graph.nodes.iter().map(|n| n.label.as_str()).collect::<Vec<_>>(), vec!["两个选项", "先留着选项一", "选项二"], "n3 was not its to delete");
+        assert_eq!(h.session.board(), graph, "the session draws on from the redrawn board");
+    }
+
+    #[test]
+    fn a_redraw_for_a_meeting_since_closed_is_dropped_and_a_failure_is_told() {
+        let h = harness(|_| bail!("the service is down"));
+        let req = edit_request(&h, Graph::default(), alcyo_board::trace::Scope::Items);
+        h.session.redraw(req.clone());
+        let Update::RedrawFailed { edit, message, .. } = h.updates.recv_timeout(Duration::from_secs(5)).unwrap() else { panic!("expected a failure") };
+        assert_eq!(edit, 7);
+        assert!(message.contains("down"), "{message}");
+        h.session.open(Graph::default(), vec![]);
+        h.session.redraw(req);
+        assert!(h.updates.recv_timeout(Duration::from_millis(500)).is_err(), "another meeting is open now");
     }
 
     #[test]
@@ -2556,7 +2701,7 @@ mod tests {
         });
         let stale = h.session.meeting();
         h.session.open(Graph::default(), vec![]);
-        h.said.send(Said { line: Utterance { speaker: None, text: "排队的旧话".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: stale, renames: 0, span: None }).unwrap();
+        h.said.send(Said { id: None, line: Utterance { speaker: None, text: "排队的旧话".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: stale, renames: 0, span: None }).unwrap();
         h.wait();
         h.say("新会议的话");
         h.wait();
@@ -2575,13 +2720,13 @@ mod tests {
             release_rx.lock().unwrap().recv().unwrap();
             Ok("N n1 「网关」".into())
         });
-        let line = |renames| Said { line: Utterance { speaker: Some("B".into()), text: "网关".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: h.session.meeting(), renames, span: None };
+        let line = |renames| Said { id: None, line: Utterance { speaker: Some("B".into()), text: "网关".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: h.session.meeting(), renames, span: None };
         h.said.send(line(0)).unwrap();
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         // Renamed while the model is answering, with the name then given to someone else's next line.
         h.session.rename_speaker("B", "李工");
         h.session.rename_speaker("C", "B");
-        h.said.send(Said { line: Utterance { speaker: Some("B".into()), text: "日志".into(), pointing: vec![] }, ..line(h.session.renames_seen()) }).unwrap();
+        h.said.send(Said { id: None, line: Utterance { speaker: Some("B".into()), text: "日志".into(), pointing: vec![] }, ..line(h.session.renames_seen()) }).unwrap();
         release.send(()).unwrap();
         h.wait();
         let Update::Drawn { graph, lines, .. } = h.updates.recv_timeout(Duration::from_secs(5)).unwrap() else { panic!("not drawn") };
@@ -2602,6 +2747,7 @@ mod tests {
             Ok("-".into())
         });
         let heard = |who: &str, text: &str, from: f64, to: f64| Said {
+            id: None,
             line: Utterance { speaker: Some(who.into()), text: text.into(), pointing: vec![] },
             ended: Instant::now(),
             asr_ms: Some(100),
@@ -2653,12 +2799,12 @@ mod tests {
         let session = Session::start(Backend::NoModel, None, said_rx, ready_tx, drained_tx, updates_tx);
         ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(updates.recv_timeout(Duration::from_secs(5)).unwrap(), Update::NoModel));
-        said.send(Said { line: Utterance { speaker: None, text: "这句没有模型".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: session.meeting(), renames: 0, span: None }).unwrap();
+        said.send(Said { id: None, line: Utterance { speaker: None, text: "这句没有模型".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: session.meeting(), renames: 0, span: None }).unwrap();
         drained.recv_timeout(Duration::from_secs(5)).unwrap();
         let Update::Failed { lines, .. } = updates.recv_timeout(Duration::from_secs(5)).unwrap() else { panic!("expected a failure") };
         assert_eq!(lines[0].text, "这句没有模型");
         session.set_backend(Backend::Ready(Provider::Scripted(Arc::new(|_| Ok("T 「现在有了」".into())))));
-        said.send(Said { line: Utterance { speaker: None, text: "再试".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: session.meeting(), renames: 0, span: None }).unwrap();
+        said.send(Said { id: None, line: Utterance { speaker: None, text: "再试".into(), pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting: session.meeting(), renames: 0, span: None }).unwrap();
         drained.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(session.board().nodes.len(), 1, "a model added later takes effect");
     }
@@ -2723,7 +2869,7 @@ mod embedded {
     impl Meeting {
         fn say(&self, text: &str) {
             let line = Utterance { speaker: None, text: text.into(), pointing: vec![] };
-            self.said.send(Said { line, ended: Instant::now(), asr_ms: None, meeting: self.session.meeting(), renames: 0, span: None }).unwrap();
+            self.said.send(Said { id: None, line, ended: Instant::now(), asr_ms: None, meeting: self.session.meeting(), renames: 0, span: None }).unwrap();
         }
 
         /// Updates until one `wanted` matches, failing on a failed line or a stop given up on.

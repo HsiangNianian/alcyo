@@ -203,7 +203,7 @@ impl Pipeline {
             for turn in script.turns {
                 let meeting = stamp.load(Ordering::SeqCst);
                 let _ = tx.send(Event::Heard { meeting, speaker: turn.speaker.clone(), text: turn.text.clone(), asr_ms: None });
-                let _ = to_model.send(Said { line: turn, ended: Instant::now(), asr_ms: None, meeting, renames: 0, span: None });
+                let _ = to_model.send(Said { id: None, line: turn, ended: Instant::now(), asr_ms: None, meeting, renames: 0, span: None });
                 thread::sleep(Duration::from_millis(2500));
             }
             // Lines can merge into one request, so this waits for silence rather than a count.
