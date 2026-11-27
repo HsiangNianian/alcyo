@@ -6,10 +6,6 @@
 name: models mirror
 
 on:
-  # TEMPORARY: lets the run happen before this file is on main; removed before merging.
-  push:
-    branches: [feat/r2-models]
-    paths: [.github/workflows/models-mirror.yml]
   workflow_dispatch:
     inputs:
       only:
