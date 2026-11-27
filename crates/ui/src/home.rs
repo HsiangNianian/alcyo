@@ -694,7 +694,7 @@ impl Workbench {
             div().pt(px(40.)).text_size(px(15.)).text_color(rgb(p.faint)).child(if query.is_empty() { t("home-nothing-here") } else { t("home-nothing-found") })
         });
 
-        // Header: the kingfisher and the page's name, then search, import, settings and a new meeting.
+        // Header: the page's name, then search, import, settings and a new meeting.
         let narrow = f32::from(window.viewport_size().width) < 760.0;
         let header = div()
             .absolute()
@@ -710,9 +710,7 @@ impl Workbench {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
                     .text_size(px(if narrow { 28. } else { 34. }))
-                    .child(theme::app_icon(if narrow { 30. } else { 36. }))
                     .child(div().font_weight(FontWeight::BOLD).whitespace_nowrap().child(t("meetings")))
                     .map(|brand| self.intro_brand(brand, window)),
             )
@@ -1404,8 +1402,8 @@ impl Workbench {
         let top = f32::from(crate::platform::safe_area(window).top);
         let (cx, cy) = Self::splash_centre(window);
         let (_, animation) = intro_animation();
-        // The brand's width at a title size: the mark, the gap and the word, near enough.
-        let width = |size: f32| 40. + size * 4.85;
+        // The title's width at a size, near enough.
+        let width = |size: f32| size * 4.85;
         let home_y = top + 14. + 22.;
         brand
             .relative()
@@ -1424,7 +1422,7 @@ impl Workbench {
         let word = word.clone();
         let (cx, cy) = Self::splash_centre(window);
         let top = f32::from(crate::platform::safe_area(window).top);
-        let (to_x, to_y) = (SIDE + (40. + 34. * 4.85) / 2., top + 14. + 22.);
+        let (to_x, to_y) = (SIDE + 34. * 4.85 / 2., top + 14. + 22.);
         let (_, animation) = intro_animation();
         Some(
             div()
