@@ -88,7 +88,8 @@ impl Line {
     pub fn spoken(lines: &[Value]) -> Vec<Self> {
         lines
             .iter()
-            .filter(|l| !l["manual"].as_bool().unwrap_or(false))
+            // Deleted lines, and lines merged into another, were taken out of the transcript (#362).
+            .filter(|l| !l["manual"].as_bool().unwrap_or(false) && !l["deleted"].as_bool().unwrap_or(false) && l["mergedInto"].is_null())
             .map(|l| Self {
                 speaker: l["speaker"].as_str().map(str::to_string),
                 text: l["text"].as_str().unwrap_or_default().to_string(),

@@ -123,7 +123,7 @@ pub fn summarize(bundle: &Bundle, stall_ms: u64) -> Summary {
             out.lifecycle.push(mark(format!("{kind} {}", details(e))));
         }
         if let Some(took) = ms(e).filter(|m| *m >= stall_ms) {
-            if ["model.request", "model.ready", "model.loaded", "model.stopped", "model.stop_timeout", "board.consolidate"].contains(&kind) {
+            if ["model.request", "model.ready", "model.loaded", "model.stopped", "model.stop_timeout", "board.consolidate", "board.redraw"].contains(&kind) {
                 let what = e["purpose"].as_str().filter(|p| !p.is_empty()).map_or_else(|| kind.to_string(), |p| format!("{kind} ({p})"));
                 out.stalls.push(mark(format!("{what} took {:.1} s", took as f64 / 1000.0)));
             }

@@ -11,6 +11,7 @@
 //! board/page-N/annotations.json the hand annotations alone
 //! board/page-N/final.png|.svg   board N as it looks
 //! board/consolidations.jsonl    each rewrite of the board: before, after, how long
+//! board/redraws.jsonl           each redraw after an edit of the transcript: scope, request, before, after
 //! events/events.jsonl           the events of the meeting's time, filtered to it ([`crate::event`])
 //! logs/app.log                  the app log of the meeting's time
 //! config/…                      every settings file, secrets masked ([`crate::redact`])
@@ -255,12 +256,39 @@ fn transcript(m: &Value, from: u64, to: u64) -> (String, String) {
             "failed": line["failed"],
             "also": line["also"],
             "manual": line["manual"],
+            "id": line["id"],
+            // An edited line keeps what was heard; a deleted or merged one stays, marked (#362).
+            "heard_text": line["heard"]["text"],
+            "heard_speaker": line["heard"]["speaker"],
+            "edited": line["edited"],
+            "deleted": line["deleted"],
+            "merged_into": line["mergedInto"],
         });
         jsonl.push_str(&row.to_string());
         jsonl.push('\n');
         let who = line["speaker"].as_str().unwrap_or("?");
         let when = at.map(iso).unwrap_or_default();
-        text.push_str(&format!("[{i}] {when} {who}: {}\n", line["text"].as_str().unwrap_or_default()));
+        let mut notes = vec![];
+        if line["deleted"].as_bool().unwrap_or(false) {
+            notes.push("deleted".to_string());
+        }
+        if let Some(into) = line["mergedInto"].as_u64() {
+            notes.push(format!("merged into [{into}]"));
+        }
+        let heard_text = line["heard"]["text"].as_str().filter(|h| Some(*h) != line["text"].as_str());
+        let heard_who = line["heard"]["speaker"].as_str().filter(|h| Some(*h) != line["speaker"].as_str());
+        if heard_text.is_some() || heard_who.is_some() {
+            let mut was = vec![];
+            if let Some(h) = heard_who {
+                was.push(format!("{h} said it"));
+            }
+            if let Some(h) = heard_text {
+                was.push(h.to_string());
+            }
+            notes.push(format!("edited; heard: {}", was.join(": ")));
+        }
+        let note = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
+        text.push_str(&format!("[{i}] {when} {who}: {}{note}\n", line["text"].as_str().unwrap_or_default()));
     }
     (jsonl, text)
 }
@@ -276,6 +304,9 @@ fn steps_jsonl(m: &Value, steps: &[Value]) -> String {
             "step": i,
             "t": step["t"],
             "when": ms_at(&step["t"]).map(iso),
+            // The lines this change was drawn from, where the step says, and the edit it redrew (#362).
+            "from": step["from"],
+            "edit": step["edit"],
             "after_line": after.and_then(|n| n.checked_sub(1)),
             "line_text": said.map(|l| l["text"].clone()),
             "ops": said.map(|l| l["ops"].clone()),
@@ -320,11 +351,14 @@ fn entries(input: &Input, options: &Options) -> Vec<Entry> {
     }
     let events = events(input, id, from, to, options.prompts);
     let mut consolidations = String::new();
+    let mut redraws = String::new();
     let mut kept = String::new();
     for mut event in events {
-        if event["kind"] == "board.consolidate" {
-            consolidations.push_str(&event.to_string());
-            consolidations.push('\n');
+        let kind = event["kind"].clone();
+        if kind == "board.consolidate" || kind == "board.redraw" {
+            let file = if kind == "board.redraw" { &mut redraws } else { &mut consolidations };
+            file.push_str(&event.to_string());
+            file.push('\n');
             // The boards themselves are in their own file; the timeline keeps how big they were.
             for side in ["before", "after"] {
                 let nodes = event[side]["nodes"].as_array().map(Vec::len);
@@ -339,6 +373,7 @@ fn entries(input: &Input, options: &Options) -> Vec<Entry> {
         kept.push('\n');
     }
     out.push(Entry::text("board/consolidations.jsonl", consolidations));
+    out.push(Entry::text("board/redraws.jsonl", redraws));
     out.push(Entry::text("events/events.jsonl", kept));
     out.push(Entry::text("logs/app.log", log(input, from, to)));
     for (name, path) in &input.configs {
@@ -476,6 +511,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn an_edited_transcript_keeps_both_texts() {
+        let m = json!({ "lines": [
+            { "text": "那就先留着选项一。", "speaker": "D", "at": 1000, "heard": { "asrMs": 100, "text": "那就删掉选项一。", "speaker": "E" }, "edited": { "at": 2000, "kinds": ["text", "speaker"] } },
+            { "text": "钱", "speaker": "D", "at": 1100, "mergedInto": 0 },
+            { "text": "嗯", "speaker": "B", "at": 1200, "deleted": true },
+        ] });
+        let (jsonl, text) = transcript(&m, 0, u64::MAX);
+        let rows: Vec<Value> = jsonl.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(rows[0]["heard_text"], "那就删掉选项一。");
+        assert_eq!(rows[0]["heard_speaker"], "E");
+        assert_eq!(rows[1]["merged_into"], 0);
+        assert_eq!(rows[2]["deleted"], true);
+        assert!(text.contains("D: 那就先留着选项一。 (edited; heard: E said it: 那就删掉选项一。)"), "{text}");
+        assert!(text.contains("钱 (merged into [0])") && text.contains("嗯 (deleted)"), "{text}");
     }
 
     /// A meeting of 20 minutes from `t0`, a line a minute, with an event and a log line a minute, another meeting's
