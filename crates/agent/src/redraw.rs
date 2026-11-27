@@ -10,8 +10,9 @@ use crate::consolidate::{self, Style, When};
 use crate::{propose_with, sound, Guidance, Provider};
 use alcyo_board::graph::{board_is_english, parse_ops, Graph, Utterance};
 use alcyo_board::speakers::attribute;
-use alcyo_board::trace::{splice, subtree, Change, Scope, Traced};
+use alcyo_board::trace::{remove_items, scope, set_owner, splice, subtree, trace, Change, Scope, Traced};
 use anyhow::{bail, Result};
+use serde_json::Value;
 use std::collections::HashSet;
 
 const ITEMS: [&str; 2] = [include_str!("../skills/board-redraw/items.zh.md"), include_str!("../skills/board-redraw/items.en.md")];
@@ -182,6 +183,83 @@ pub fn fitted(scope: Scope, board: &Graph) -> Scope {
     }
 }
 
+/// One board of a meeting, as an edit's plan reads it.
+pub struct Board {
+    pub page: usize,
+    pub graph: Graph,
+    pub steps: Vec<Value>,
+}
+
+fn utterance(line: &Value) -> Utterance {
+    Utterance { speaker: line["speaker"].as_str().filter(|s| !s.is_empty()).map(str::to_string), text: line["text"].as_str().unwrap_or_default().to_string(), pointing: vec![] }
+}
+
+fn gone(line: &Value) -> bool {
+    line["deleted"].as_bool().unwrap_or(false) || !line["mergedInto"].is_null()
+}
+
+fn said_on(line: &Value, page: usize) -> bool {
+    !line["manual"].as_bool().unwrap_or(false) && !gone(line) && line["page"].as_u64().unwrap_or(0) as usize == page
+}
+
+/// What an edit of lines changes on each board (#362), after the edit is made: one [`Redraw`] for each board an
+/// edited line drew on (or was said on, for lines that drew nothing), with its scope. Shared by every window, so a
+/// window only shows it. `touched` and `before` are the edit's lines, by place, as they were before it; `line` the
+/// one that holds the result. Scopes that need no model ([`Scope::Owner`], [`Scope::Nothing`]) come back too, for
+/// [`without_model`].
+#[allow(clippy::too_many_arguments)]
+pub fn plan(lines: &[Value], boards: &[Board], change: Change, line: usize, touched: &[usize], before: &[Value], on_screen: usize, meeting: u64, edit: u64) -> Vec<Redraw> {
+    let before: Vec<Utterance> = before.iter().filter(|l| !gone(l)).map(utterance).collect();
+    let after: Vec<Utterance> = lines.get(line).filter(|l| !gone(l)).map(utterance).into_iter().collect();
+    let pages_said: HashSet<usize> = touched.iter().filter_map(|i| lines.get(*i)).map(|l| l["page"].as_u64().unwrap_or(0) as usize).collect();
+    let mut out = vec![];
+    for board in boards {
+        let traced = trace(lines, &board.steps, &board.graph, board.page, touched);
+        if traced.is_empty() && !pages_said.contains(&board.page) {
+            continue;
+        }
+        let scope = fitted(scope(change, &traced, &board.graph), &board.graph);
+        if scope == Scope::Nothing {
+            continue;
+        }
+        // The lines said before on this board, for a turn's context, and all that was said on it for a rewrite.
+        let earlier: Vec<Utterance> = lines[..line.min(lines.len())].iter().filter(|l| said_on(l, board.page)).map(utterance).collect();
+        let context = earlier[earlier.len().saturating_sub(crate::TURN_CONTEXT_LINES)..].to_vec();
+        let history: Vec<Utterance> = lines.iter().filter(|l| said_on(l, board.page) && !l["ms"].is_null()).map(utterance).collect();
+        out.push(Redraw {
+            meeting,
+            edit,
+            page: board.page,
+            on_screen: board.page == on_screen,
+            change,
+            scope,
+            board: board.graph.clone(),
+            traced,
+            before: before.clone(),
+            after: after.clone(),
+            context,
+            history,
+        });
+    }
+    out
+}
+
+/// The board after an edit that needs no model: the items given to the line's new speaker, or deleted with their
+/// lines. `None` when the model has to redraw it.
+pub fn without_model(req: &Redraw) -> Option<Graph> {
+    let mut graph = req.board.clone();
+    match (&req.scope, req.change) {
+        (Scope::Owner, _) => {
+            let from = req.before.first().and_then(|u| u.speaker.clone()).unwrap_or_default();
+            let to = req.after.first().and_then(|u| u.speaker.clone()).unwrap_or_default();
+            set_owner(&mut graph, &req.traced, &from, &to);
+        }
+        (_, Change::Delete) => remove_items(&mut graph, &req.traced),
+        _ => return None,
+    }
+    Some(graph)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +340,41 @@ mod tests {
         let done = redraw(&provider, &req, provider.default_guidance(), &sound::Glossary::default(), &[]).unwrap();
         let added = done.graph.nodes.iter().find(|n| n.label == "先留着选项一").unwrap();
         assert_eq!(added.extra.get("by").and_then(|b| b.as_str()), Some("E"));
+    }
+
+    #[test]
+    fn an_edit_is_planned_on_every_board_its_lines_drew_on() {
+        use serde_json::json;
+        let mut first = Graph::default();
+        first.apply(&parse_ops("T 「两个选项」\nL 「两个选项」 「删掉选项一」"));
+        let steps = vec![json!({ "t": 1, "line": 1, "d": alcyo_board::steps::diff(&Graph::default(), &first).unwrap(), "from": [0] })];
+        let lines = vec![
+            json!({ "text": "那就先留着选项一。", "speaker": "E", "page": 0, "ms": 1, "heard": { "text": "那就删掉选项一。" } }),
+            json!({ "text": "下一块板上说的", "speaker": "B", "page": 1, "ms": 1 }),
+        ];
+        let boards = vec![Board { page: 0, graph: first.clone(), steps }, Board { page: 1, graph: Graph::default(), steps: vec![] }];
+        let before = vec![json!({ "text": "那就删掉选项一。", "speaker": "E", "page": 0 })];
+        let planned = plan(&lines, &boards, Change::Words, 0, &[0], &before, 1, 3, 9);
+        assert_eq!(planned.len(), 1, "only the board it drew on");
+        let r = &planned[0];
+        assert_eq!((r.page, r.on_screen, r.edit, r.meeting), (0, false, 9, 3), "redrawn in the background");
+        assert_eq!(r.scope, Scope::Items);
+        assert_eq!(r.after[0].text, "那就先留着选项一。");
+        assert_eq!(r.before[0].text, "那就删掉选项一。");
+        // Speaker only: no model; delete with its items: no model.
+        let mut moved = lines.clone();
+        moved[0]["speaker"] = json!("D");
+        let before = vec![json!({ "text": "那就先留着选项一。", "speaker": "E", "page": 0 })];
+        let owner = &plan(&moved, &boards, Change::Speaker, 0, &[0], &before, 0, 3, 10)[0];
+        assert_eq!(owner.scope, Scope::Owner);
+        let mut b = first.clone();
+        b.nodes[1].extra.insert("by".into(), json!("E"));
+        let owner = Redraw { board: b, ..owner.clone() };
+        assert_eq!(without_model(&owner).unwrap().nodes[1].extra["by"], "D");
+        let mut deleted = lines.clone();
+        deleted[0]["deleted"] = json!(true);
+        let del = &plan(&deleted, &boards, Change::Delete, 0, &[0], &before, 0, 3, 11)[0];
+        assert!(without_model(del).unwrap().nodes.is_empty(), "what it drew goes with it");
     }
 
     #[test]
