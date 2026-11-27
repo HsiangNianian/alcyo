@@ -526,3 +526,51 @@ share-network-wifi = Wi-Fi
 share-network-wired = 有線
 share-scan-on = { $network } につながったスマートフォンで読み取る（コード込み）
 share-retired = 共有を停止しました：アクセスコードの入力ミスが多すぎます。もう一度共有を開始すると新しいコードになります。
+
+## Editing the transcript (#362)
+line-waiting = ボードへの反映待ちです。反映後に編集できます。
+line-copy = コピー
+line-speaker-heading = この行だけを変更します。ボードに描かれた内容も一緒に移ります。
+line-drew =
+    { $items ->
+        [0] この行はボードに何も描いていません
+       *[other] この行はボードに { $items } 項目を描きました
+    }
+line-edit-text = テキストを編集
+line-change-speaker = 話者を変更
+line-select-lines = 行を選択
+line-delete = 行を削除
+line-edited = 編集済み
+line-heard = 聞き取った内容：{ $text }
+line-restore = 聞き取った内容に戻す
+lines-selected =
+    { $count ->
+        [0] 行を選択
+       *[other] { $count } 行を選択中
+    }
+select-all = すべて選択
+lines-give-to = この { $count } 行の話者：
+lines-merge = 結合
+lines-speaker = 話者
+lines-delete = 削除
+merge-title = { $count } 行を結合
+merge-line = 結合後の行
+merge-said-by = 話者
+merge-joins = 結合する行
+merge-foot = これらの行がボードに描いた内容は、結合後の行から描き直されます。取り消すと元の行に戻ります。
+delete-title = { $count } 行を削除しますか？
+delete-message = ボードの { $items } 項目がここから描かれています。診断バンドルには元の発言が残ります。
+delete-lines-only = 行だけを削除
+delete-with-items = ボードの項目も削除
+redraw-board-title = ボード全体を描き直しますか？
+redraw-board-message = これらの行は { $topics } 個のトピックに { $items } 項目を描きました。修正した文字起こしからボード全体を書き直します。手書きのインクはそのままです。
+redraw-only-text = テキストだけ修正
+redraw-board-go = 描き直す
+redrawing-items = ボードの { $items } 項目を描き直しています…
+redrawing-section = 「{ $name }」を描き直しています…
+redrawing-board = ボードを描き直しています…
+redraw-waits = 聞き取りを止めたあとでボード全体を描き直します。
+redraw-failed = 描き直せませんでした。テキストは修正済みですが、ボードはまだです。
+redraw-try-again = もう一度
+board-updated = ボードを更新 · { $items } 項目
+board-redrew-section = 「{ $name }」を描き直しました

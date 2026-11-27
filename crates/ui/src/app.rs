@@ -11,7 +11,7 @@ use alcyo_board::sugiyama::first_diagram;
 use alcyo_agent::settings::Settings;
 use alcyo_audio::{Listen, Sources};
 use alcyo_agent::{propose, Backend, Guidance, LocalServer, Provider, Said, Update};
-use alcyo_meetings::{Inbox, Tucked, default_dir, Info, Live, Store, ViewOnly};
+use alcyo_meetings::{Inbox, Tucked, default_dir, Info, Live, Spoken, Store, ViewOnly};
 use alcyo_board::pen::{marker, outline, Inked, Rng};
 use crate::i18n::t;
 use crate::ta;
@@ -72,6 +72,8 @@ mod ipad_dialogs;
 // The Speakers tab on the iPad: one list, a menu on each row.
 #[path = "ipad_speakers.rs"]
 mod ipad_speakers;
+#[path = "transcript_edit.rs"]
+mod transcript_edit;
 // Settings › Storage, on the iPad and the desktop.
 #[path = "storage_page.rs"]
 mod storage_page;
@@ -443,6 +445,8 @@ struct Ink {
     ink_boxes: Vec<InkBox>,
     /// Whose contributions stand out, and the color that marks them.
     trace: Option<(String, u32)>,
+    /// Things an edit of the transcript touches, marked in the accent: pulsing while they are redrawn (#362).
+    glow: Option<(Vec<String>, bool)>,
     /// The thing whose mark toolbar is open.
     selected: Option<String>,
     /// Where the selection was clicked, in board coordinates, to find the word there.
@@ -724,6 +728,14 @@ impl Ink {
 
     /// What to bring back out from under the veil when a speaker is traced: patches of ink, and what
     /// to mark with their color, both in board coordinates.
+    /// Where these nodes are marked: their boxes, and their labels' ink.
+    fn node_areas(&self, ids: &[String]) -> Vec<[f32; 4]> {
+        let nodes: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let marked = self.targets.iter().filter(|t| nodes.contains(t.id.as_str())).map(|t| [t.x as f32, t.y as f32, t.w as f32, t.h as f32]);
+        let labels = self.ink_boxes.iter().filter(|b| b.label && matches!(&b.owner, Owner::Node(id) if nodes.contains(id.as_str()))).map(|b| [b.x, b.y, b.w, b.h]);
+        marked.chain(labels).collect()
+    }
+
     fn traced_areas(&self, who: &str) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
         let Some(graph) = &self.graph else { return (vec![], vec![]) };
         let nodes: HashSet<&str> = graph.nodes.iter().filter(|n| by_of_node(n) == Some(who)).map(|n| n.id.as_str()).collect();
@@ -1806,6 +1818,8 @@ struct Workbench {
     /// Rename… or Merge, asked as an alert over the iPad's Speakers tab.
     speaker_alert: Option<ipad_speakers::SpeakerAlert>,
     speaker_name: Entity<InputState>,
+    /// Editing the transcript: a line's menu, the line edited in place, Select mode, redraws on their way (#362).
+    edit: transcript_edit::EditState,
     /// The meeting's name while it is being changed in the title bar.
     title_input: Entity<InputState>,
     editing_title: bool,
@@ -2263,8 +2277,9 @@ fn gigabytes(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1e9)
 }
 
-fn spoken(lines: &[Utterance]) -> Vec<(Option<String>, String)> {
-    lines.iter().map(|l| (l.speaker.clone(), l.text.clone())).collect()
+/// The lines a model answer was for, with the transcript ids they were sent with.
+fn spoken(lines: &[Utterance], ids: &[Option<String>]) -> Vec<Spoken> {
+    lines.iter().enumerate().map(|(i, l)| Spoken { id: ids.get(i).cloned().flatten(), speaker: l.speaker.clone(), text: l.text.clone() }).collect()
 }
 
 fn fingerprint_of(live: &Live) -> String {
@@ -2722,6 +2737,7 @@ impl Workbench {
         }
         // On the iPad, the bars step back a while after the last touch.
         changed |= crate::platform::ipad_layout() && self.form.saved.fade_tools && self.ipad.fade_changed(self.pipeline.listening());
+        self.edit_tick(&mut changed, cx);
         while let Ok(event) = self.pipeline.events.try_recv() {
             changed = true;
             match event {
@@ -2785,7 +2801,7 @@ impl Workbench {
                             "engine": format!("{:?}", sentence.engine), "asr_ms": sentence.asr_ms as u64, "speaker": speaker, "slot": sentence.slot, "also": also,
                             "final": true, "chars": sentence.text.chars().count(),
                         }));
-                        self.live.add_line(speaker.as_deref(), &sentence.text, Some(sentence.asr_ms));
+                        let id = self.live.add_line(speaker.as_deref(), &sentence.text, Some(sentence.asr_ms));
                         self.live.mark_also(&also);
                         self.line_arrived(true);
                         self.keep_heard_text();
@@ -2794,10 +2810,10 @@ impl Workbench {
                         }
                         let renames = self.session().renames_seen();
                         let line = Utterance { speaker, text: sentence.text, pointing: self.take_pointing() };
-                        let _ = self.pipeline.said.send(Said { id: None, line, ended: sentence.ended, asr_ms: Some(sentence.asr_ms), meeting, renames, span: Some((sentence.start, sentence.start + sentence.seconds)) });
+                        let _ = self.pipeline.said.send(Said { id: Some(id), line, ended: sentence.ended, asr_ms: Some(sentence.asr_ms), meeting, renames, span: Some((sentence.start, sentence.start + sentence.seconds)) });
                     }
                 }
-                Event::Agent(Update::Drawn { meeting, graph, ops, lines, asr_ms, llm_ms, ended }) => {
+                Event::Agent(Update::Drawn { meeting, graph, ops, lines, ids, asr_ms, llm_ms, ended }) => {
                     if meeting != self.session().meeting() {
                         continue;
                     }
@@ -2822,15 +2838,15 @@ impl Workbench {
                     let memory = ink.board.snapshot();
                     drop(ink);
                     self.offer_topic_board(&graph);
-                    self.live.model_drew(&spoken(&lines), graph, memory, &ops, llm_ms);
+                    self.live.model_drew(&spoken(&lines, &ids), graph, memory, &ops, llm_ms);
                     self.status = ModelStatus::Quiet;
                 }
-                Event::Agent(Update::Failed { meeting, message, lines }) => {
+                Event::Agent(Update::Failed { meeting, message, lines, ids }) => {
                     if meeting != self.session().meeting() {
                         continue;
                     }
                     eprintln!("model failed: {message}");
-                    self.live.model_failed(&spoken(&lines));
+                    self.live.model_failed(&spoken(&lines, &ids));
                     // The local model not being there (stopped, ended, restarting) is said plainly; the details are in
                     // the log above, not an address and an error number on the board.
                     self.notice = Some(if alcyo_agent::unavailable(&message) {
@@ -2838,6 +2854,18 @@ impl Workbench {
                     } else {
                         crate::ta!("the-model-did-not-answer", error = format!("{message}"))
                     });
+                }
+                Event::Agent(Update::Redrawn { meeting, edit, page, graph, scope, ms }) => {
+                    if meeting == self.session().meeting() {
+                        self.exit_replay(cx);
+                        println!("{{\"redrawn\":{edit},\"scope\":\"{scope}\",\"ms\":{ms}}}");
+                        self.redraw_answered(edit, page, Some(graph), None, cx);
+                    }
+                }
+                Event::Agent(Update::RedrawFailed { meeting, edit, page, message }) => {
+                    if meeting == self.session().meeting() {
+                        self.redraw_answered(edit, page, None, Some(message), cx);
+                    }
                 }
                 Event::Agent(Update::SlowToStop) => {
                     self.notice = Some(t("local-model-slow-to-stop").to_string());
@@ -4118,7 +4146,7 @@ impl Workbench {
     fn list_saved(&mut self) {
         let id = self.live.id().to_string();
         let now = chrono::Local::now().timestamp_millis() as f64;
-        let lines = self.live.lines.iter().filter(|l| !l["manual"].as_bool().unwrap_or(false)).count();
+        let lines = self.live.lines.iter().filter(|l| !l["manual"].as_bool().unwrap_or(false) && !alcyo_meetings::is_gone(l)).count();
         let entry = Info { id: id.clone(), title: self.live.title().to_string(), created_at: self.live.created_at().unwrap_or(now), updated_at: now, lines, pages: self.live.pages(), speakers: alcyo_meetings::speakers_of(&self.live.lines), read_error: None };
         self.library.retain(|m| m.id != id);
         self.library.insert(0, entry);
@@ -5193,6 +5221,11 @@ impl Workbench {
             let mut ink = self.ink.borrow_mut();
             ink.board.restore(&snap.memory);
             ink.update(&snap.graph, self.next_batch);
+            drop(ink);
+            // An edit of the transcript came back or went with its board: the model hears the lines as they are.
+            if !snap.lines.is_empty() {
+                self.edit_undone(snap.edit);
+            }
         }
         cx.notify();
     }
@@ -5826,8 +5859,9 @@ impl Workbench {
 
     fn retry_line(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some((speaker, text)) = self.live.retry_line(index) else { return };
+        let id = self.live.lines.get(index).and_then(|l| l["id"].as_str()).map(str::to_string);
         let (meeting, renames) = (self.session().meeting(), self.session().renames_seen());
-        let _ = self.pipeline.said.send(Said { id: None, line: Utterance { speaker, text, pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting, renames, span: None });
+        let _ = self.pipeline.said.send(Said { id, line: Utterance { speaker, text, pointing: vec![] }, ended: Instant::now(), asr_ms: None, meeting, renames, span: None });
         cx.notify();
     }
 
@@ -6089,7 +6123,7 @@ impl Workbench {
         }
         self.input.update(cx, |state, cx| state.set_value("", window, cx));
         let speaker = self.speaker.clone();
-        self.live.add_line(speaker.as_deref(), &text, None);
+        let id = self.live.add_line(speaker.as_deref(), &text, None);
         self.line_arrived(false);
         if self.follow_pages(&text, cx) {
             cx.notify();
@@ -6098,7 +6132,7 @@ impl Workbench {
         let meeting = self.session().meeting();
         let renames = self.session().renames_seen();
         let pointing = self.take_pointing();
-        let _ = self.pipeline.said.send(Said { id: None, line: Utterance { speaker, text, pointing }, ended: Instant::now(), asr_ms: None, meeting, renames, span: None });
+        let _ = self.pipeline.said.send(Said { id: Some(id), line: Utterance { speaker, text, pointing }, ended: Instant::now(), asr_ms: None, meeting, renames, span: None });
         cx.notify();
     }
 
@@ -7859,6 +7893,33 @@ impl Render for Workbench {
                                     });
                                 }
                             }
+                            // What an edit of the transcript touches: a soft band of the accent under each, breathing while the
+                            // model redraws it.
+                            if let Some((ids, pulse)) = &state.glow {
+                                let mut mark: Hsla = rgb(pal().accent).into();
+                                mark.a = if *pulse {
+                                    window.request_animation_frame();
+                                    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f32();
+                                    0.16 + 0.14 * (t * std::f32::consts::TAU / 1.4).sin().abs()
+                                } else {
+                                    0.2
+                                };
+                                for area in state.node_areas(ids) {
+                                    let middle = area[1] + area[3] / 2.0;
+                                    let band = marker(&[[area[0], middle], [area[0] + area[2], middle]], area[3], 0.0, &mut Rng::new("edit"));
+                                    let shape = outline(&band, 1.0);
+                                    let mut pb = fill_builder();
+                                    let at = |p: &Pt| origin + point(px(p[0] * v.k), px(p[1] * v.k));
+                                    if let Some(first) = shape.first() {
+                                        pb.move_to(at(first));
+                                        shape[1..].iter().for_each(|p| pb.line_to(at(p)));
+                                        pb.close();
+                                    }
+                                    if let Ok(path) = pb.build() {
+                                        window.paint_path(path, Background::from(mark));
+                                    }
+                                }
+                            }
                             // On the iPad: what the circles caught, tinted in the accent one after another, and the circles
                             // themselves dashed, the last closing with a short settle.
                             if on_ipad {
@@ -7958,6 +8019,7 @@ impl Render for Workbench {
             );
         let speakers = self.live.speakers();
         self.ink.borrow_mut().trace = self.traced_speaker().map(|who| (who.clone(), speaker_marker(&speakers, who)));
+        self.ink.borrow_mut().glow = if crate::platform::ipad_layout() { self.edit_glow() } else { None };
         let toolbar = {
             let ink = self.ink.borrow();
             ink.toolbar_at().zip(ink.selected.clone())
@@ -8652,7 +8714,7 @@ impl Render for Workbench {
             });
         // While listening with the transcript out of sight, the latest line still shows that the room is being heard.
         let transcript_shown = side_shown && side_panel == Panel::Transcript;
-        let caption = self.live.lines.iter().rev().find(|l| !l["manual"].as_bool().unwrap_or(false)).and_then(|l| l["text"].as_str()).map(str::to_string).filter(|_| listening && !transcript_shown && self.replay.is_none());
+        let caption = self.live.lines.iter().rev().find(|l| !l["manual"].as_bool().unwrap_or(false) && !alcyo_meetings::is_gone(l)).and_then(|l| l["text"].as_str()).map(str::to_string).filter(|_| listening && !transcript_shown && self.replay.is_none());
         let banner = self.notice.clone().or_else(|| match &self.save {
             SaveState::Failed(error) => Some(crate::ta!("your-meeting-is-still-open", error = format!("{error}"))),
             _ => None,
@@ -8701,7 +8763,8 @@ impl Render for Workbench {
                         .child(div().max_w(px(220.)).text_small().text_color(rgb(pal().muted)).child(t("what-is-heard-or-typed"))),
                 )
             })
-            .children(self.live.lines[..shown_lines].iter().enumerate().map(|(i, l)| {
+            // Deleted lines, and lines merged into another, stay in the meeting but not in the transcript (#362).
+            .children(self.live.lines[..shown_lines].iter().enumerate().filter(|(_, l)| !alcyo_meetings::is_gone(l)).map(|(i, l)| {
                 // Kept with the line since lines carried their time; before that, read off the board's steps.
                 let said_at = l["at"].as_f64().or_else(|| said_times.get(i).copied().flatten());
                 let manual = l["manual"].as_bool().unwrap_or(false);
@@ -8719,10 +8782,23 @@ impl Render for Workbench {
                 let jumped = self.jumped_line.is_some_and(|(line, _)| line == i);
                 // Lines in a row from one speaker share the first one's header, as a paragraph does.
                 let speaker = l["speaker"].as_str().filter(|s| !s.is_empty());
-                let same_as_before = i > 0 && speaker.is_some() && self.live.lines[i - 1]["speaker"].as_str() == speaker && !l["manual"].as_bool().unwrap_or(false);
+                let before = self.live.lines[..i].iter().rposition(|p| !alcyo_meetings::is_gone(p));
+                let same_as_before = speaker.is_some() && before.is_some_and(|b| self.live.lines[b]["speaker"].as_str() == speaker) && !l["manual"].as_bool().unwrap_or(false);
+                // Editing the transcript on the iPad (transcript_edit.rs): held for a menu, edited in place, picked.
+                let edits = ipad && editable;
+                let picked = edits && self.edit.picked.contains(&i);
+                let field = if edits { self.line_field(i) } else { None };
                 div()
                     .flex()
                     .flex_col()
+                    .relative()
+                    .when(edits && self.edit.selecting, |d| d.ml(px(30.)))
+                    .when(picked, |d| {
+                        let mut tint: Hsla = rgb(pal().accent).into();
+                        tint.a = 0.08;
+                        d.rounded(px(10.)).bg(tint)
+                    })
+                    .when_some(edits.then(|| self.pick_circle(i)).flatten(), |d, circle| d.child(circle))
                     .when(same_as_before, |d| d.mt(px(-10.)))
                     .when(jumped, |d| d.rounded(px(2.)).bg(rgb(pal().jumped)))
                     .when_some(speaker.filter(|_| !same_as_before).map(str::to_string), |d, name| {
@@ -8753,7 +8829,17 @@ impl Render for Workbench {
                     // Grey while it is being written out, then settling to ink once it is all there.
                     .child({
                         let line = div().id(("line-text", i)).text_body().when(ipad, |d| d.text_size(px(15.))).line_height(gpui_kit::relative(1.5)).when(speaker.is_some(), |d| d.pl(px(if ipad { 32. } else { 28. }))).when(manual, |d| d.text_color(rgb(pal().faint))).child(text).when_some(line_timing(l), |d, tip| d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)));
-                        if writing {
+                        let line = line.when(edits && !manual, |d| {
+                            d.on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, _, _| this.line_pressed(i, event.position)))
+                                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, _| this.line_moved(event.position)))
+                                .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.line_released()))
+                                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.line_released()))
+                                .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, _, cx| this.open_line_menu(i, cx)))
+                                .on_click(cx.listener(move |this, _, _, cx| this.line_tapped(i, cx)))
+                        });
+                        if let Some(field) = field {
+                            field
+                        } else if writing {
                             line.text_color(rgb(pal().faint)).into_any_element()
                         } else if !manual && self.typed.contains(&i) {
                             line.with_animation(("line-settle", i), motion::ease(motion::BASE), |d, t| d.text_color(motion::mix(pal().faint, pal().text, t))).into_any_element()
@@ -8761,6 +8847,10 @@ impl Render for Workbench {
                             line.into_any_element()
                         }
                     })
+                    .when_some(edits.then(|| self.edited_tag(i, cx)).flatten(), |d, tag| d.child(div().pl(px(32.)).pt(px(2.)).flex().child(tag)))
+                    .when_some(edits.then(|| self.heard_note(i, cx)).flatten(), |d, note| d.child(note))
+                    .when_some(edits.then(|| self.line_status(i, cx)).flatten(), |d, status| d.child(status))
+                    .when_some(edits.then(|| self.line_menu(i, cx)).flatten(), |d, menu| d.child(menu))
                     // Someone heard under this line: their words are lost, but not that they spoke (#295).
                     .when_some(also_note(l).filter(|_| !manual), |d, also| d.child(div().pl(px(28.)).text_small().text_color(rgb(pal().faint)).child(also)))
                     .when(!note.is_empty() && !manual, |d| {
@@ -10322,7 +10412,7 @@ impl Render for Workbench {
                 offers: offers.into_any_element(),
                 notices: notices.map(IntoElement::into_any_element),
                 page,
-                dialog: overlay.take_if(|_| in_dialog).or_else(|| self.ipad_speaker_alert(cx)),
+                dialog: overlay.take_if(|_| in_dialog).or_else(|| self.ipad_speaker_alert(cx)).or_else(|| self.ipad_edit_dialog(cx)),
                 preparing: preparing_page.map(IntoElement::into_any_element),
                 replay_bar: replay_bar.map(IntoElement::into_any_element),
                 shortcuts: self.shortcuts_shown.then(|| self.shortcuts_window(cx)),
@@ -10744,6 +10834,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 ink_boxes: vec![],
                 insets: [0.0; 4],
                 trace: None,
+                glow: None,
                 selected: None,
                 selected_at: None,
                 mark_unit: MarkUnit::Block,
@@ -11033,6 +11124,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     speaker_line: None,
                     speaker_alert: None,
                     speaker_name,
+                    edit: Default::default(),
                     title_input,
                     editing_title: false,
                     hearing: None,

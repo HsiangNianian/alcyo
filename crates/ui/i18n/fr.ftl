@@ -578,3 +578,85 @@ share-network-wifi = Wi-Fi
 share-network-wired = Ethernet
 share-scan-on = Scannez avec un téléphone sur { $network }, code inclus
 share-retired = Partage arrêté : trop de codes d’accès erronés ont été essayés. Recommencez pour obtenir un nouveau code.
+
+## Editing the transcript (#362)
+line-waiting = En attente du tableau : modifiable une fois dessinée.
+line-copy = Copier
+line-speaker-heading = Seule cette ligne change ; ce qu’elle a dessiné au tableau suit.
+line-drew =
+    { $items ->
+        [0] Cette ligne n’a rien dessiné au tableau
+        [one] Cette ligne a dessiné 1 élément au tableau
+       *[other] Cette ligne a dessiné { $items } éléments au tableau
+    }
+line-edit-text = Modifier le texte
+line-change-speaker = Changer d’intervenant
+line-select-lines = Sélectionner des lignes
+line-delete = Supprimer la ligne
+line-edited = Modifiée
+line-heard = Entendu : { $text }
+line-restore = Rétablir ce qui a été entendu
+lines-selected =
+    { $count ->
+        [0] Sélectionner des lignes
+        [one] 1 sélectionnée
+       *[other] { $count } sélectionnées
+    }
+select-all = Tout sélectionner
+lines-give-to =
+    { $count ->
+        [one] Attribuer cette ligne à :
+       *[other] Attribuer ces { $count } lignes à :
+    }
+lines-merge = Fusionner
+lines-speaker = Intervenant
+lines-delete = Supprimer
+merge-title =
+    { $count ->
+        [one] Fusionner 1 ligne
+       *[other] Fusionner { $count } lignes
+    }
+merge-line = Ligne fusionnée
+merge-said-by = Dit par
+merge-joins = Réunit
+merge-foot = Ce que ces lignes ont dessiné au tableau est redessiné à partir de la ligne fusionnée. Annuler rétablit les lignes.
+delete-title =
+    { $count ->
+        [one] Supprimer cette ligne ?
+       *[other] Supprimer { $count } lignes ?
+    }
+delete-message =
+    { $items ->
+        [one] 1 élément du tableau en vient.
+       *[other] { $items } éléments du tableau en viennent.
+    } Le paquet de diagnostic garde ce qui a été dit.
+delete-lines-only =
+    { $count ->
+        [one] Supprimer la ligne seulement
+       *[other] Supprimer les lignes seulement
+    }
+delete-with-items =
+    { $count ->
+        [one] Supprimer avec ses éléments
+       *[other] Supprimer avec leurs éléments
+    }
+redraw-board-title = Redessiner tout le tableau ?
+redraw-board-message = Ces lignes ont dessiné { $items } éléments sous { $topics } sujets. Le modèle réécrit le tableau à partir de la transcription corrigée ; votre encre reste.
+redraw-only-text = Corriger le texte seulement
+redraw-board-go = Redessiner
+redrawing-items =
+    { $items ->
+        [one] Redessin d’1 élément…
+       *[other] Redessin de { $items } éléments…
+    }
+redrawing-section = Redessin de « { $name } »…
+redrawing-board = Redessin du tableau…
+redraw-waits = Tout le tableau sera redessiné à l’arrêt de l’écoute.
+redraw-failed = Redessin impossible : le texte est corrigé, pas encore le tableau.
+redraw-try-again = Réessayer
+board-updated =
+    { $items ->
+        [one] Tableau mis à jour · 1 élément
+       *[other] Tableau mis à jour · { $items } éléments
+    }
+board-redrew-section = « { $name } » redessiné

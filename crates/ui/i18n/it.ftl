@@ -578,3 +578,85 @@ share-network-wifi = Wi-Fi
 share-network-wired = Cavo
 share-scan-on = Inquadra con un telefono su { $network }, codice incluso
 share-retired = Condivisione interrotta: troppi codici di accesso errati. Ricomincia per avere un nuovo codice.
+
+## Editing the transcript (#362)
+line-waiting = In attesa della lavagna: si potrà modificare una volta disegnata.
+line-copy = Copia
+line-speaker-heading = Cambia solo questa riga; ciò che ha disegnato sulla lavagna la segue.
+line-drew =
+    { $items ->
+        [0] Questa riga non ha disegnato nulla sulla lavagna
+        [one] Questa riga ha disegnato 1 elemento sulla lavagna
+       *[other] Questa riga ha disegnato { $items } elementi sulla lavagna
+    }
+line-edit-text = Modifica testo
+line-change-speaker = Cambia oratore
+line-select-lines = Seleziona righe
+line-delete = Elimina riga
+line-edited = Modificata
+line-heard = Sentito: { $text }
+line-restore = Ripristina ciò che è stato sentito
+lines-selected =
+    { $count ->
+        [0] Seleziona righe
+        [one] 1 selezionata
+       *[other] { $count } selezionate
+    }
+select-all = Seleziona tutto
+lines-give-to =
+    { $count ->
+        [one] Assegna questa riga a:
+       *[other] Assegna queste { $count } righe a:
+    }
+lines-merge = Unisci
+lines-speaker = Oratore
+lines-delete = Elimina
+merge-title =
+    { $count ->
+        [one] Unisci 1 riga
+       *[other] Unisci { $count } righe
+    }
+merge-line = Riga unita
+merge-said-by = Detto da
+merge-joins = Unisce
+merge-foot = Ciò che queste righe hanno disegnato sulla lavagna viene ridisegnato dalla riga unita. Annulla riporta le righe.
+delete-title =
+    { $count ->
+        [one] Eliminare questa riga?
+       *[other] Eliminare { $count } righe?
+    }
+delete-message =
+    { $items ->
+        [one] 1 elemento della lavagna viene da qui.
+       *[other] { $items } elementi della lavagna vengono da qui.
+    } Il pacchetto di diagnostica conserva quanto detto.
+delete-lines-only =
+    { $count ->
+        [one] Elimina solo la riga
+       *[other] Elimina solo le righe
+    }
+delete-with-items =
+    { $count ->
+        [one] Elimina con i suoi elementi
+       *[other] Elimina con i loro elementi
+    }
+redraw-board-title = Ridisegnare tutta la lavagna?
+redraw-board-message = Queste righe hanno disegnato { $items } elementi in { $topics } argomenti. Il modello riscrive la lavagna dalla trascrizione corretta; il tuo inchiostro resta.
+redraw-only-text = Correggi solo il testo
+redraw-board-go = Ridisegna
+redrawing-items =
+    { $items ->
+        [one] Ridisegno di 1 elemento…
+       *[other] Ridisegno di { $items } elementi…
+    }
+redrawing-section = Ridisegno di «{ $name }»…
+redrawing-board = Ridisegno della lavagna…
+redraw-waits = Tutta la lavagna verrà ridisegnata quando smetti di ascoltare.
+redraw-failed = Impossibile ridisegnare: il testo è corretto, la lavagna non ancora.
+redraw-try-again = Riprova
+board-updated =
+    { $items ->
+        [one] Lavagna aggiornata · 1 elemento
+       *[other] Lavagna aggiornata · { $items } elementi
+    }
+board-redrew-section = «{ $name }» ridisegnato

@@ -526,3 +526,51 @@ share-network-wifi = Wi-Fi
 share-network-wired = 유선
 share-scan-on = { $network }에 연결된 휴대폰으로 스캔 (코드 포함)
 share-retired = 공유를 중지했습니다: 잘못된 접근 코드가 너무 많이 입력되었습니다. 다시 시작하면 새 코드가 생깁니다.
+
+## Editing the transcript (#362)
+line-waiting = 보드에 반영되기를 기다리는 중입니다. 반영된 뒤에 편집할 수 있습니다.
+line-copy = 복사
+line-speaker-heading = 이 줄만 바뀝니다. 보드에 그린 항목도 함께 옮겨집니다.
+line-drew =
+    { $items ->
+        [0] 이 줄은 보드에 아무것도 그리지 않았습니다
+       *[other] 이 줄이 보드에 { $items }개 항목을 그렸습니다
+    }
+line-edit-text = 텍스트 편집
+line-change-speaker = 화자 변경
+line-select-lines = 줄 선택
+line-delete = 줄 삭제
+line-edited = 편집됨
+line-heard = 들린 내용: { $text }
+line-restore = 들린 내용으로 되돌리기
+lines-selected =
+    { $count ->
+        [0] 줄 선택
+       *[other] { $count }개 선택됨
+    }
+select-all = 모두 선택
+lines-give-to = 이 { $count }줄의 화자:
+lines-merge = 합치기
+lines-speaker = 화자
+lines-delete = 삭제
+merge-title = { $count }줄 합치기
+merge-line = 합친 줄
+merge-said-by = 화자
+merge-joins = 합칠 줄
+merge-foot = 이 줄들이 보드에 그린 항목은 합친 줄을 바탕으로 다시 그려집니다. 실행 취소하면 원래 줄로 돌아갑니다.
+delete-title = { $count }줄을 삭제할까요?
+delete-message = 보드의 { $items }개 항목이 여기서 나왔습니다. 진단 번들에는 원래 말이 남습니다.
+delete-lines-only = 줄만 삭제
+delete-with-items = 보드 항목도 함께 삭제
+redraw-board-title = 보드 전체를 다시 그릴까요?
+redraw-board-message = 이 줄들이 { $topics }개 주제 아래에 { $items }개 항목을 그렸습니다. 고친 대본으로 보드 전체를 다시 씁니다. 손으로 쓴 잉크는 그대로입니다.
+redraw-only-text = 텍스트만 고치기
+redraw-board-go = 다시 그리기
+redrawing-items = 보드 항목 { $items }개를 다시 그리는 중…
+redrawing-section = “{ $name }” 다시 그리는 중…
+redrawing-board = 보드를 다시 그리는 중…
+redraw-waits = 듣기를 멈추면 보드 전체를 다시 그립니다.
+redraw-failed = 다시 그리지 못했습니다. 텍스트는 고쳐졌지만 보드는 아직입니다.
+redraw-try-again = 다시 시도
+board-updated = 보드 업데이트됨 · { $items }개 항목
+board-redrew-section = “{ $name }” 다시 그림

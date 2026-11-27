@@ -1808,6 +1808,11 @@ impl Session {
         self.renames.lock().expect("renames lock").clear();
     }
 
+    /// Whether the board model runs on this machine, which a whole-board redraw waits on while listening (#362).
+    pub fn local(&self) -> bool {
+        matches!(&*self.backend.lock().expect("backend lock"), Backend::ManagedLocal(_) | Backend::Ready(Provider::Local { .. }))
+    }
+
     /// What the model has heard, again, after an edit of the transcript: the board and anything in flight stay.
     pub fn set_history(&self, history: Vec<Utterance>) {
         *self.history.lock().expect("history lock") = history;

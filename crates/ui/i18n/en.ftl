@@ -840,3 +840,85 @@ diag-prompts-off = Off keeps only their sizes and times.
 diag-privacy = API keys, passwords and tokens are never included: only whether they are set.
 diag-export-dots = Export…
 diag-ready = Ready
+
+## Editing the transcript (#362)
+line-waiting = Waiting for the board: it can be edited once drawn.
+line-copy = Copy
+line-speaker-heading = Only this line changes; what it drew on the board goes with it.
+line-drew =
+    { $items ->
+        [0] This line drew nothing on the board
+        [one] This line drew 1 item on the board
+       *[other] This line drew { $items } items on the board
+    }
+line-edit-text = Edit Text
+line-change-speaker = Change Speaker
+line-select-lines = Select Lines
+line-delete = Delete Line
+line-edited = Edited
+line-heard = Heard: { $text }
+line-restore = Restore What Was Heard
+lines-selected =
+    { $count ->
+        [0] Select Lines
+        [one] 1 Selected
+       *[other] { $count } Selected
+    }
+select-all = Select All
+lines-give-to =
+    { $count ->
+        [one] Give this line to:
+       *[other] Give these { $count } lines to:
+    }
+lines-merge = Merge
+lines-speaker = Speaker
+lines-delete = Delete
+merge-title =
+    { $count ->
+        [one] Merge 1 Line
+       *[other] Merge { $count } Lines
+    }
+merge-line = Merged line
+merge-said-by = Said by
+merge-joins = Joins
+merge-foot = What these lines drew on the board is redrawn from the merged line. Undo puts the lines back.
+delete-title =
+    { $count ->
+        [one] Delete this line?
+       *[other] Delete { $count } lines?
+    }
+delete-message =
+    { $items ->
+        [one] 1 board item came from it.
+       *[other] { $items } board items came from them.
+    } The diagnostic bundle keeps what was said.
+delete-lines-only =
+    { $count ->
+        [one] Delete the Line Only
+       *[other] Delete the Lines Only
+    }
+delete-with-items =
+    { $count ->
+        [one] Delete It and Its Board Items
+       *[other] Delete Them and Their Board Items
+    }
+redraw-board-title = Redraw the whole board?
+redraw-board-message = These lines drew { $items } items under { $topics } topics. The model writes the board again from the corrected transcript; your ink stays.
+redraw-only-text = Only Fix Text
+redraw-board-go = Redraw
+redrawing-items =
+    { $items ->
+        [one] Redrawing 1 board item…
+       *[other] Redrawing { $items } board items…
+    }
+redrawing-section = Redrawing “{ $name }”…
+redrawing-board = Redrawing the board…
+redraw-waits = The whole board is redrawn when listening stops.
+redraw-failed = Could not redraw: the text is fixed, the board is not yet.
+redraw-try-again = Try Again
+board-updated =
+    { $items ->
+        [one] Board updated · 1 item
+       *[other] Board updated · { $items } items
+    }
+board-redrew-section = Redrew “{ $name }”

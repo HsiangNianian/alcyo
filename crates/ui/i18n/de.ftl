@@ -581,3 +581,85 @@ share-network-wifi = WLAN
 share-network-wired = LAN-Kabel
 share-scan-on = Mit einem Handy im { $network } scannen, mit Code
 share-retired = Teilen beendet: Es wurden zu viele falsche Zugangscodes versucht. Starte neu für einen neuen Code.
+
+## Editing the transcript (#362)
+line-waiting = Wartet auf die Tafel: Bearbeiten geht, sobald sie gezeichnet ist.
+line-copy = Kopieren
+line-speaker-heading = Nur diese Zeile ändert sich; was sie auf die Tafel gezeichnet hat, folgt.
+line-drew =
+    { $items ->
+        [0] Diese Zeile hat nichts auf die Tafel gezeichnet
+        [one] Diese Zeile hat 1 Element auf die Tafel gezeichnet
+       *[other] Diese Zeile hat { $items } Elemente auf die Tafel gezeichnet
+    }
+line-edit-text = Text bearbeiten
+line-change-speaker = Sprecher ändern
+line-select-lines = Zeilen auswählen
+line-delete = Zeile löschen
+line-edited = Bearbeitet
+line-heard = Gehört: { $text }
+line-restore = Gehörtes wiederherstellen
+lines-selected =
+    { $count ->
+        [0] Zeilen auswählen
+        [one] 1 ausgewählt
+       *[other] { $count } ausgewählt
+    }
+select-all = Alle auswählen
+lines-give-to =
+    { $count ->
+        [one] Diese Zeile zuordnen:
+       *[other] Diese { $count } Zeilen zuordnen:
+    }
+lines-merge = Zusammenführen
+lines-speaker = Sprecher
+lines-delete = Löschen
+merge-title =
+    { $count ->
+        [one] 1 Zeile zusammenführen
+       *[other] { $count } Zeilen zusammenführen
+    }
+merge-line = Zusammengeführte Zeile
+merge-said-by = Gesagt von
+merge-joins = Fügt zusammen
+merge-foot = Was diese Zeilen auf die Tafel gezeichnet haben, wird aus der zusammengeführten Zeile neu gezeichnet. Widerrufen holt die Zeilen zurück.
+delete-title =
+    { $count ->
+        [one] Diese Zeile löschen?
+       *[other] { $count } Zeilen löschen?
+    }
+delete-message =
+    { $items ->
+        [one] 1 Tafelelement stammt daher.
+       *[other] { $items } Tafelelemente stammen daher.
+    } Das Diagnosepaket behält das Gesagte.
+delete-lines-only =
+    { $count ->
+        [one] Nur die Zeile löschen
+       *[other] Nur die Zeilen löschen
+    }
+delete-with-items =
+    { $count ->
+        [one] Mit ihren Tafelelementen löschen
+       *[other] Mit ihren Tafelelementen löschen
+    }
+redraw-board-title = Die ganze Tafel neu zeichnen?
+redraw-board-message = Diese Zeilen haben { $items } Elemente unter { $topics } Themen gezeichnet. Das Modell schreibt die Tafel aus dem korrigierten Transkript neu; deine Handschrift bleibt.
+redraw-only-text = Nur Text korrigieren
+redraw-board-go = Neu zeichnen
+redrawing-items =
+    { $items ->
+        [one] 1 Tafelelement wird neu gezeichnet…
+       *[other] { $items } Tafelelemente werden neu gezeichnet…
+    }
+redrawing-section = „{ $name }“ wird neu gezeichnet…
+redrawing-board = Die Tafel wird neu gezeichnet…
+redraw-waits = Die ganze Tafel wird neu gezeichnet, sobald das Zuhören endet.
+redraw-failed = Neuzeichnen fehlgeschlagen: Der Text ist korrigiert, die Tafel noch nicht.
+redraw-try-again = Erneut versuchen
+board-updated =
+    { $items ->
+        [one] Tafel aktualisiert · 1 Element
+       *[other] Tafel aktualisiert · { $items } Elemente
+    }
+board-redrew-section = „{ $name }“ neu gezeichnet

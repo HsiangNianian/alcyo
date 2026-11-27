@@ -578,3 +578,85 @@ share-network-wifi = Wi-Fi
 share-network-wired = Cable
 share-scan-on = Escanea con un teléfono en { $network }, con el código
 share-retired = Se dejó de compartir: se probaron demasiados códigos incorrectos. Vuelve a empezar para obtener un código nuevo.
+
+## Editing the transcript (#362)
+line-waiting = Esperando a la pizarra: se podrá editar cuando esté dibujada.
+line-copy = Copiar
+line-speaker-heading = Solo cambia esta línea; lo que dibujó en la pizarra la sigue.
+line-drew =
+    { $items ->
+        [0] Esta línea no dibujó nada en la pizarra
+        [one] Esta línea dibujó 1 elemento en la pizarra
+       *[other] Esta línea dibujó { $items } elementos en la pizarra
+    }
+line-edit-text = Editar texto
+line-change-speaker = Cambiar hablante
+line-select-lines = Seleccionar líneas
+line-delete = Eliminar línea
+line-edited = Editada
+line-heard = Se oyó: { $text }
+line-restore = Restaurar lo que se oyó
+lines-selected =
+    { $count ->
+        [0] Seleccionar líneas
+        [one] 1 seleccionada
+       *[other] { $count } seleccionadas
+    }
+select-all = Seleccionar todo
+lines-give-to =
+    { $count ->
+        [one] Asignar esta línea a:
+       *[other] Asignar estas { $count } líneas a:
+    }
+lines-merge = Unir
+lines-speaker = Hablante
+lines-delete = Eliminar
+merge-title =
+    { $count ->
+        [one] Unir 1 línea
+       *[other] Unir { $count } líneas
+    }
+merge-line = Línea unida
+merge-said-by = Dicho por
+merge-joins = Une
+merge-foot = Lo que estas líneas dibujaron en la pizarra se vuelve a dibujar a partir de la línea unida. Deshacer recupera las líneas.
+delete-title =
+    { $count ->
+        [one] ¿Eliminar esta línea?
+       *[other] ¿Eliminar { $count } líneas?
+    }
+delete-message =
+    { $items ->
+        [one] 1 elemento de la pizarra salió de aquí.
+       *[other] { $items } elementos de la pizarra salieron de aquí.
+    } El paquete de diagnóstico conserva lo que se dijo.
+delete-lines-only =
+    { $count ->
+        [one] Eliminar solo la línea
+       *[other] Eliminar solo las líneas
+    }
+delete-with-items =
+    { $count ->
+        [one] Eliminarla con sus elementos
+       *[other] Eliminarlas con sus elementos
+    }
+redraw-board-title = ¿Volver a dibujar toda la pizarra?
+redraw-board-message = Estas líneas dibujaron { $items } elementos en { $topics } temas. El modelo reescribe la pizarra a partir de la transcripción corregida; tu tinta se queda.
+redraw-only-text = Solo corregir el texto
+redraw-board-go = Volver a dibujar
+redrawing-items =
+    { $items ->
+        [one] Redibujando 1 elemento…
+       *[other] Redibujando { $items } elementos…
+    }
+redrawing-section = Redibujando «{ $name }»…
+redrawing-board = Redibujando la pizarra…
+redraw-waits = Toda la pizarra se redibuja cuando deje de escuchar.
+redraw-failed = No se pudo redibujar: el texto está corregido, la pizarra aún no.
+redraw-try-again = Reintentar
+board-updated =
+    { $items ->
+        [one] Pizarra actualizada · 1 elemento
+       *[other] Pizarra actualizada · { $items } elementos
+    }
+board-redrew-section = «{ $name }» redibujado
