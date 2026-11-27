@@ -8763,8 +8763,13 @@ impl Render for Workbench {
                         .child(div().max_w(px(220.)).text_small().text_color(rgb(pal().muted)).child(t("what-is-heard-or-typed"))),
                 )
             })
-            // Deleted lines, and lines merged into another, stay in the meeting but not in the transcript (#362).
-            .children(self.live.lines[..shown_lines].iter().enumerate().filter(|(_, l)| !alcyo_meetings::is_gone(l)).map(|(i, l)| {
+            .children(self.live.lines[..shown_lines].iter().enumerate().map(|(i, l)| {
+                // Deleted lines, and lines merged into another, stay in the meeting but not in the transcript (#362):
+                // an empty place keeps every other line at its index, which scrolling to a line counts by.
+                if alcyo_meetings::is_gone(l) {
+                    // Taking back the gap the list puts before it.
+                    return div().mt(px(-16.)).into_any_element();
+                }
                 // Kept with the line since lines carried their time; before that, read off the board's steps.
                 let said_at = l["at"].as_f64().or_else(|| said_times.get(i).copied().flatten());
                 let manual = l["manual"].as_bool().unwrap_or(false);
@@ -8865,6 +8870,7 @@ impl Render for Workbench {
                     // The newest line rises a little into place as it arrives. Every line keeps the same wrapper, so
                     // nothing inside it starts over when a newer line arrives; only the newest has any time to move.
                     .with_animation(("line-in", i), motion::ease(if i + 1 == shown_lines { motion::BASE } else { Duration::from_millis(1) }), |d, t| d.relative().top(px(6. * (1. - t))).opacity(t))
+                    .into_any_element()
             }))
             // What is being said now: faint, unnamed until its sentence arrives with a speaker, and never saved.
             .when_some(self.draft.as_ref().filter(|_| self.replay.is_none()).map(|d| d.text.clone()), |d, text| {

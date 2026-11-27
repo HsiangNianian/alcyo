@@ -560,7 +560,7 @@ merge-joins = 由這幾句合成
 merge-foot = 這幾句在板上畫的內容，會按合併後的一句重畫。還原可以把原本的幾句恢復。
 delete-title =
     { $count ->
-        [one] 刪除這一句？
+        [1] 刪除這一句？
        *[other] 刪除這 { $count } 句？
     }
 delete-message = 板上有 { $items } 項是從這裡畫出來的。診斷包裡仍然保留原話。

@@ -791,7 +791,7 @@ merge-joins = 由这几句合成
 merge-foot = 这几句在板上画的内容，会按合并后的一句重画。撤销可以把原来的几句恢复。
 delete-title =
     { $count ->
-        [one] 删除这一句？
+        [1] 删除这一句？
        *[other] 删除这 { $count } 句？
     }
 delete-message = 板上有 { $items } 项是从这里画出来的。诊断包里仍然保留原话。

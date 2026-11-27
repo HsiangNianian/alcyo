@@ -52,6 +52,8 @@ pub(crate) struct EditState {
     fresh: Option<(Vec<String>, Instant)>,
     /// The edited line whose heard words are shown.
     heard_open: Option<usize>,
+    /// A line to keep in view for a moment, as the card's bars change around it.
+    follow: Option<(usize, Instant)>,
 }
 
 /// A question before an edit goes on.
@@ -164,6 +166,14 @@ impl Workbench {
             self.edit.fresh = None;
             *changed = true;
         }
+        if let Some((i, since)) = self.edit.follow {
+            if since.elapsed() < Duration::from_millis(400) {
+                self.transcript_scroll.scroll_to_item(i);
+                *changed = true;
+            } else {
+                self.edit.follow = None;
+            }
+        }
         if !self.edit.deferred.is_empty() && !self.pipeline.listening() {
             for (pending, req) in std::mem::take(&mut self.edit.deferred) {
                 self.send_redraw(pending, req);
@@ -244,6 +254,7 @@ impl Workbench {
         .detach();
         self.edit.menu = None;
         self.edit.editing = Some((i, field));
+        self.edit.follow = Some((i, Instant::now()));
         cx.notify();
     }
 
@@ -284,6 +295,7 @@ impl Workbench {
         self.edit.editing = None;
         self.edit.selecting = true;
         self.edit.picked = first.filter(|i| self.line_editable(*i)).into_iter().collect();
+        self.edit.follow = first.map(|i| (i, Instant::now()));
         cx.notify();
     }
 
@@ -300,6 +312,9 @@ impl Workbench {
         }
         if !self.edit.picked.remove(&i) {
             self.edit.picked.insert(i);
+            // The line after comes into view, as the next one to pick is usually there.
+            let next = (i + 1..self.live.lines.len()).find(|n| !lines_edit::is_gone(&self.live.lines[*n]));
+            self.edit.follow = next.map(|n| (n, Instant::now()));
         }
         cx.notify();
     }
@@ -633,6 +648,7 @@ impl Workbench {
                 .bg(rgb(p.surface))
                 .border_2()
                 .border_color(alpha(p.accent, 0.7))
+                .text_size(px(15.))
                 .child(Input::new(field).appearance(false))
                 .into_any_element(),
         )
