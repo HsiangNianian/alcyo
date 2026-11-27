@@ -1,7 +1,9 @@
 //! The board models too large for the installer: what can be downloaded, and downloading it.
 //!
-//! Sources are tried in order, keeping what has arrived: the same file from any source is verified the
-//! same way. Unfinished data waits in `<name>.part`, so a cancelled or broken download resumes. The file
+//! Every file is on Alcyo's own mirror (models.alcyo.app, a Cloudflare R2 bucket filled by the models-mirror
+//! workflow) as well as upstream. The mirror and ModelScope are raced and the faster is taken; Hugging Face
+//! and the others follow only if those fail. Sources are tried in turn, keeping what has arrived: the same
+//! file from any source is verified the same way. Unfinished data waits in `<name>.part`, so a cancelled or broken download resumes. The file
 //! only takes its real name after its size and SHA-256 match, so a damaged download is never used.
 
 pub mod net;
@@ -30,6 +32,37 @@ pub struct Source {
     pub url: String,
     /// Skip any system proxy: domestic mirrors are far slower through one.
     pub direct: bool,
+    /// Raced against the other preferred sources at the start, the fastest taken. The rest are fallbacks,
+    /// tried in their order only once the preferred ones have failed.
+    pub preferred: bool,
+}
+
+/// Alcyo's own copy of every model and voice file, served from Cloudflare R2.
+pub const MIRROR: &str = "https://models.alcyo.app";
+
+/// Where a file lives on the mirror: `<kind>/<first 16 hex of its SHA-256>/<file>`. The hash in the key means
+/// a key never changes content, so the mirror can be cached forever, and a new upstream file takes a new key.
+pub fn mirror_key(kind: &str, sha256: &str, file: &str) -> String {
+    format!("{kind}/{}/{file}", &sha256[..16.min(sha256.len())])
+}
+
+impl Source {
+    /// The file on Alcyo's mirror, through the system's proxy like any foreign site.
+    pub fn mirror(key: &str) -> Self {
+        Self { name: "Alcyo".into(), url: format!("{MIRROR}/{key}"), direct: false, preferred: true }
+    }
+
+    pub fn modelscope(path: &str) -> Self {
+        Self { name: "ModelScope".into(), url: format!("https://modelscope.cn/models/{path}"), direct: true, preferred: true }
+    }
+
+    /// A Hugging Face path, on hf-mirror and then Hugging Face itself.
+    pub fn huggingface(path: &str) -> [Self; 2] {
+        [
+            Self { name: "hf-mirror".into(), url: format!("https://hf-mirror.com/{path}"), direct: false, preferred: false },
+            Self { name: "Hugging Face".into(), url: format!("https://huggingface.co/{path}"), direct: false, preferred: false },
+        ]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -39,19 +72,29 @@ pub struct Model {
     pub file: String,
     pub size: u64,
     pub sha256: String,
-    /// The VRAM this model suits, in MiB; 0 means it runs anywhere.
-    pub vram_mib: u64,
     /// What it falls short on, in English and Chinese. A model with a caveat is never recommended.
     pub note: Option<(&'static str, &'static str)>,
     pub sources: Vec<Source>,
 }
 
-fn sources(modelscope: &str, huggingface: &str) -> Vec<Source> {
-    vec![
-        Source { name: "ModelScope".into(), url: format!("https://modelscope.cn/models/{modelscope}"), direct: true },
-        Source { name: "hf-mirror".into(), url: format!("https://hf-mirror.com/{huggingface}"), direct: false },
-        Source { name: "Hugging Face".into(), url: format!("https://huggingface.co/{huggingface}"), direct: false },
-    ]
+/// The mirror's copy and ModelScope's, raced, then hf-mirror and Hugging Face.
+fn sources(key: String, modelscope: &str, huggingface: &str) -> Vec<Source> {
+    let mut all = vec![Source::mirror(&key), Source::modelscope(modelscope)];
+    all.extend(Source::huggingface(huggingface));
+    all
+}
+
+/// A board model's entry; its mirror key is under `board/`.
+fn board(id: &'static str, label: &'static str, file: &str, size: u64, sha256: &str, note: Option<(&'static str, &'static str)>, modelscope: &str, huggingface: &str) -> Model {
+    Model {
+        id,
+        label,
+        file: file.into(),
+        size,
+        sha256: sha256.into(),
+        note,
+        sources: sources(mirror_key("board", sha256, file), modelscope, huggingface),
+    }
 }
 
 /// The best boards first, as the first one present is used when none was chosen; among those without a
@@ -60,85 +103,71 @@ pub fn catalog() -> Vec<Model> {
     vec![
         // The board model by default since #306: on the dev set 0.735 item F1 against Qwen3.5-4B's 0.609, and
         // 0.46 against 0.17 on a real meeting, as steady between passes, at the same speed. It reads no images.
-        Model {
-            id: "qwen3-4b-2507",
-            label: "Qwen3-4B",
-            file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf".into(),
-            size: 2_497_281_120,
-            sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597".into(),
-            vram_mib: 0,
-            note: None,
-            // Hugging Face pinned to the revision measured; ModelScope has no revisions, and the hash holds it.
-            sources: sources("unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/master/Qwen3-4B-Instruct-2507-Q4_K_M.gguf", "unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
-        },
+        // Hugging Face pinned to the revision measured; ModelScope has no revisions, and the hash holds it.
+        board(
+            "qwen3-4b-2507",
+            "Qwen3-4B",
+            "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            2_497_281_120,
+            "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+            None,
+            "unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/master/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+            "unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        ),
         // Kept for reading images: its vision add-on understands a picture, not only its text.
-        Model {
-            id: "qwen3.5-4b",
-            label: "Qwen3.5-4B",
-            file: "Qwen3.5-4B-Q4_K_M.gguf".into(),
-            size: 2_740_937_888,
-            sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4".into(),
-            vram_mib: 0,
-            note: Some(("Reads images with its vision add-on; draws boards less well than Qwen3-4B", "可以装看图插件读懂图片；画板书不如 Qwen3-4B")),
-            sources: sources("unsloth/Qwen3.5-4B-GGUF/resolve/master/Qwen3.5-4B-Q4_K_M.gguf", "unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"),
-        },
-        Model {
-            id: "qwen3.5-9b",
-            label: "Qwen3.5-9B",
-            file: "Qwen3.5-9B-Q4_K_M.gguf".into(),
-            size: 5_680_522_464,
-            sha256: "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8".into(),
-            vram_mib: 6000,
-            note: None,
-            sources: sources("unsloth/Qwen3.5-9B-GGUF/resolve/master/Qwen3.5-9B-Q4_K_M.gguf", "unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"),
-        },
+        board(
+            "qwen3.5-4b",
+            "Qwen3.5-4B",
+            "Qwen3.5-4B-Q4_K_M.gguf",
+            2_740_937_888,
+            "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+            Some(("Reads images with its vision add-on; draws boards less well than Qwen3-4B", "可以装看图插件读懂图片；画板书不如 Qwen3-4B")),
+            "unsloth/Qwen3.5-4B-GGUF/resolve/master/Qwen3.5-4B-Q4_K_M.gguf",
+            "unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+        ),
     ]
 }
 
-/// The largest model the discrete graphics memory can carry; without one, the smallest.
-pub fn recommended(vram_mib: u64) -> &'static str {
+/// The model offered first: the first without a caveat. Every model in the catalog runs on any machine, so
+/// graphics memory no longer decides it (Qwen3.5-9B, the one that needed 6 GB, was dropped).
+pub fn recommended() -> &'static str {
     let models = catalog();
-    models.iter().filter(|m| m.note.is_none()).rfind(|m| m.vram_mib <= vram_mib).unwrap_or(&models[0]).id
+    models.iter().find(|m| m.note.is_none()).unwrap_or(&models[0]).id
 }
 
 /// What lets a board model read images, by the board model's file name. It is downloaded the same way
 /// and never chosen as a model itself.
 pub fn vision_for(model_file: &str) -> Option<Model> {
-    let add_on = |id, label, file: &str, size, sha256: &str, source: Vec<Source>| Model {
-        id,
-        label,
-        file: file.to_string(),
-        size,
-        sha256: sha256.to_string(),
-        vram_mib: 0,
-        note: None,
-        sources: source,
-    };
-    let unsloth = |repo: &str| sources(&format!("{repo}/resolve/master/mmproj-F16.gguf"), &format!("{repo}/resolve/main/mmproj-F16.gguf"));
-    if model_file.starts_with("Qwen3.5-4B") {
-        Some(add_on("qwen3.5-4b-vision", "Vision add-on · Qwen3.5-4B", "Qwen3.5-4B-mmproj-F16.gguf", 672_423_616, "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864", unsloth("unsloth/Qwen3.5-4B-GGUF")))
-    } else if model_file.starts_with("Qwen3.5-9B") {
-        Some(add_on("qwen3.5-9b-vision", "Vision add-on · Qwen3.5-9B", "Qwen3.5-9B-mmproj-F16.gguf", 918_166_080, "f70dc3509053962b0d0d3ee8a7eacebf5d60aa560cad78254ae8698516ae029f", unsloth("unsloth/Qwen3.5-9B-GGUF")))
-    } else {
-        None
+    if !model_file.starts_with("Qwen3.5-4B") {
+        return None;
     }
+    let (file, sha256) = ("Qwen3.5-4B-mmproj-F16.gguf", "cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864");
+    let repo = "unsloth/Qwen3.5-4B-GGUF";
+    Some(Model {
+        id: "qwen3.5-4b-vision",
+        label: "Vision add-on · Qwen3.5-4B",
+        file: file.into(),
+        size: 672_423_616,
+        sha256: sha256.into(),
+        note: None,
+        sources: sources(mirror_key("vision", sha256, file), &format!("{repo}/resolve/master/mmproj-F16.gguf"), &format!("{repo}/resolve/main/mmproj-F16.gguf")),
+    })
 }
 
 /// What finds things in past meetings by what they mean: EmbeddingGemma 300M, never chosen as a board model.
 /// Every package carries it (`alcyo-tools fetch search`); a checkout without it downloads it when meeting
 /// search is turned on. It is used and shipped under the Gemma Terms of Use (assets/licenses/gemma-*).
 pub fn embedding() -> Model {
-    let file = "embeddinggemma-300M-Q8_0.gguf";
+    let (file, sha256) = ("embeddinggemma-300M-Q8_0.gguf", "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63");
     let path = format!("ggml-org/embeddinggemma-300M-GGUF/resolve/{{}}/{file}");
     Model {
         id: "embeddinggemma-300m",
         label: "Meeting search · EmbeddingGemma 300M",
         file: file.to_string(),
         size: 333_590_944,
-        sha256: "b5ce9d77a3fc4b3b39ccb5643c36777911cc4eb46a66962eadfa3f5f60490d63".to_string(),
-        vram_mib: 0,
+        sha256: sha256.to_string(),
         note: None,
-        sources: sources(&path.replace("{}", "master"), &path.replace("{}", "main")),
+        sources: sources(mirror_key("search", sha256, file), &path.replace("{}", "master"), &path.replace("{}", "main")),
     }
 }
 
@@ -225,36 +254,43 @@ fn agent(url: &str, direct: bool) -> ureq::Agent {
 const PROBE_BYTES: u64 = 1 << 20;
 const PROBE_TIME: Duration = Duration::from_secs(5);
 
-/// The sources, fastest first. Each is asked at once for a little of the file from `from` on, through the
-/// proxy it would download through, and timed from the request to the last byte, so a slow start counts. A
-/// source that fails or sends nothing goes last, in the catalog's order, still tried if the others drop.
+/// The sources in the order to try them: the preferred ones fastest first, then the fallbacks in the catalog's
+/// order. Each preferred source is asked at once for a little of the file from `from` on, through the proxy it
+/// would download through, and timed from the request to the last byte, so a slow start counts. One that fails
+/// or sends nothing goes after the other preferred ones, still tried if they drop. Fallbacks are never asked
+/// until then: Hugging Face is slow or out of reach where the mirror and ModelScope are not.
 fn fastest_first<'a>(sources: &'a [Source], from: u64, cancel: &AtomicBool) -> Vec<&'a Source> {
-    let speeds: Vec<u64> = std::thread::scope(|scope| {
-        let probes: Vec<_> = sources
-            .iter()
-            .map(|source| {
-                scope.spawn(move || -> u64 {
-                    let started = Instant::now();
-                    let agent = net::agent_for(&source.url, source.direct, PROBE_TIME).timeout(PROBE_TIME).build();
-                    let Ok(response) = agent.get(&source.url).set("Range", &format!("bytes={from}-{}", from + PROBE_BYTES - 1)).call() else { return 0 };
-                    let mut reader = response.into_reader().take(PROBE_BYTES);
-                    let (mut got, mut buffer) = (0_u64, vec![0; 64 * 1024]);
-                    while started.elapsed() < PROBE_TIME && !cancel.load(Ordering::Relaxed) {
-                        match reader.read(&mut buffer) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => got += n as u64,
+    let (preferred, fallbacks): (Vec<&Source>, Vec<&Source>) = sources.iter().partition(|s| s.preferred);
+    let speeds: Vec<u64> = if preferred.len() < 2 {
+        vec![0; preferred.len()]
+    } else {
+        std::thread::scope(|scope| {
+            let probes: Vec<_> = preferred
+                .iter()
+                .map(|source| {
+                    scope.spawn(move || -> u64 {
+                        let started = Instant::now();
+                        let agent = net::agent_for(&source.url, source.direct, PROBE_TIME).timeout(PROBE_TIME).build();
+                        let Ok(response) = agent.get(&source.url).set("Range", &format!("bytes={from}-{}", from + PROBE_BYTES - 1)).call() else { return 0 };
+                        let mut reader = response.into_reader().take(PROBE_BYTES);
+                        let (mut got, mut buffer) = (0_u64, vec![0; 64 * 1024]);
+                        while started.elapsed() < PROBE_TIME && !cancel.load(Ordering::Relaxed) {
+                            match reader.read(&mut buffer) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => got += n as u64,
+                            }
                         }
-                    }
-                    (got as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64
+                        (got as f64 / started.elapsed().as_secs_f64().max(0.001)) as u64
+                    })
                 })
-            })
-            .collect();
-        probes.into_iter().map(|p| p.join().unwrap_or(0)).collect()
-    });
-    let mut order: Vec<usize> = (0..sources.len()).collect();
+                .collect();
+            probes.into_iter().map(|p| p.join().unwrap_or(0)).collect()
+        })
+    };
+    let mut order: Vec<usize> = (0..preferred.len()).collect();
     // Stable, so sources equally fast, or all failing, keep the catalog's order.
     order.sort_by_key(|&i| std::cmp::Reverse(speeds[i]));
-    order.into_iter().map(|i| &sources[i]).collect()
+    order.into_iter().map(|i| preferred[i]).chain(fallbacks).collect()
 }
 
 /// Keep `dir` out of the iPad's backups, to iCloud or a computer: models are gigabytes that can be downloaded again,
@@ -340,8 +376,10 @@ pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn
     let mut buffer = vec![0; CHUNK];
     // Every start, a resumed one too, tries each source first: which is fastest changes with the network
     // and the proxy, and a source is kept to the end unless it fails.
-    let sources = if have < model.size && model.sources.len() > 1 {
-        report(Progress { done: have, total: model.size, speed: 0, source: None, verifying: false, testing: true });
+    let sources = if have < model.size {
+        if model.sources.iter().filter(|s| s.preferred).count() > 1 {
+            report(Progress { done: have, total: model.size, speed: 0, source: None, verifying: false, testing: true });
+        }
         fastest_first(&model.sources, have, cancel)
     } else {
         model.sources.iter().collect()
@@ -513,9 +551,8 @@ mod tests {
             file: "model.gguf".into(),
             size: body.len() as u64,
             sha256: Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect(),
-            vram_mib: 0,
             note: None,
-            sources: urls.iter().enumerate().map(|(i, u)| Source { name: format!("source {i}"), url: (*u).to_string(), direct: true }).collect(),
+            sources: urls.iter().enumerate().map(|(i, u)| Source { name: format!("source {i}"), url: (*u).to_string(), direct: true, preferred: true }).collect(),
         }
     }
 
@@ -544,6 +581,38 @@ mod tests {
         assert_eq!(fast_ranges.lock().unwrap().len(), 3, "tried twice, then the download");
         assert_eq!(slow_ranges.lock().unwrap().len(), 2, "only tried");
         assert_eq!(fs::read(dir.0.join(&m.file)).unwrap(), data);
+    }
+
+    #[test]
+    fn fallbacks_are_never_raced_and_come_after_the_preferred_sources() {
+        let data = body();
+        let (slow, _) = serve(data.clone(), Behaviour::Slow);
+        let (fast, fast_ranges) = serve(data.clone(), Behaviour::Honest);
+        let (fallback, fallback_ranges) = serve(data.clone(), Behaviour::Honest);
+        let mut m = model(&data, &[&fallback, &slow, &fast]);
+        m.sources[0].preferred = false;
+        let order: Vec<&str> = fastest_first(&m.sources, 0, &AtomicBool::new(false)).iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(order, [fast.as_str(), slow.as_str(), fallback.as_str()]);
+        assert!(fallback_ranges.lock().unwrap().is_empty(), "a fallback is not asked while a preferred source works");
+        // With one preferred source there is nothing to race: it goes first, asked only for the download.
+        m.sources[1].preferred = false;
+        let dir = Dir::new();
+        let before = fast_ranges.lock().unwrap().len();
+        fetch(&m, &dir.0).unwrap();
+        assert_eq!(fast_ranges.lock().unwrap().len(), before + 1);
+        assert!(fallback_ranges.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn every_file_is_on_the_mirror_first_and_modelscope_races_it() {
+        let all: Vec<Model> = catalog().into_iter().flat_map(|m| [vision_for(&m.file), Some(m)]).flatten().chain([embedding()]).collect();
+        for m in &all {
+            let names: Vec<(&str, bool)> = m.sources.iter().map(|s| (s.name.as_str(), s.preferred)).collect();
+            assert_eq!(names, [("Alcyo", true), ("ModelScope", true), ("hf-mirror", false), ("Hugging Face", false)], "{}", m.id);
+            assert!(m.sources[0].url.starts_with(&format!("{MIRROR}/")), "{}", m.sources[0].url);
+            assert!(m.sources[0].url.ends_with(&format!("/{}/{}", &m.sha256[..16], m.file)), "{}", m.sources[0].url);
+        }
+        assert_eq!(mirror_key("board", &catalog()[0].sha256, &catalog()[0].file), "board/3605803b982cb64a/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
     }
 
     #[test]
@@ -663,11 +732,20 @@ mod tests {
     }
 
     #[test]
-    fn recommendations_follow_graphics_memory() {
+    fn the_recommended_model_draws_the_best_boards() {
         // Qwen3-4B draws the best boards of the small models (#306); Qwen3.5-4B is there for reading images.
-        assert_eq!(recommended(0), "qwen3-4b-2507");
-        assert_eq!(recommended(4096), "qwen3-4b-2507");
-        assert_eq!(recommended(8192), "qwen3.5-9b");
+        assert_eq!(recommended(), "qwen3-4b-2507");
+    }
+
+    #[test]
+    fn a_saved_choice_of_the_dropped_9b_falls_back_to_the_default() {
+        let dir = Dir::new();
+        fs::write(dir.0.join("Qwen3.5-9B-Q4_K_M.gguf"), b"x").unwrap();
+        fs::write(dir.0.join(SELECTED), "Qwen3.5-9B-Q4_K_M.gguf").unwrap();
+        assert_eq!(current(&dir.0), None, "the 9B file left on disk is not used");
+        fs::write(dir.0.join(&catalog()[0].file), b"x").unwrap();
+        assert_eq!(current(&dir.0), Some(dir.0.join(&catalog()[0].file)));
+        assert!(vision_for("Qwen3.5-9B-Q4_K_M.gguf").is_none());
     }
 
     #[test]
@@ -691,7 +769,7 @@ mod tests {
     #[test]
     fn only_models_that_can_see_have_a_vision_add_on() {
         let has = |id: &str| vision_for(&catalog().into_iter().find(|m| m.id == id).unwrap().file).is_some();
-        assert!(has("qwen3.5-4b") && has("qwen3.5-9b"));
+        assert!(has("qwen3.5-4b"));
         assert!(!has("qwen3-4b-2507"), "Qwen3-4B reads no images");
     }
 

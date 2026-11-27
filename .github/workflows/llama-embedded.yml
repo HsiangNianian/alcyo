@@ -64,7 +64,9 @@ jobs:
       - name: The default board model
         run: |
           mkdir -p model llama/unpacked
-          [ -f "model/$MODEL" ] || curl -fL --retry 5 -o "model/$MODEL" "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/$MODEL"
+          # Alcyo's mirror (models-mirror.yml), Hugging Face if it fails.
+          [ -f "model/$MODEL" ] || curl -fL --retry 5 -o "model/$MODEL" "https://models.alcyo.app/board/${MODEL_SHA256:0:16}/$MODEL" \
+            || curl -fL --retry 5 -o "model/$MODEL" "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/$MODEL"
           echo "$MODEL_SHA256  model/$MODEL" | shasum -a 256 -c
           tar -xzf llama/llama-server-embedded-macos-arm64.tar.gz -C llama/unpacked
       - name: Start, ask, stop, twice

@@ -5,6 +5,7 @@
 //!   eval-report <root> <out.html> [--history <dir>] [--price <label>=<hit>,<miss>,<out>]... <summary.json>...
 //!              Runs side by side, cost, the trend over earlier reports and every case, as a page to print.
 //!   fetch voice | search | pdfium [platform] | llama [platform] | glyphs
+//!   models list [--json]        Every model and voice file with its key on models.alcyo.app; see mirror.rs.
 //!   pack-glyphs <assets/hanzi> <glyphs.pack> [--only-from <file>...]   Only the characters those files use.
 //!   download-model <id> <dir>
 //!   sign <file>...              Writes <file>.sig with the update key; see release.rs.
@@ -35,6 +36,7 @@ mod score;
 mod search_eval;
 mod summary_eval;
 mod meetings;
+mod mirror;
 mod model_flags;
 mod voice_files;
 
@@ -53,6 +55,7 @@ fn main() -> Result<()> {
         Some("diag") => diag::run(args),
         Some("read-pdf") => read_pdf::run(args),
         Some("fetch") => fetch::run(args),
+        Some("models") => mirror::run(args),
         Some("sign") => release::sign(args),
         Some("release-manifest") => release::manifest(args),
         Some("pack-glyphs") => pack_glyphs(args),
