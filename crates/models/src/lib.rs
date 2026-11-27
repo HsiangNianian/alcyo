@@ -7,6 +7,7 @@
 //! only takes its real name after its size and SHA-256 match, so a damaged download is never used.
 
 pub mod net;
+pub mod voice;
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -331,11 +332,18 @@ pub fn exclude_from_backup(dir: &Path) -> Result<()> {
 
 /// Download a model, resuming anything left by an earlier attempt. `report` runs a few times a second.
 pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn FnMut(Progress)) -> Result<Outcome> {
+    download_keeping(model, dir, SPACE_MARGIN, cancel, report)
+}
+
+/// [`download`], leaving `margin` bytes free on the disk afterwards. `model.file` may be a path under `dir`, as a
+/// voice pack's files are (`sense-voice/model.int8.onnx`).
+pub fn download_keeping(model: &Model, dir: &Path, margin: u64, cancel: &AtomicBool, report: &mut dyn FnMut(Progress)) -> Result<Outcome> {
     let path = dir.join(&model.file);
     if path.is_file() {
         return Ok(Outcome::Finished(path));
     }
-    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let folder = path.parent().unwrap_or(dir);
+    fs::create_dir_all(folder).with_context(|| format!("creating {}", folder.display()))?;
     // Whatever is downloaded into it, and the unfinished part too.
     if let Err(e) = exclude_from_backup(dir) {
         eprintln!("{e:#}");
@@ -365,7 +373,7 @@ pub fn download(model: &Model, dir: &Path, cancel: &AtomicBool, report: &mut dyn
         hasher = Sha256::new();
         have = 0;
     }
-    let needed = (model.size - have) + SPACE_MARGIN;
+    let needed = (model.size - have) + margin;
     let free = free_space(dir)?;
     if needed > free {
         let gb = |n: u64| n as f64 / 1e9;

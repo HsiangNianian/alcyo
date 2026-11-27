@@ -14,7 +14,7 @@ on:
       - 'crates/tools/src/eval_report.rs'
       - 'crates/tools/src/model_flags.rs'
       - 'crates/tools/src/score.rs'
-      - 'crates/tools/src/voice_files.rs'
+      - 'crates/models/src/voice/catalogue.rs'
       - 'crates/tools/src/fetch.rs'
       - 'crates/asr-eval/**'
       - 'crates/audio/**'
@@ -104,7 +104,7 @@ jobs:
               - 'crates/audio/**'
               - 'crates/board/src/speakers.rs'
               - 'crates/board/Cargo.toml'
-              - 'crates/tools/src/voice_files.rs'
+              - 'crates/models/src/voice/catalogue.rs'
               - 'crates/tools/src/fetch.rs'
               - 'eval/asr/**'
               - 'Cargo.toml'
@@ -253,7 +253,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: resources/voice
-          key: asr-voice-${{ hashFiles('crates/tools/src/voice_files.rs') }}
+          key: asr-voice-${{ hashFiles('crates/models/src/voice/catalogue.rs') }}
       # The speech models the packages carry.
       - run: cargo run -q --release -p alcyo-tools -- fetch voice
       # Both steps check cached files too: missing or damaged audio must never quietly skip a recording.

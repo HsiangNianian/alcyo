@@ -1,12 +1,12 @@
 //! What a checkout needs before it builds or packages, downloaded and checked:
-//!   fetch voice                 the speech models, into resources/voice (see voice_files.rs)
+//!   fetch voice                 the speech models, into resources/voice (see crates/models/src/voice/catalogue.rs)
 //!   fetch search                the meeting search model, into resources/search
 //!   fetch pdfium [platform]     a pinned PDFium build, into target/pdfium
 //!   fetch llama [platform]      llama.cpp's prebuilt llama-server, trimmed, into resources/llama
 //!   fetch glyphs                stroke data for Chinese and Japanese characters, into assets/hanzi
 //! Each is skipped when what is there already matches.
 
-use crate::voice_files;
+use alcyo_models::voice as voice_files;
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;

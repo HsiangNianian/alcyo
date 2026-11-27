@@ -1,7 +1,7 @@
 //! `models list [--json]`: every file the app and CI download, as the models-mirror workflow copies them to
 //! Alcyo's R2 bucket (models.alcyo.app): its key there, size, SHA-256 and where upstream serves it.
 
-use crate::voice_files;
+use alcyo_models::voice as voice_files;
 use anyhow::{bail, Result};
 use serde_json::json;
 
