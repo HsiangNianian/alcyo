@@ -738,3 +738,22 @@ diag-whole-meeting = 整场会议
 diag-estimate = 约 { $size }
 diag-estimating = 正在估算大小…
 diag-export = 导出诊断包
+
+# iPad, round 6: the summary's toolbar, the speakers' row menus, the diagnostic popover.
+summary-written = 写于 { $when }
+summary-editing = 修改中
+speaker-mark-on-board = 在板上标出
+speaker-rename-dots = 改名…
+speaker-merge-into = 并入
+speaker-merge-heading = 把 { $name } 并入…
+affects-short = { $lines } 句 · { $items } 项板书
+speaker-move-line = 把这一句改给…
+speaker-list-foot = 标出某个说话人时，板上会标出这个人的内容。
+speaker-rename-title = 给 { $name } 改名
+speaker-merge-title = 把 { $from } 并入 { $to }？
+speaker-merge-message = { $from } 会并入 { $to }，声纹也一起合并。这一步不能撤销。
+merge = 合并
+diag-prompts-off = 关掉后只保留长度和耗时。
+diag-privacy = API key、密码和令牌一律不包含，只注明是否已设置。
+diag-export-dots = 导出…
+diag-ready = 已准备好

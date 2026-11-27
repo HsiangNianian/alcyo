@@ -1,11 +1,12 @@
 //! Export diagnostic bundle (#360): a sheet that says what goes into one meeting's bundle, lets the sound and the
 //! model's words be left out and the time be cut to its last minutes, says about how big it will be, and writes it
 //! (crates/diag): saved where chosen on a desktop, handed to the share sheet on the iPad. Opened from the meeting's
-//! Export, the iPad's ⋯ menu and a meeting card's menu. A child of `app`.
+//! Export, the iPad's ⋯ menu and a meeting card's menu. On the iPad it is a popover hanging from the toolbar's export
+//! button (`ipad_diag_popover`); a desktop keeps the dialog. A child of `app`.
 
 use super::*;
 use alcyo_diag::bundle::{self, Options, LAST_MINUTES};
-use gpui_kit::{AnyElement, FontWeight};
+use gpui_kit::{AnyElement, BoxShadow, FontWeight};
 use serde_json::{json, Value};
 
 /// Where the sheet stands.
@@ -19,6 +20,8 @@ pub(crate) struct DiagState {
     result: Option<Exported>,
     /// The stretch of speech whose drafts were last noted, so a draft is noted once, not as it grows.
     pub(crate) drafted: Option<usize>,
+    /// On the iPad's popover, what is always in the bundle is shown (its ⓘ was tapped).
+    info: bool,
 }
 
 impl Workbench {
@@ -137,6 +140,7 @@ impl Workbench {
     /// Open the sheet: fresh, with its size worked out.
     pub(crate) fn diag_opened(&mut self, cx: &mut Context<Self>) {
         self.diag.result = None;
+        self.diag.info = false;
         if self.live.audio().is_empty() {
             self.diag.options.audio = false;
         }
@@ -348,3 +352,215 @@ impl Workbench {
             .when_some(result, |d, result| d.child(result))
     }
 }
+
+/// The iPad's popover: how wide it is, and how far its arrow is from its right edge at most.
+const POP_W: f32 = 360.;
+
+impl Workbench {
+    /// The bundle on the iPad (round 6, C): no modal, a compact popover hanging from the toolbar's export button with
+    /// an arrow, as Files and Pages do for export options. The two choices are iOS switches, the time a pull-down
+    /// with checkmarks, what is always included folded behind an ⓘ, and Export… a full-width button. A touch
+    /// outside puts it away.
+    pub(crate) fn ipad_diag_popover(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = pal();
+        let dark = theme::is_dark();
+        let f = ipad::Frame::of(window);
+        // Where the export button is: in the floating bar at the top right, the transcript's button after it when
+        // wide; in a narrow window, the ⋯ that holds it.
+        let button_from_right = match f.mode {
+            ipad::Mode::Wide => f.margin + 4. + 44. + 2. + 9. + 2. + 22.,
+            ipad::Mode::Upright => f.margin + 4. + 22.,
+            ipad::Mode::Compact { .. } => 12. + 22.,
+        };
+        let top = match f.mode {
+            ipad::Mode::Compact { .. } => f.top() + 60.,
+            _ => f.top() + 14. + ipad::TARGET,
+        } + 10.;
+        let right = (button_from_right - 40.).max(12.);
+        let arrow_x = (POP_W - (button_from_right - right)).clamp(24., POP_W - 24.);
+        let o = self.diag.options;
+        let heard = !self.live.audio().is_empty();
+        let card_bg: Hsla = if dark { rgb(0x2c_2c_2e).into() } else { rgb(0xf6_f6_f4).into() };
+        let cell: Hsla = if dark { alpha(0xff_ff_ff, 0.07) } else { rgb(0xff_ff_ff).into() };
+        let group = |rows: Vec<AnyElement>| {
+            let last = rows.len().saturating_sub(1);
+            div().flex().flex_col().rounded(px(12.)).bg(cell).children(rows.into_iter().enumerate().map(move |(i, row)| div().pl(px(16.)).child(div().pr(px(14.)).when(i < last, |d| d.border_b_1().border_color(rgb(p.line))).child(row))))
+        };
+        let row = || div().min_h(px(46.)).py(px(8.)).flex().items_center().gap(px(12.));
+        let text = |title: &'static str, hint: Option<&'static str>| {
+            div().flex_1().min_w_0().flex().flex_col().gap(px(1.)).child(div().text_size(px(15.)).text_color(rgb(p.text)).child(title)).when_some(hint, |d, hint| d.child(div().text_size(px(12.5)).text_color(rgb(p.muted)).child(hint)))
+        };
+        let audio_on = o.audio && heard;
+        let audio = ipad_dialogs::ios_switch("diag-audio", audio_on, heard).when(heard, |d| d.on_click(cx.listener(move |this, _, _, cx| this.diag_choose(|o| o.audio = !audio_on, cx))));
+        let prompts_on = o.prompts;
+        let prompts = ipad_dialogs::ios_switch("diag-prompts", prompts_on, true).on_click(cx.listener(move |this, _, _, cx| this.diag_choose(|o| o.prompts = !prompts_on, cx)));
+        let minutes_text = |choice: Option<u32>| -> String {
+            match choice {
+                Some(n) => ta!("diag-last-minutes", n = n),
+                None => t("diag-whole-meeting").to_string(),
+            }
+        };
+        let times: Vec<ipad_dialogs::MenuRow> = LAST_MINUTES
+            .iter()
+            .map(|choice| {
+                let choice = *choice;
+                ipad_dialogs::MenuRow::new(minutes_text(choice), move |this, _, cx| this.diag_choose(|o| o.last_minutes = choice, cx)).checked(o.last_minutes == choice)
+            })
+            .collect();
+        let pull = div()
+            .id("diag-time")
+            .flex_none()
+            .h(px(32.))
+            .px(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .text_size(px(15.))
+            .text_color(rgb(p.accent))
+            .child(minutes_text(o.last_minutes))
+            .child(icon("ipad/updown").size(px(15.)));
+        let choices = group(vec![
+            row().child(text(t("diag-audio"), (!heard).then_some(t("diag-no-audio")))).child(audio).into_any_element(),
+            row().child(text(t("diag-prompts"), Some(t("diag-prompts-off")))).child(prompts).into_any_element(),
+            row().child(text(t("diag-time"), None)).child(self.ipad_menu("diag-time", pull, times, false, cx)).into_any_element(),
+        ]);
+        let info = self.diag.info;
+        let always = group(vec![div()
+            .flex()
+            .flex_col()
+            .child(
+                row()
+                    .id("diag-info")
+                    .cursor_pointer()
+                    .child(text(t("diag-always"), None))
+                    .child(div().flex_none().text_color(rgb(p.accent)).child(icon("ipad/info").size(px(20.))))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.diag.info = !this.diag.info;
+                        cx.notify();
+                    })),
+            )
+            .when(info, |d| {
+                d.child(div().pb(px(12.)).flex().flex_col().gap(px(6.)).text_size(px(12.5)).line_height(gpui_kit::relative(1.45)).text_color(rgb(p.muted)).child(t("diag-always-list")).child(t("diag-privacy")))
+            })
+            .into_any_element()]);
+        let size = match self.diag.estimate {
+            Some((for_options, bytes)) if for_options == o || !self.diag.estimating => ta!("diag-estimate", size = crate::storage::human(bytes)),
+            _ => t("diag-estimating").to_string(),
+        };
+        let title = self.live.title().to_string();
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .px(px(4.))
+            .pb(px(12.))
+            .child(div().flex_none().size(px(40.)).rounded(px(10.)).bg(rgb(if dark { 0xf2_f2_f2 } else { 0x11_11_11 })).text_color(rgb(if dark { 0x11_11_11 } else { 0xff_ff_ff })).flex().items_center().justify_center().child(icon("ipad/zip").size(px(22.))))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(p.text)).child(t("diag-title")))
+                    .child(div().text_size(px(12.5)).text_color(rgb(p.muted)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(if title.is_empty() { size } else { format!("{title} · {size}") })),
+            );
+        let result = self.diag.result.as_ref().map(|result| match result {
+            Exported::Saved { path, .. } => {
+                let shared = path.clone();
+                group(vec![row()
+                    .child(div().flex_none().size(px(28.)).rounded(px(7.)).bg(rgb(0x34_c7_59)).text_color(rgb(0xff_ff_ff)).flex().items_center().justify_center().child(icon("ipad/check").size(px(16.))))
+                    .child(text(t("diag-ready"), None))
+                    .child(div().id("diag-share-again").flex_none().text_size(px(15.)).text_color(rgb(p.accent)).cursor_pointer().active(|d| d.opacity(0.6)).child(t("ipad-share-again")).on_click(move |_, _, _| crate::platform::share_file(&shared)))
+                    .into_any_element()])
+                .into_any_element()
+            }
+            Exported::Failed(error) => div().px(px(4.)).text_size(px(12.5)).text_color(rgb(p.danger)).child(crate::ta!("could-not-export", error = format!("{error}"))).into_any_element(),
+        });
+        let busy = self.diag.busy;
+        let go = div()
+            .id("diag-go")
+            .h(px(46.))
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(12.))
+            .bg(rgb(p.accent))
+            .text_color(rgb(0xff_ff_ff))
+            .text_size(px(16.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(if busy { t("exporting") } else { t("diag-export-dots") })
+            .when(busy, |d| d.opacity(0.5))
+            .when(!busy, |d| d.cursor_pointer().active(|d| d.opacity(0.7)).on_click(cx.listener(|this, _, _, cx| this.start_diag_export(cx))));
+        let arrow_color = card_bg;
+        let arrow = canvas(
+            |_, _, _| (),
+            move |bounds, (), window: &mut Window, _| {
+                let (x, y) = (bounds.origin.x + px(arrow_x), bounds.origin.y);
+                let mut pb = PathBuilder::fill();
+                pb.move_to(point(x - px(13.), y + px(11.)));
+                pb.line_to(point(x, y - px(1.)));
+                pb.line_to(point(x + px(13.), y + px(11.)));
+                pb.close();
+                if let Ok(path) = pb.build() {
+                    window.paint_path(path, Background::from(arrow_color));
+                }
+            },
+        )
+        .absolute()
+        .top(px(-10.))
+        .left_0()
+        .w(px(POP_W))
+        .h(px(12.));
+        let card = div()
+            .id("diag-popover")
+            .occlude()
+            .absolute()
+            .top(px(top))
+            .right(px(right))
+            .w(px(POP_W))
+            .rounded(px(16.))
+            .bg(card_bg)
+            .shadow(vec![
+                BoxShadow { color: alpha(0, if dark { 0.6 } else { 0.3 }), offset: point(px(0.), px(24.)), blur_radius: px(60.), spread_radius: px(-12.), inset: false },
+                BoxShadow { color: if dark { alpha(0xff_ff_ff, 0.1) } else { alpha(0, 0.08) }, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(0.5), inset: false },
+            ])
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(arrow)
+            .child(
+                div()
+                    .p(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(head)
+                    .child(choices)
+                    .child(always)
+                    .when_some(result, |d, result| d.child(result))
+                    .child(go),
+            )
+            .with_animation("diag-popover-in", gpui_kit::Animation::new(Duration::from_millis(200)).with_easing(|t: f32| 1. - (1. - t).powi(3)), |d, t| d.opacity(t));
+        div()
+            .id("diag-popover-veil")
+            .occlude()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.panel = Panel::Transcript;
+                cx.notify();
+            }))
+            .child(card)
+            .into_any_element()
+    }
+}
+
+fn alpha(color: u32, a: f32) -> Hsla {
+    let mut c: Hsla = rgb(color).into();
+    c.a = a;
+    c
+}
+

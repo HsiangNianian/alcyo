@@ -815,3 +815,28 @@ diag-whole-meeting = Whole meeting
 diag-estimate = About { $size }
 diag-estimating = Working out the size…
 diag-export = Export bundle
+
+# iPad, round 6: the summary's toolbar, the speakers' row menus, the diagnostic popover.
+summary-written = Written { $when }
+summary-editing = Editing
+speaker-mark-on-board = Mark on the board
+speaker-rename-dots = Rename…
+speaker-merge-into = Merge into
+speaker-merge-heading = Merge { $name } into…
+affects-short = { $lines ->
+    [one] { $lines } line
+   *[other] { $lines } lines
+} · { $items ->
+    [one] { $items } board item
+   *[other] { $items } board items
+}
+speaker-move-line = Move this line to…
+speaker-list-foot = While a speaker is marked, their lines stand out on the board.
+speaker-rename-title = Rename { $name }
+speaker-merge-title = Merge { $from } into { $to }?
+speaker-merge-message = { $from } becomes part of { $to }, voice included. This can't be undone.
+merge = Merge
+diag-prompts-off = Off keeps only their sizes and times.
+diag-privacy = API keys, passwords and tokens are never included: only whether they are set.
+diag-export-dots = Export…
+diag-ready = Ready

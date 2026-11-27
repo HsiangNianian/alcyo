@@ -775,6 +775,7 @@ impl Live {
         if text.is_empty() {
             self.raw.remove("summary");
             self.raw.remove("summarySource");
+            self.raw.remove("summaryWritten");
         } else {
             self.raw.insert("summary".into(), json!(text));
             match source {
@@ -783,6 +784,20 @@ impl Live {
             };
         }
         self.touch();
+    }
+
+    /// When the summary was written by the model, in milliseconds since 1970: none for meetings saved before this was
+    /// kept, or for a summary only ever typed.
+    pub fn summary_written(&self) -> Option<i64> {
+        self.raw.get("summaryWritten").and_then(Value::as_i64)
+    }
+
+    /// Note when the summary there now was written. Nothing is noted without a summary.
+    pub fn note_summary_written(&mut self, at_ms: i64) {
+        if !self.summary().is_empty() {
+            self.raw.insert("summaryWritten".into(), json!(at_ms));
+            self.touch();
+        }
     }
 
     /// Older meetings have a summary but no fingerprint, so opening one takes the meeting as it stands.
@@ -960,6 +975,27 @@ mod tests {
         let raw = live.snapshot();
         assert!(!raw.contains_key("summary") && !raw.contains_key("summarySource"));
         assert_eq!(live.summary_source(), None);
+    }
+
+    /// When the summary was written is kept with it, goes with it, and is simply absent in older meetings.
+    #[test]
+    fn a_summary_keeps_when_it_was_written() {
+        let mut live = Live::new();
+        live.note_summary_written(1_000);
+        assert_eq!(live.summary_written(), None, "no summary, nothing to note");
+        live.set_summary("- a", Some("s-1"));
+        live.note_summary_written(1_764_000_000_000);
+        assert_eq!(live.summary_written(), Some(1_764_000_000_000));
+        assert_eq!(live.snapshot()["summaryWritten"], 1_764_000_000_000i64);
+        live.set_summary("- a, edited", Some("s-1"));
+        assert_eq!(live.summary_written(), Some(1_764_000_000_000), "an edit keeps when it was written");
+        let reopened = loaded(Value::Object(live.snapshot()), Origin::Current);
+        assert_eq!(reopened.summary_written(), Some(1_764_000_000_000));
+        live.set_summary("", None);
+        assert_eq!(live.summary_written(), None);
+        assert!(!live.snapshot().contains_key("summaryWritten"));
+        let older = loaded(json!({ "id": "m", "summary": "旧摘要" }), Origin::Current);
+        assert_eq!(older.summary_written(), None);
     }
 
     #[test]
