@@ -149,7 +149,7 @@ jobs:
       - run: target/release/alcyo-tools fetch voice
       # Its own target folder: the cache keeps compiled crates but not the speech library they were
       # built against, so rebuilding that crate in the restored folder cannot find it.
-      - name: How speech is heard, with the packaged models
+      - name: How speech is heard, with every voice pack
         run: cargo test -p alcyo-audio
         env:
           ALCYO_VOICE_DIR: ${{ github.workspace }}/resources/voice
@@ -209,7 +209,10 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-      - name: Core crates and speech, with the packaged models
+      # The package carries only the voice detector; the tests below hear with every model, fetched after
+      # packaging so none of them goes into the app.
+      - run: target/release/alcyo-tools fetch voice
+      - name: Core crates and speech, with every voice pack
         run: cargo test -p alcyo-board -p alcyo-agent -p alcyo-meetings -p alcyo-models -p alcyo-audio
         env:
           ALCYO_VOICE_DIR: ${{ github.workspace }}/resources/voice
