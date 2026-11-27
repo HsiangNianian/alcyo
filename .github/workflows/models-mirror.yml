@@ -1,0 +1,108 @@
+# Copies every model and voice file the app and CI download to Alcyo's R2 bucket, served at
+# https://models.alcyo.app/<key>. The list, keys and hashes come from `alcyo-tools models list --json`
+# (crates/tools/src/mirror.rs). A file already there with the same size is skipped; the rest are downloaded
+# from upstream one at a time, checked against their SHA-256, uploaded and deleted, so the runner's disk only
+# ever holds one. Keys carry the start of the file's hash, so their content never changes and is cached for good.
+name: models mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: Only keys containing this text (empty for every file)
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: models-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BUCKET: alcyo-model
+      PUBLIC: https://models.alcyo.app
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY_ID }}
+      AWS_DEFAULT_REGION: auto
+      # R2 takes the checksums the S3 API asks for, not the extra ones newer aws clients send by default.
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+      ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ONLY: ${{ inputs.only }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: models-mirror
+      - name: List the files
+        run: |
+          cargo run -q -p alcyo-tools -- models list
+          cargo run -q -p alcyo-tools -- models list --json > "$RUNNER_TEMP/files.json"
+
+      - name: Mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="https://${ACCOUNT_ID}.r2.cloudflarestorage.com"
+          s3() { aws --endpoint-url "$endpoint" "$@"; }
+          size_there() { s3 s3api head-object --bucket "$BUCKET" --key "$1" --query ContentLength --output text 2>/dev/null || echo 0; }
+          work="$RUNNER_TEMP/file"
+          uploaded=0 skipped=0
+          # The lists are read on their own descriptors, so nothing in the loop can eat them from stdin.
+          while read -r entry <&3; do
+            key=$(jq -r .key <<<"$entry") size=$(jq -r .size <<<"$entry") sha=$(jq -r .sha256 <<<"$entry")
+            [[ -z "$ONLY" || "$key" == *"$ONLY"* ]] || continue
+            if [ "$(size_there "$key")" = "$size" ]; then
+              echo "have   $key ($size bytes)"
+              skipped=$((skipped + 1))
+              continue
+            fi
+            got=""
+            while read -r url <&4; do
+              rm -f "$work"
+              echo "fetch  $url"
+              if curl -fL --retry 3 --retry-delay 5 --silent --show-error -o "$work" "$url" \
+                && [ "$(stat -c %s "$work")" = "$size" ] \
+                && echo "$sha  $work" | sha256sum -c --quiet; then
+                got=$url
+                break
+              fi
+              echo "::warning::$url did not give the file $key expects"
+            done 4< <(jq -r '.upstream[]' <<<"$entry")
+            [ -n "$got" ] || { echo "::error::no upstream source gave $key"; exit 1; }
+            s3 s3 cp "$work" "s3://$BUCKET/$key" --only-show-errors \
+              --content-type application/octet-stream \
+              --cache-control "public, max-age=31536000, immutable" \
+              --metadata "sha256=$sha"
+            rm -f "$work"
+            [ "$(size_there "$key")" = "$size" ] || { echo "::error::$key is not the right size in the bucket"; exit 1; }
+            echo "upload $key ($size bytes)"
+            uploaded=$((uploaded + 1))
+          done 3< <(jq -c '.[]' "$RUNNER_TEMP/files.json")
+          echo "$uploaded uploaded, $skipped already there" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: What the bucket holds
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          endpoint="https://${ACCOUNT_ID}.r2.cloudflarestorage.com"
+          { echo '```'; aws --endpoint-url "$endpoint" s3 ls "s3://$BUCKET" --recursive; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Through the public domain, as the app sees it: the size, and a range answered with 206. Only warns, as the
+      # domain can lag behind the bucket while it is being set up.
+      - name: Check the public domain
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          while read -r entry; do
+            key=$(jq -r .key <<<"$entry") size=$(jq -r .size <<<"$entry")
+            length=$(curl -fsSI "$PUBLIC/$key" | tr -d '\r' | awk 'tolower($1) == "content-length:" { print $2 }')
+            status=$(curl -s -o /dev/null -w '%{http_code}' -r 0-1023 "$PUBLIC/$key")
+            if [ "$length" = "$size" ] && [ "$status" = 206 ]; then echo "ok     $key"; else echo "::warning::$PUBLIC/$key: length ${length:-none} (want $size), range $status"; fi
+          done < <(jq -c '.[]' "$RUNNER_TEMP/files.json")

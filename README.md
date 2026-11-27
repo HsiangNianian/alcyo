@@ -136,9 +136,8 @@ The app bundles llama.cpp's `llama-server` and runs it for you: Vulkan on Linux 
 |---|---|---|
 | **Qwen3-4B (Instruct 2507) · Q4_K_M** | about 2.5 GB | The default; works on laptops and integrated graphics. Reads no images. |
 | **Qwen3.5-4B · Q4_K_M** | about 2.7 GB | Reads images with its vision add-on (about 670 MB); draws boards less well than Qwen3-4B. |
-| **Qwen3.5-9B · Q4_K_M** | about 5.7 GB | Larger; 6 GB of graphics memory or more is recommended. |
 
-Downloads can be paused and resumed, check free space and verify SHA-256, trying ModelScope, hf-mirror and Hugging Face in turn. The first start compiles shaders for your graphics card, which takes about half a minute, once.
+Downloads can be paused and resumed, check free space and verify SHA-256, taking the faster of Alcyo's own mirror (models.alcyo.app) and ModelScope, with hf-mirror and Hugging Face as fallbacks. The first start compiles shaders for your graphics card, which takes about half a minute, once.
 
 - **Meeting search** finds what was said in any meeting from a question in your own words. It uses [EmbeddingGemma 300M](https://huggingface.co/google/embeddinggemma-300m), which comes with every package and runs on your computer, under the [Gemma Terms of Use](https://ai.google.dev/gemma/terms). It is on unless you turn it off in **Settings › General**; the first start builds an index of every meeting, which takes a while.
 - **Local by default**: audio is recognized on your computer and meetings stay there. No account or API key is needed.

@@ -2,7 +2,10 @@
 //! speaker model, Nemotron-3-Diarization for telling speakers apart as they talk, a streaming Chinese
 //! zipformer for drafts while someone speaks, Parakeet for English and ReazonSpeech for Japanese. CI caches them by this file's hash. The speaker model is not on ModelScope,
 //! so it comes from Hugging Face, pinned to the revision the app was tested with; the diarization model, exported to ONNX by our sherpa-onnx
-//! fork's CI, only from that fork's release.
+//! fork's CI, only from that fork's release. Every file is also on Alcyo's mirror (see `alcyo_models::MIRROR`),
+//! tried first and raced against ModelScope where it has the file.
+
+use alcyo_models::Source;
 
 pub struct VoiceFile {
     /// Where it goes under `resources/`.
@@ -14,6 +17,26 @@ pub struct VoiceFile {
     /// A Hugging Face path, tried on hf-mirror first.
     pub huggingface: Option<String>,
     pub github: Option<&'static str>,
+}
+
+impl VoiceFile {
+    /// Its key on the mirror: `voice/<hash>/<its path under voice/>`.
+    pub fn key(&self) -> String {
+        alcyo_models::mirror_key("voice", self.sha256, self.name.strip_prefix("voice/").unwrap_or(self.name))
+    }
+
+    /// Every place it can be downloaded from, in the order the downloader treats them.
+    pub fn sources(&self) -> Vec<Source> {
+        let mut sources = vec![Source::mirror(&self.key())];
+        sources.extend(self.modelscope.map(Source::modelscope));
+        if let Some(path) = &self.huggingface {
+            sources.extend(Source::huggingface(path));
+        }
+        if let Some(url) = self.github {
+            sources.push(Source { name: "GitHub".into(), url: url.into(), direct: false, preferred: false });
+        }
+        sources
+    }
 }
 
 const PARAKEET: &str = "csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/resolve/8c3a10fb13408c7a7054f6898958bf1c64a8d6c7";

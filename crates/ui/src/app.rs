@@ -1895,8 +1895,6 @@ struct Workbench {
     /// When to look for an update without being asked.
     check_at: Option<Instant>,
     data: PathBuf,
-    /// The discrete graphics memory, which decides the recommended model.
-    vram_mib: u64,
     /// Nothing can draw yet, so opening the app leads to choosing a model.
     needs_model: bool,
     notice: Option<String>,
@@ -9231,7 +9229,7 @@ impl Render for Workbench {
         let field = |label: &'static str, input: &Entity<InputState>| div().flex().flex_col().gap_1().child(div().text_small().text_color(rgb(pal().muted)).child(label)).child(Input::new(input));
         let local_only = self.live.local_only();
         let current_model = alcyo_models::current(&self.models);
-        let recommended = alcyo_models::recommended(self.vram_mib);
+        let recommended = alcyo_models::recommended();
         let using_remote = self.form.saved.enabled && self.form.saved.is_complete();
         let progress_row = self.download.as_ref().map(|d| {
             let text = match &d.progress {
@@ -10639,7 +10637,6 @@ enum Startup {
 struct Prepared {
     state: Ink,
     live: Live,
-    vram_mib: u64,
     /// The palette the board was drawn in, which the system's appearance may yet change.
     dark: bool,
     /// The meetings there are, for the sidebar, and which of them are pinned.
@@ -10800,7 +10797,6 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     std::thread::spawn(alcyo_agent::sound::warm);
     // Everything slow happens away from the window, which has to appear straight away.
     let (startup, starting) = channel::<Startup>();
-    let probe_binaries = binaries.clone();
     let messy = settings.messy;
     let hanzi_source = resources.hanzi;
     std::thread::spawn(move || {
@@ -10816,7 +10812,6 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
             };
             // The sidebar lists the meetings from the first frame, and reading them all takes a moment.
             let (library, pinned) = meetings.as_ref().map_or((vec![], vec![]), |store| (store.list().unwrap_or_default(), store.pinned()));
-            let vram_mib = alcyo_agent::list_gpus(&probe_binaries).iter().filter(|g| g.discrete).map(|g| g.total_mib).max().unwrap_or(0);
             let mut state = Ink {
                 glyphs,
                 board: StableLayout::default(),
@@ -10899,7 +10894,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                 state.view = Some(View { k, x: e.x0 as f32 - 20.0 / k, y: e.y0 as f32 - 20.0 / k });
                 state.reading = true;
             }
-            Ok(Prepared { state, live, vram_mib, dark, library, pinned })
+            Ok(Prepared { state, live, dark, library, pinned })
         })();
         let _ = startup.send(Startup::Ready(Box::new(prepared)));
     });
@@ -10939,7 +10934,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
         })
         .detach();
         let build = move |prepared: Prepared, window: &mut Window, cx: &mut App| -> Entity<Workbench> {
-            let Prepared { mut state, live, vram_mib, library, pinned, .. } = prepared;
+            let Prepared { mut state, live, library, pinned, .. } = prepared;
             state.set_map(!settings.minimap_hidden);
             let history: Vec<Utterance> = live.history.iter().filter_map(|h| serde_json::from_value(h.clone()).ok()).collect();
             pipeline.session().open(live.graph.clone(), history);
@@ -11175,7 +11170,6 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     prefix,
                     check_at,
                     data: update_data,
-                    vram_mib,
                     needs_model: false,
                     notice: None,
                     info: None,
