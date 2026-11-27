@@ -80,6 +80,7 @@ impl Workbench {
             data,
             models: self.models.clone(),
             voice: self.voice_dir.clone(),
+            packs: Some(self.packs.places.clone()),
             search: self.search_dir.clone(),
             temp: std::env::temp_dir(),
             temp_is_own: cfg!(target_os = "ios"),
@@ -136,6 +137,7 @@ impl Workbench {
             Kind::CompileCache(compile_cache::Kind::Older) => t("compile-cache-older").to_string(),
             Kind::CompileCache(compile_cache::Kind::System) => t("compile-cache-system").to_string(),
             Kind::Speech => t("storage-speech").to_string(),
+            Kind::VoicePack(id) => ta!("vp-storage-name", name = alcyo_models::voice::Pack::from_id(id).map_or("", voice_packs::pack_name).to_string()),
             Kind::SearchIndex => t("storage-search-index").to_string(),
             Kind::Meetings => t("storage-meetings").to_string(),
             Kind::Temporary => t("storage-temporary").to_string(),
@@ -153,6 +155,7 @@ impl Workbench {
             Kind::Unfinished(_) => t("storage-hint-unfinished"),
             Kind::CompileCache(_) => t("storage-hint-compile-cache"),
             Kind::Speech => t("storage-built-in"),
+            Kind::VoicePack(_) => t("vp-storage-downloaded"),
             Kind::SearchIndex => t("storage-hint-search-index"),
             Kind::Meetings => t("storage-hint-meetings"),
             Kind::Temporary => t("storage-hint-temporary"),
@@ -188,6 +191,14 @@ impl Workbench {
     /// Delete `items` off the window's thread, then say how much came back and look again. A board model deleted
     /// means the model in use may now be another, or none.
     fn storage_delete(&mut self, items: Vec<Item>, forget_secrets: bool, cx: &mut Context<Self>) {
+        let (packs, items): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|i| matches!(i.kind, Kind::VoicePack(_)));
+        for item in packs {
+            if let Kind::VoicePack(id) = &item.kind {
+                if let Some(pack) = alcyo_models::voice::Pack::from_id(id) {
+                    self.packs_delete(pack, cx);
+                }
+            }
+        }
         self.storage.busy = true;
         self.storage.freed = None;
         self.storage.note = None;
@@ -234,6 +245,13 @@ impl Workbench {
 
     /// Delete one item, stopping the local model first when it is that model's.
     fn storage_delete_one(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        // A voice pack goes through the packs, which stop keeping it (and Chinese takes its live captions).
+        if let Kind::VoicePack(id) = &kind {
+            if let Some(pack) = alcyo_models::voice::Pack::from_id(id) {
+                self.packs_delete(pack, cx);
+            }
+            return;
+        }
         let Some(item) = self.storage.items.as_ref().and_then(|items| items.iter().find(|i| i.kind == kind)).cloned() else { return };
         if !item.deletable() {
             return;
@@ -333,7 +351,7 @@ impl Workbench {
             out.push(div().px(px(4.)).text_size(px(13.)).text_color(rgb(if failed { p.danger } else { p.accent })).child(text).into_any_element());
         }
         let sections: [(&str, fn(&Kind) -> bool); 4] = [
-            (t("storage-models"), |k| matches!(k, Kind::BoardModel(_) | Kind::ImageReader(_) | Kind::SearchModel | Kind::Unfinished(_) | Kind::Speech)),
+            (t("storage-models"), |k| matches!(k, Kind::BoardModel(_) | Kind::ImageReader(_) | Kind::SearchModel | Kind::Unfinished(_) | Kind::Speech | Kind::VoicePack(_))),
             (t("compile-cache"), |k| matches!(k, Kind::CompileCache(_))),
             (t("storage-your-data"), |k| matches!(k, Kind::Meetings)),
             (t("storage-other"), |k| matches!(k, Kind::SearchIndex | Kind::Temporary | Kind::Logs)),

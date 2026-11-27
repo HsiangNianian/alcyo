@@ -9,7 +9,8 @@ pub struct Resources {
     pub hanzi: HanziSource,
     /// `llama-server` and its libraries.
     pub binaries: PathBuf,
-    /// The speech models.
+    /// The speech models that come with the app: the voice detector in a package (the rest are voice packs,
+    /// downloaded into the data folder), every model in a checkout that fetched them.
     pub voice: PathBuf,
     /// The PDF library.
     pub pdfium: PathBuf,
@@ -43,6 +44,15 @@ fn checkout_dir() -> Option<PathBuf> {
 }
 
 pub fn locate(data: &Path) -> Resources {
+    let mut found = locate_in(data);
+    // To try the voice packs from a checkout, which has every model: another folder taken as what came with the app.
+    if let Some(dir) = std::env::var_os("ALCYO_BUNDLED_VOICE") {
+        found.voice = PathBuf::from(dir);
+    }
+    found
+}
+
+fn locate_in(data: &Path) -> Resources {
     if let Some(dir) = installed_dir() {
         return Resources { hanzi: HanziSource::Pack(dir.join("glyphs.pack")), binaries: dir.join("llama"), pdfium: dir.join("pdfium"), voice: dir.join("voice"), search: dir.join("search"), installed: true };
     }
@@ -69,33 +79,16 @@ impl Resources {
 
     /// Whether everything an install promises is present, as JSON for packaging checks.
     pub fn self_check(&self) -> (bool, String) {
-        // Packages differ in their speech models; the variant says which ones this one promises.
-        let variant = self.voice.parent().map(alcyo_update::variant_of).unwrap_or_default();
-        let model = |name: &'static str, file: &str| (name, self.voice.join(file));
-        let sense_voice = [model("speech model", "sense-voice/model.int8.onnx"), model("speech tokens", "sense-voice/tokens.txt")];
-        let english = [model("English speech model", "parakeet-en/encoder.int8.onnx")];
-        let japanese = [model("Japanese speech model", "reazon-ja/encoder-epoch-99-avg-1.int8.onnx")];
-        let speech: Vec<(&str, PathBuf)> = match variant.as_str() {
-            "ja" => japanese.into(),
-            "en" => english.into(),
-            "sensevoice" => sense_voice.into(),
-            // "apple" is what the package without models was called first.
-            "none" | "apple" => vec![("Apple speech helper", std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.join("alcyo-speech"))).unwrap_or_default())],
-            _ => sense_voice.into_iter().chain(english).chain(japanese).chain([model("Chinese draft model", "draft-zh/encoder.int8.onnx")]).collect(),
-        };
-        let checks: Vec<(&str, PathBuf)> = [
+        // One package for every platform since the voice packs (0.35): the speech models are downloaded, so a package
+        // promises only the voice detector besides the rest.
+        let checks: Vec<(&str, PathBuf)> = vec![
             ("glyphs", self.hanzi_path().to_path_buf()),
             ("llama-server", self.binaries.join(alcyo_agent::LLAMA_SERVER)),
             ("voice activity model", self.voice.join("silero_vad.onnx")),
-            ("speaker model", self.voice.join("speaker/campplus_zh_en.onnx")),
-            ("diarization model", self.voice.join("speaker/nemotron-3-diarization.int8.onnx")),
             ("PDF library", alcyo_import::pdf::library_file(&self.pdfium)),
-            // Every package carries it, the one without speech models too.
+            // Every package carries it.
             ("meeting search model", self.search.join(alcyo_models::embedding().file)),
-        ]
-        .into_iter()
-        .chain(speech)
-        .collect();
+        ];
         let mut rows: Vec<_> = checks.iter().map(|(name, path)| json!({ "name": name, "path": path, "ok": path.exists() })).collect();
         // Built into the program, so never missing as a file, but each must load and draw its languages.
         let fonts = alcyo_fonts::check();
@@ -105,7 +98,7 @@ impl Resources {
         let report = json!({
             "version": alcyo_update::VERSION,
             "installed": self.installed,
-            "variant": if variant.is_empty() { "all" } else { variant.as_str() },
+            "variant": "all",
             "ok": ok,
             "checks": rows,
             "gpus": gpus.iter().map(|g| json!({ "id": g.id, "name": g.name, "mib": g.total_mib, "discrete": g.discrete })).collect::<Vec<_>>(),

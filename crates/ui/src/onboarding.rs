@@ -1,6 +1,7 @@
-//! The iPad's first run (#341): three screens from install to a live board. Why the microphone is needed,
-//! said before the system asks; where the board model runs, the one real decision; and where to put the
-//! iPad and what Pencil does, then start. A picture beside each, which slides along more slowly than the
+//! The iPad's first run (#341): four screens from install to a live board. Why the microphone is needed,
+//! said before the system asks; which languages the meetings use, whose voice packs download in the background
+//! (voice_packs.rs; Apple's recognizer listens meanwhile, or instead); where the board model runs; and where to put
+//! the iPad and what Pencil does, then start. A picture beside each, which slides along more slowly than the
 //! words as the steps go by.
 //!
 //! Shown on the iPad until it is finished in this install: a file in the app's own data folder notes it, which goes
@@ -12,7 +13,9 @@
 use super::*;
 use gpui_kit::{AnyElement, ElementId, FontWeight, Image, ImageFormat, ObjectFit};
 
-const STEPS: usize = 3;
+const STEPS: usize = 4;
+/// The step that asks for the voice packs, which has no picture of its own: its words are drawn instead.
+const PACKS_STEP: usize = 1;
 /// The pictures beside the steps, cut from the design at twice its size (promo/mockup/ipad/Onboarding.html).
 const ART: [&[u8]; 3] = [include_bytes!("../art/onboarding-1.jpg"), include_bytes!("../art/onboarding-2.jpg"), include_bytes!("../art/onboarding-3.jpg")];
 const ART_DARK_3: &[u8] = include_bytes!("../art/onboarding-3-dark.jpg");
@@ -44,8 +47,35 @@ impl Intro {
     }
 }
 
+/// Which of the pictures a step shows: the packs' step draws its own.
+fn art_of(step: usize) -> usize {
+    if step > PACKS_STEP { step - 1 } else { step }
+}
+
+/// The packs' step's picture: hello in the languages it hears, over a level meter, on the
+/// dark the other first pictures fade into.
+fn packs_art(w: f32, h: f32) -> AnyElement {
+    let words = [("Hello", 58., 0xec_ec_e6), ("你好", 64., 0xff_5a_36), ("こんにちは", 40., 0x9f_b4_ff), ("大家好，开始吧", 30., 0xec_ec_e6), ("Let’s start", 34., 0xec_ec_e6), ("よろしく", 30., 0x9f_b4_ff)];
+    let bars = [10., 22., 34., 18., 44., 28., 52., 30., 20., 38., 14., 26., 10.];
+    div()
+        .w(px(w))
+        .h(px(h))
+        .relative()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(28.))
+        .bg(rgb(0x0d_0d_0e))
+        .child(div().flex().flex_col().items_center().gap(px(2.)).font_family(theme::SANS).font_weight(FontWeight::MEDIUM).children(words.into_iter().map(|(text, size, color)| div().text_size(px(size)).line_height(gpui_kit::relative(1.15)).text_color(rgb(color)).child(text))))
+        .child(div().flex().items_center().gap(px(5.)).h(px(56.)).children(bars.into_iter().map(|h| div().w(px(4.)).h(px(h)).rounded(px(2.)).bg(rgb(0xec_ec_e6)))))
+        .child(div().absolute().left(px(30.)).right(px(30.)).bottom(px(30.)).flex().justify_between().font_family(theme::MONO).text_size(px(11.)).text_color(rgb(0xb8_b8_b2)).child("ALCYO").child(if crate::i18n::chinese() { "听 · 写 · 画" } else { "HEARS EVERY LANGUAGE" }))
+        .into_any_element()
+}
+
 /// A step's picture, kept once decoded.
 fn art(step: usize) -> Arc<Image> {
+    let step = art_of(step);
     thread_local! {
         static ART_IMAGES: RefCell<HashMap<(usize, bool), Arc<Image>>> = RefCell::new(HashMap::new());
     }
@@ -128,7 +158,7 @@ impl Workbench {
         let big = w.max(h) >= 1300.0;
         let step = self.intro.step;
         let went = self.intro.went;
-        let dark_art = step < 2;
+        let dark_art = art_of(step) < 2;
 
         // The picture covers its pane, kept on what it shows (the kingfisher, the board) however the pane is cut:
         // narrow beside the words, or a band over them when the iPad is upright.
@@ -137,7 +167,7 @@ impl Workbench {
         // on dotted paper, has no such edge and covers the band.
         let scale = if upright && dark_art { pane_h / (ART_H * 0.5) } else { (pane_w / ART_W).max(pane_h / ART_H) };
         let (art_w, art_h) = (ART_W * scale, ART_H * scale);
-        let (focus_x, focus_y) = ART_FOCUS[step];
+        let (focus_x, focus_y) = ART_FOCUS[art_of(step)];
         // Centred on what it shows, without leaving an edge of the pane bare where it is big enough to cover it.
         let place = |pane: f32, art: f32, focus: f32| if art <= pane { (pane - art) / 2.0 } else { (pane / 2.0 - focus * art).clamp(pane - art, 0.0) };
         let (art_left, art_top) = (place(pane_w, art_w, focus_x), place(pane_h, art_h, focus_y));
@@ -148,6 +178,9 @@ impl Workbench {
             .w(px(art_w))
             .h(px(art_h))
             .map(|d| {
+                if step == PACKS_STEP {
+                    return d.child(packs_art(art_w, art_h));
+                }
                 let image = gpui_kit::img(art(step)).size_full().object_fit(ObjectFit::Fill);
                 // The kingfisher breathes in its pool of light: a slow rise and fall of a few points, not where motion
                 // is turned down.
@@ -188,7 +221,8 @@ impl Workbench {
 
         let content = match step {
             0 => self.intro_microphone(cx),
-            1 => self.intro_model(cx),
+            PACKS_STEP => self.ipad_packs_step(cx),
+            2 => self.intro_model(cx),
             _ => self.intro_start(cx),
         };
         let words = div()
@@ -225,7 +259,7 @@ impl Workbench {
         )
     }
 
-    fn intro_go(&mut self, step: usize, cx: &mut Context<Self>) {
+    pub(super) fn intro_go(&mut self, step: usize, cx: &mut Context<Self>) {
         self.intro.went = if step >= self.intro.step { 1.0 } else { -1.0 };
         self.intro.step = step.min(STEPS - 1);
         cx.notify();
@@ -243,7 +277,7 @@ impl Workbench {
     }
 
     /// A step's headline and the line under it.
-    fn intro_heading(title: &str, text: Option<&str>) -> gpui_kit::Div {
+    pub(super) fn intro_heading(title: &str, text: Option<&str>) -> gpui_kit::Div {
         div()
             .flex()
             .flex_col()
@@ -284,7 +318,7 @@ impl Workbench {
     }
 
     /// The strong button that moves the first run on, a little smaller while pressed.
-    fn intro_button(id: &'static str, text: &str, listening: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+    pub(super) fn intro_button(id: &'static str, text: &str, listening: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
         let (h, radius) = if listening { (60., 18.) } else { (50., 14.) };
         let face = div()
             .id(ElementId::Name(format!("{id}-face").into()))
@@ -318,7 +352,7 @@ impl Workbench {
             .child(face.group_active(id, |s| s.top(px(1.5)).bottom(px(1.5)).left(px(4.)).right(px(4.)).opacity(0.92)))
     }
 
-    fn intro_link(id: &'static str, text: &str) -> gpui_kit::Stateful<gpui_kit::Div> {
+    pub(super) fn intro_link(id: &'static str, text: &str) -> gpui_kit::Stateful<gpui_kit::Div> {
         div().id(id).text_size(px(15.)).font_weight(FontWeight::MEDIUM).text_color(rgb(pal().accent)).cursor_pointer().active(|d| d.opacity(0.6)).child(text.to_string())
     }
 
@@ -463,7 +497,7 @@ impl Workbench {
                     .items_center()
                     .gap(px(14.))
                     .child(Self::intro_button("ob-continue", t("ob-continue"), false).on_click(cx.listener(|this, _, window, cx| this.intro_choose(window, cx))))
-                    .child(Self::intro_link("ob-later", t("ob-later")).on_click(cx.listener(|this, _, _, cx| this.intro_go(2, cx)))),
+                    .child(Self::intro_link("ob-later", t("ob-later")).on_click(cx.listener(|this, _, _, cx| this.intro_go(3, cx)))),
             )
     }
 
@@ -491,7 +525,7 @@ impl Workbench {
                 self.start_download(model, cx);
             }
         }
-        self.intro_go(2, cx);
+        self.intro_go(3, cx);
     }
 
     /// 3: where to put the iPad and what Pencil does, then start.

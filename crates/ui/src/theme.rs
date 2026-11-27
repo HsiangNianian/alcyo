@@ -355,12 +355,26 @@ const IPAD_SHEET_ICONS: [(&str, &str); 12] = [
     ("icons/ipad/waveform.svg", include_str!("../icons/ipad/waveform.svg")),
 ];
 
+/// The voice packs' icons (voice_packs.rs): downloading, ready, stopped, and Apple's recognizer listening meanwhile.
+const PACK_ICONS: [(&str, &str); 10] = [
+    ("icons/cloud-off.svg", include_str!("../icons/cloud-off.svg")),
+    ("icons/download.svg", include_str!("../icons/download.svg")),
+    ("icons/check.svg", include_str!("../icons/check.svg")),
+    ("icons/refresh.svg", include_str!("../icons/refresh.svg")),
+    ("icons/apple.svg", include_str!("../icons/apple.svg")),
+    ("icons/people.svg", include_str!("../icons/people.svg")),
+    ("icons/ipad/apple.svg", include_str!("../icons/ipad/apple.svg")),
+    ("icons/ipad/cloud-off.svg", include_str!("../icons/ipad/cloud-off.svg")),
+    ("icons/ipad/refresh.svg", include_str!("../icons/ipad/refresh.svg")),
+    ("icons/ipad/people.svg", include_str!("../icons/ipad/people.svg")),
+];
+
 /// The icons the toolkit carries, the few more this window asks for, and our own pictograms over both.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).chain(&ROUND6_ICONS).find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).chain(&ROUND6_ICONS).chain(&PACK_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {

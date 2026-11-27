@@ -136,17 +136,23 @@ pub fn of_variant(variant: &str) -> Vec<Pack> {
 }
 
 /// The packs to get back on the first start after updating from a version whose package came with its speech
-/// models, or None for a first install, which asks. Someone who listened with Apple's recognizer gets nothing; the
-/// variant is known when the old package's note of it is still there (an installer that wrote over the old files),
-/// and otherwise taken to be the full package, which nearly everyone had.
-pub fn after_update(used_before: bool, apple: bool, variant: Option<&str>) -> Option<Vec<Pack>> {
+/// models, or None for a first install, which asks. Someone who listened with Apple's recognizer gets nothing. The
+/// variant is known when the old package's note of it is still there (an installer that wrote over the old files);
+/// otherwise the language chosen for listening tells English or Japanese alone (what the "-en" and "-ja" packages
+/// were for), and anything else is taken for the full package, which nearly everyone had.
+pub fn after_update(used_before: bool, apple: bool, variant: Option<&str>, language: &str) -> Option<Vec<Pack>> {
     if !used_before {
         return None;
     }
     if apple {
         return Some(vec![]);
     }
-    Some(of_variant(variant.unwrap_or_default()))
+    Some(match (variant, language) {
+        (Some(variant), _) => of_variant(variant),
+        (None, "en-US") => of_variant("en"),
+        (None, "ja-JP") => of_variant("ja"),
+        (None, _) => of_variant(""),
+    })
 }
 
 /// Where a pack stands on this device.
@@ -438,7 +444,10 @@ fn fetch_jobs(jobs: Vec<(Pack, Vec<(Model, VoiceFile)>)>, places: &Places, cance
             }
             let outcome = crate::download_keeping(model, &places.packs, SPACE_MARGIN, cancel, &mut |p: Progress| {
                 got.packs[i].1 = finished + p.done;
-                got.speed = p.speed;
+                // Each file starts without a speed; the last one known stands until there is one.
+                if p.speed > 0 {
+                    got.speed = p.speed;
+                }
                 got.source = p.source.clone();
                 got.checking = p.verifying || p.testing;
                 report(Event::Progress(got.clone()));
@@ -541,13 +550,20 @@ mod tests {
 
     #[test]
     fn an_update_brings_back_what_the_old_package_came_with() {
-        assert_eq!(after_update(false, false, None), None, "a first install asks");
-        assert_eq!(after_update(true, true, Some("")), Some(vec![]), "Apple's recognizer needs nothing");
-        assert_eq!(after_update(true, false, None), Some(Pack::ALL.to_vec()), "the full package, as nearly everyone had");
-        assert_eq!(after_update(true, false, Some("full")), Some(Pack::ALL.to_vec()));
-        assert_eq!(after_update(true, false, Some("en")), Some(vec![Pack::En, Pack::Spk]));
-        assert_eq!(after_update(true, false, Some("ja")), Some(vec![Pack::Ja, Pack::Spk]));
-        assert_eq!(after_update(true, false, Some("none")), Some(vec![]));
+        assert_eq!(after_update(false, false, None, "auto"), None, "a first install asks");
+        assert_eq!(after_update(true, true, Some(""), "auto"), Some(vec![]), "Apple's recognizer needs nothing");
+        assert_eq!(after_update(true, false, None, "auto"), Some(Pack::ALL.to_vec()), "the full package, as nearly everyone had");
+        assert_eq!(after_update(true, false, None, "zh-CN"), Some(Pack::ALL.to_vec()));
+        // Each old package, by its note.
+        assert_eq!(after_update(true, false, Some("full"), "auto"), Some(Pack::ALL.to_vec()));
+        assert_eq!(after_update(true, false, Some("all"), "en-US"), Some(Pack::ALL.to_vec()), "the note outranks the language");
+        assert_eq!(after_update(true, false, Some("en"), "auto"), Some(vec![Pack::En, Pack::Spk]));
+        assert_eq!(after_update(true, false, Some("ja"), "auto"), Some(vec![Pack::Ja, Pack::Spk]));
+        assert_eq!(after_update(true, false, Some("sensevoice"), "auto"), Some(vec![Pack::Zh, Pack::Spk]));
+        assert_eq!(after_update(true, false, Some("none"), "auto"), Some(vec![]));
+        // Without the note, English or Japanese alone is what the language says.
+        assert_eq!(after_update(true, false, None, "en-US"), Some(vec![Pack::En, Pack::Spk]));
+        assert_eq!(after_update(true, false, None, "ja-JP"), Some(vec![Pack::Ja, Pack::Spk]));
     }
 
     #[test]

@@ -89,6 +89,9 @@ mod presenter;
 mod sheet;
 #[path = "onboarding.rs"]
 mod onboarding;
+// Voice packs: the speech models, chosen and downloaded rather than carried in the package.
+#[path = "voice_packs.rs"]
+mod voice_packs;
 
 /// What the board stores, and what each is called on its button.
 const MARKS: [(&str, &str); 5] = [("划掉", "Strike"), ("圈出", "Circle"), ("下划线", "Underline"), ("星标", "Star"), ("高亮", "Highlight")];
@@ -1913,6 +1916,8 @@ struct Workbench {
     presenter: presenter::Presenter,
     sheet: sheet::Sheet,
     intro: onboarding::Intro,
+    /// The voice packs: what is chosen and here, and their download (voice_packs.rs).
+    packs: voice_packs::Packs,
     /// On the iPad, a board model chosen in Settings waits for a restart (`apply_backend`).
     switch: ModelSwitch,
 }
@@ -2336,6 +2341,10 @@ impl Workbench {
     /// Turn the microphone on or off, counting the time it was on towards the meeting.
     fn toggle_mic(&mut self) {
         let was_listening = self.pipeline.listening();
+        // Before a voice pack that hears is here, listening may have to wait for it.
+        if !was_listening && !self.packs_before_listening() {
+            return;
+        }
         self.draft = None;
         // With the setting on, a saved meeting keeps what it hears: a file for each time it listens.
         let keep = (!was_listening && self.form.saved.keep_audio && self.editable()).then(|| {
@@ -2840,6 +2849,10 @@ impl Workbench {
                 Event::Agent(Update::SlowToStop) => {
                     self.notice = Some(t("local-model-slow-to-stop").to_string());
                 }
+                Event::NothingHears => {
+                    alcyo_diag::event("speech.engine", serde_json::json!({ "with": null }));
+                    self.hearing = None;
+                }
                 Event::Hearing { with, note } => {
                     alcyo_diag::event("speech.engine", serde_json::json!({ "with": with, "note": note }));
                     if let Some(note) = note {
@@ -2930,6 +2943,7 @@ impl Workbench {
         self.pump_share(&mut changed);
         self.pump_summary(&mut changed, cx);
         self.pump_download(&mut changed);
+        self.pump_packs(&mut changed);
         self.pump_search(&mut changed);
         self.pump_update(&mut changed);
         if self.switch.wanted && !self.switch.swapping {
@@ -6371,7 +6385,7 @@ impl Workbench {
     }
 
     /// The app around the meeting: its name, a new meeting, the way to the others, and Settings.
-    fn sidebar(&self, listening: bool, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+    fn sidebar(&self, listening: bool, packs_row: Option<gpui_kit::AnyElement>, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
         // One place to go, raised like a sheet while there, with a figure or a key at its far end. Under the
         // pointer its fill fades in rather than snapping.
         let sheet_nav = self.side_sheet.clone();
@@ -6678,6 +6692,8 @@ impl Workbench {
                                 .child(div().h(px(2.)).w_full().bg(rgb(pal().line)).child(div().h_full().w(gpui_kit::relative(share)).bg(rgb(if held { pal().faint } else { pal().text })))),
                         )
                     })
+                    // The voice packs downloading, said where the search index is.
+                    .children(packs_row)
                     .child(fade(nav("side-settings", "settings", t("settings"), self.panel == Panel::Settings, Some(format!("v{}", alcyo_update::VERSION))).on_click(cx.listener(|this, _, _, cx| this.toggle_panel(Panel::Settings, cx))), "side-settings", self.panel == Panel::Settings)),
             )
     }
@@ -7429,6 +7445,12 @@ fn rss_mb() -> u64 {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The desktop's first run asks for the voice packs before anything else.
+        if !crate::platform::ipad_layout() {
+            if let Some(page) = self.packs_first_page(cx) {
+                return page;
+            }
+        }
         self.storage.next_frame();
         self.load_clip_images();
         self.ink.borrow_mut().inbox_ready = self.inbox.is_some() && self.editable();
@@ -8427,7 +8449,15 @@ impl Render for Workbench {
                                 .gap_2()
                                 .child(div().size(px(10.)).flex_none().map(|d| if listening { d.bg(ink) } else { d.rounded_full().bg(rgb(pal().recording)) }))
                                 // Saying what it is doing while it listens; stopping is in the tooltip and the square.
-                                .when(dock.mic != Mic::Dot, |d| d.child(div().text_ui().whitespace_nowrap().child(if listening { t("listening") } else { t("start-listening") })))
+                                .when(dock.mic != Mic::Dot, |d| {
+                                    d.child(div().text_ui().whitespace_nowrap().child(if listening {
+                                        t("listening").to_string()
+                                    } else if self.packs.armed {
+                                        format!("{} · {}%", t("vp-starts-when-ready"), self.packs.percent())
+                                    } else {
+                                        t("start-listening").to_string()
+                                    }))
+                                })
                                 .when_some(self.keys.label(Action::Listen).filter(|_| !listening && dock.mic == Mic::Full), |d, keys| d.child(keycap(keys).h(px(18.)).border_color(rule).text_color(motion::mix(pal().button, pal().on_button, 0.7))))
                                 .when(listening && dock.mic != Mic::Dot, |d| {
                                     let level = self.level;
@@ -9340,6 +9370,8 @@ impl Render for Workbench {
                     .into_any_element()
             }
             SettingsTab::Speech => {
+                let (packs_aside, packs_rows, packs_foot) = self.packs_settings_section(cx);
+                let speakers_here = self.packs.usable(alcyo_models::voice::Pack::Spk);
                 let listen = Listen::from_setting(&self.form.saved.listen);
                 // The devices of one kind as radios: the system's default first, then each connected one, then
                 // the chosen one if it is not connected now. A long list scrolls in its card.
@@ -9426,10 +9458,29 @@ impl Render for Workbench {
                         .child(div().text_ui().child(t("language-heard")))
                         .child(div().text_small().text_color(rgb(pal().muted)).child(hint))
                         .child(div().flex().pt_1().child(segmented(
-                            languages.into_iter().map(|(id, label)| choice(gpui_kit::ElementId::Name(format!("speech-language-{id}").into()), label, language == id).on_click(cx.listener(move |this, _, _, cx| this.choose_speech(this.form.saved.system_speech, Some(id), cx)))).collect(),
+                            languages
+                                .into_iter()
+                                .map(|(id, label)| {
+                                    // A language without its voice pack shows that it would download one.
+                                    let missing = !system && voice_packs::pack_for_language(id).is_some_and(|pack| !self.packs.usable(pack));
+                                    choice(gpui_kit::ElementId::Name(format!("speech-language-{id}").into()), label, language == id)
+                                        .when(missing, |q| q.child(icon("download").size(px(11.))))
+                                        .on_click(cx.listener(move |this, _, _, cx| this.choose_speech(this.form.saved.system_speech, Some(id), cx)))
+                                })
+                                .collect(),
                         )))
                         .into_any_element(),
                 );
+                // The language chosen has no pack: offered here.
+                if let Some(pack) = voice_packs::pack_for_language(&language).filter(|pack| !system && !self.packs.usable(*pack)) {
+                    let name = languages.iter().find(|(id, _)| *id == language).map_or("", |(_, label)| *label);
+                    recognition.push(
+                        row(t("vp-packs"), None)
+                            .child(div().flex_1().text_small().text_color(rgb(pal().muted)).child(ta!("vp-needs-pack", language = name.to_string(), size = voice_packs::mb(pack.size()))))
+                            .child(Quiet::new("speech-language-get").outline().icon("download", 13.).label(t("vp-download")).on_click(cx.listener(move |this, _, _, cx| this.packs_download(&[pack], cx))))
+                            .into_any_element(),
+                    );
+                }
                 let glossary = self.glossary_card(cx);
                 div()
                     .flex()
@@ -9441,13 +9492,28 @@ impl Render for Workbench {
                     .when(listen.computer(), |d| d.child(section(Some(t("device-sound-2")), vec![outputs.into_any_element()])))
                     .when(listen.computer() && cfg!(target_os = "macos"), |d| d.child(footnote(t("on-a-mac-hearing-the").into(), pal().muted)))
                     .child(section(Some(t("recognition")), recognition))
+                    // The voice packs, each to download or delete, with how far a download is.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(theme::space::S))
+                            .pt_6()
+                            .child(div().flex().justify_between().px_1().font_family(theme::MONO).text_label().text_color(rgb(pal().faint)).child(t("vp-packs").to_uppercase()).child(packs_aside))
+                            .child(div().flex().flex_col().border_1().border_color(rgb(pal().line)).rounded(px(3.)).bg(rgb(pal().raised)).overflow_hidden().children(packs_rows.into_iter().enumerate().map(|(i, r)| div().when(i > 0, |d| d.border_t_1().border_color(rgb(pal().line))).child(r))))
+                            .child(packs_foot),
+                    )
                     .child(section(Some(t("glossary-2")), glossary))
                     .when_some(self.form.glossary_note.clone(), |d, note| d.child(footnote(note.into(), pal().muted)))
                     .child(section(
                         Some(t("during-the-meeting")),
                         vec![
-                            row(t("tell-speakers-apart-by-voice"), Some(t("new-voices-are-named-a")))
-                                .child(Switch::new("diarize").checked(self.form.saved.diarize).accessibility_label(t("tell-speakers-apart-by-voice")).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                            row(t("tell-speakers-apart-by-voice"), Some(if speakers_here { t("new-voices-are-named-a") } else { t("vp-needs-spk") }))
+                                // Without its pack the switch is grey, with the pack offered beside it.
+                                .when(!speakers_here, |d| {
+                                    d.child(Quiet::new("diarize-get").outline().icon("download", 13.).label(ta!("vp-download-size", size = voice_packs::mb(alcyo_models::voice::Pack::Spk.size()))).on_click(cx.listener(|this, _, _, cx| this.packs_download(&[alcyo_models::voice::Pack::Spk], cx))))
+                                })
+                                .child(Switch::new("diarize").checked(self.form.saved.diarize && speakers_here).map(|s| gpui_kit::component::Disableable::disabled(s, !speakers_here)).accessibility_label(t("tell-speakers-apart-by-voice")).on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                     this.form.saved.diarize = *checked;
                                     save_setting(this, cx);
                                 })))
@@ -10337,6 +10403,7 @@ impl Render for Workbench {
             }
             return self.ipad_layers(parts, window, cx);
         }
+        let packs_note = self.packs_dock_note(cx);
         let lower = replay_bar.map(|bar| float().id("replay-tools").w(px(620.)).max_w(gpui_kit::relative(0.94)).h(px(TOOLS_H)).child(bar)).or(tool_bar);
         let canvas_area = div()
             .relative()
@@ -10368,6 +10435,7 @@ impl Render for Workbench {
                 )
             })
             .when_some(notices, |d, notices| d.child(notices))
+            .when_some(packs_note, |d, note| d.child(div().absolute().bottom(px(TOOLS_GAP + TOOLS_H + 12.0)).left_0().right_0().flex().justify_center().child(note)))
             .when_some(swatches.filter(|_| !replaying), |d, bar| d.child(div().absolute().bottom(px(TOOLS_GAP + TOOLS_H + 8.0)).left_0().right_0().flex().justify_center().child(bar)))
             // One row along the lower edge: the zoom, the tools and the boards, never over each other. The tools
             // stay in the middle while both sides have room for what they hold; otherwise the three share the
@@ -10491,7 +10559,8 @@ impl Render for Workbench {
             .when(self.panel == Panel::Settings, |d| d.child(settings))
             .when_some(overlay.take_if(|_| !in_dialog), |d, page| d.child(page))
             .when_some(preparing_page, |d, page| d.child(page));
-        let sidebar = div().flex_none().h_full().overflow_hidden().child(self.sidebar(listening, cx)).with_spring("sidebar-slide", SpringAnimation::new(motion::GLIDE).to(if sidebar_shown { SIDEBAR_W } else { 0. }), |d, w| d.w(px(w.max(0.))).opacity((w / SIDEBAR_W).clamp(0., 1.)));
+        let packs_row = self.packs_side_row(cx);
+        let sidebar = div().flex_none().h_full().overflow_hidden().child(self.sidebar(listening, packs_row, cx)).with_spring("sidebar-slide", SpringAnimation::new(motion::GLIDE).to(if sidebar_shown { SIDEBAR_W } else { 0. }), |d, w| d.w(px(w.max(0.))).opacity((w / SIDEBAR_W).clamp(0., 1.)));
         let shortcuts_window = self.shortcuts_shown.then(|| self.shortcuts_window(cx));
         let content = div()
             .relative()
@@ -10696,7 +10765,17 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
         alcyo_diag::set_memory_probe(alcyo_llama::available_memory);
     }
     let speech = Speech { helper: Speech::helper_path(), system: settings.system_speech, language: settings.speech_language.clone() };
-    let pipeline = Pipeline::start(backend, guidance, resources.voice, speech, Script { turns, wav });
+    let packs_places = alcyo_models::voice::Places { packs: data.join("models/voice"), bundled: resources.voice.clone() };
+    let packs = {
+        // Someone who used an earlier version: a meeting kept, a board model downloaded, or the iPad's first run done.
+        let any = |dir: PathBuf, wanted: &dyn Fn(&std::path::Path) -> bool| std::fs::read_dir(dir).is_ok_and(|mut e| e.any(|e| e.is_ok_and(|e| wanted(&e.path()))));
+        let used_before = any(data.join("meetings"), &|_| true) || any(models.clone(), &|p| p.extension().is_some_and(|e| e == "gguf")) || data.join("first-run-done").is_file();
+        // An installer that wrote over the old package may have left its note of which models it carried.
+        let variant = resources.voice.parent().and_then(|lib| std::fs::read_to_string(lib.join("variant")).ok()).map(|v| v.trim().to_string());
+        let locale = sys_locale::get_locale().unwrap_or_default();
+        voice_packs::Packs::new(packs_places.clone(), used_before && reads_meetings, speech.helper.is_some() && settings.system_speech, variant, &settings.speech_language, &locale)
+    };
+    let pipeline = Pipeline::start(backend, guidance, alcyo_audio::Models::new(packs_places.dirs()), speech, Script { turns, wav });
     pipeline.session().set_glossary(Glossary::parse(&settings.glossary));
     std::thread::spawn(alcyo_agent::sound::warm);
     // Everything slow happens away from the window, which has to appear straight away.
@@ -11091,6 +11170,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
                     presenter: presenter::Presenter::new(),
                     sheet: sheet::Sheet::new(),
                     intro: onboarding::Intro::new(),
+                    packs,
                     switch: ModelSwitch::default(),
                 };
                 workbench.show_page_image();
