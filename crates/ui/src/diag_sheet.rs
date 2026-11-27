@@ -563,4 +563,3 @@ fn alpha(color: u32, a: f32) -> Hsla {
     c.a = a;
     c
 }
-
