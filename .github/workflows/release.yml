@@ -1,6 +1,7 @@
 name: Release
 
-# Pushing a tag v<version> publishes every package variant (see packaging/models.sh) for Linux, the Mac and Windows:
+# Pushing a tag v<version> publishes the package (one per platform since the voice packs, see packaging/models.sh)
+# for Linux, the Mac and Windows:
 #   git tag -a v0.23.0 -m "What changed, shown in the update prompt and on the release page"
 #   git push origin v0.23.0
 # The version must be the workspace's. The tag's message is the notes; a tag without one gets notes
@@ -29,9 +30,6 @@ permissions:
   contents: write
 
 env:
-  LINUX_VARIANTS: all ja en
-  MAC_VARIANTS: all ja en none
-  WINDOWS_VARIANTS: all ja en
   TAG: ${{ github.ref_name }}
 
 jobs:
@@ -66,8 +64,6 @@ jobs:
           path: resources/search
           key: search-${{ hashFiles('crates/models/src/lib.rs') }}
       - run: sh packaging/linux/package.sh
-        env:
-          VARIANTS: ${{ env.LINUX_VARIANTS }}
       - id: version
         run: |
           version=$(target/release/alcyo --version | cut -d' ' -f2)
@@ -146,7 +142,6 @@ jobs:
       # wait for Apple is the notarize job's, so a slow queue never costs the packages built here.
       - run: sh packaging/macos/package.sh
         env:
-          VARIANTS: ${{ env.MAC_VARIANTS }}
           NOTARIZE: 1
           NOTARY_WAIT: 0
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -263,8 +258,6 @@ jobs:
           path: resources/search
           key: search-${{ hashFiles('crates/models/src/lib.rs') }}
       - run: sh packaging/windows/package.sh
-        env:
-          VARIANTS: ${{ env.WINDOWS_VARIANTS }}
       - uses: actions/upload-artifact@v4
         with:
           name: windows-packages

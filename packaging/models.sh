@@ -1,39 +1,16 @@
-# Shared by the package scripts: which speech models a variant carries, and what its package is called.
-#   all    SenseVoice, Parakeet (English), ReazonSpeech (Japanese) and the streaming Chinese model that
-#          drafts while someone speaks; "full" is its older name
-#   ja     ReazonSpeech only
-#   en     Parakeet only
-#   none   no models: Apple's own recognizer, on a Mac only
+# Shared by the package scripts. Since 0.35 there is one package per platform: the speech models are voice packs,
+# downloaded by the app (crates/models/src/voice), so a package carries only the voice detector, besides the meeting
+# search model. The variants of 0.34 and before (full, -en, -ja, -none) are no longer made; the update manifest
+# sends their installs to the one package (crates/tools/src/release.rs), and the app downloads the packs they came
+# with on its first start.
 
-variant_models() {
-  case "$1" in
-    all | full) echo "sense-voice parakeet-en reazon-ja draft-zh" ;;
-    ja) echo "reazon-ja" ;;
-    en) echo "parakeet-en" ;;
-    none) echo "" ;;
-    *) echo "unknown variant: $1" >&2; return 1 ;;
-  esac
+# copy_voice <voice dir in the package>: what every package carries for speech, the voice detector.
+copy_voice() {
+  mkdir -p "$1"
+  cp resources/voice/silero_vad.onnx "$1/"
 }
 
-# The package with every model keeps the plain name, which is what installs from before variants look for.
-variant_suffix() {
-  case "$1" in all | full) echo "" ;; *) printf '%s\n' "-$1" ;; esac
-}
-
-# copy_models <variant> <voice dir in the package>
-copy_models() {
-  for model in $(variant_models "$1"); do
-    mkdir -p "$2/$model"
-    case "$model" in
-      sense-voice) cp resources/voice/sense-voice/model.int8.onnx resources/voice/sense-voice/tokens.txt "$2/$model/" ;;
-      parakeet-en) cp resources/voice/parakeet-en/encoder.int8.onnx resources/voice/parakeet-en/decoder.int8.onnx resources/voice/parakeet-en/joiner.int8.onnx resources/voice/parakeet-en/tokens.txt "$2/$model/" ;;
-      reazon-ja) cp resources/voice/reazon-ja/encoder-epoch-99-avg-1.int8.onnx resources/voice/reazon-ja/decoder-epoch-99-avg-1.int8.onnx resources/voice/reazon-ja/joiner-epoch-99-avg-1.int8.onnx resources/voice/reazon-ja/tokens.txt "$2/$model/" ;;
-      draft-zh) cp resources/voice/draft-zh/encoder.int8.onnx resources/voice/draft-zh/decoder.onnx resources/voice/draft-zh/joiner.int8.onnx resources/voice/draft-zh/tokens.txt "$2/$model/" ;;
-    esac
-  done
-}
-
-# copy_search <search dir in the package>: the meeting search model, which every variant carries, with the
+# copy_search <search dir in the package>: the meeting search model, which every package carries, with the
 # notice the Gemma Terms of Use ask to go with it (the terms themselves are among the licenses).
 copy_search() {
   mkdir -p "$1"

@@ -1,5 +1,6 @@
 //! What a checkout needs before it builds or packages, downloaded and checked:
 //!   fetch voice                 the speech models, into resources/voice (see crates/models/src/voice/catalogue.rs)
+//!   fetch voice-bundled         only those every package carries (the voice detector); the rest are voice packs
 //!   fetch search                the meeting search model, into resources/search
 //!   fetch pdfium [platform]     a pinned PDFium build, into target/pdfium
 //!   fetch llama [platform]      llama.cpp's prebuilt llama-server, trimmed, into resources/llama
@@ -19,12 +20,13 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<()> {
     let what = args.next();
     let platform = args.next();
     match what.as_deref() {
-        Some("voice") => voice(),
+        Some("voice") => voice(voice_files::files()),
+        Some("voice-bundled") => voice(voice_files::bundled()),
         Some("search") => search(),
         Some("pdfium") => pdfium(platform.as_deref()),
         Some("llama") => llama(platform.as_deref()),
         Some("glyphs") => glyphs(),
-        _ => bail!("usage: fetch voice | search | pdfium [platform] | llama [platform] | glyphs"),
+        _ => bail!("usage: fetch voice | voice-bundled | search | pdfium [platform] | llama [platform] | glyphs"),
     }
 }
 
@@ -102,11 +104,11 @@ fn host(mac: &str, windows: &str) -> Result<String> {
     Ok(format!("{os}-{arch}"))
 }
 
-fn voice() -> Result<()> {
+fn voice(files: Vec<voice_files::VoiceFile>) -> Result<()> {
     let out = root().join("resources");
     let local = std::env::var_os("ALCYO_VOICE_DIR").map(PathBuf::from);
     let mut fetched = 0;
-    for file in voice_files::files() {
+    for file in files {
         let dest = out.join(file.name);
         if good(&dest, file.sha256) {
             continue;

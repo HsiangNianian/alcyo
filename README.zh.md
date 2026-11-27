@@ -30,19 +30,20 @@ Alcyo 把讨论变成一张持续生长的白板：流程、要点、分工、�
 
 ## 开始使用
 
-1. 从 [Releases](https://github.com/HsiangNianian/alcyo/releases/latest) 下载安装包。各个包里的应用相同，区别只在内置的语音模型：
+1. 从 [Releases](https://github.com/HsiangNianian/alcyo/releases/latest) 下载对应系统的安装包：`…-macos.dmg`（或 `.zip`）、`…-linux.tar.gz` 或 `…-windows.zip`。安装包里不带语音模型：第一次启动时勾选会议中使用的语言，对应的**语音包**会在后台一起下载：
 
-   | 安装包 | 能识别 | 语音模型 |
+   | 语音包 | 用途 | 大小 |
    |---|---|---|
-   | `…-macos.zip`、`…-linux.tar.gz`、`…-windows.zip` | 日语、英语和中文，各用最合适的模型 | 约 1.1 GB |
-   | `…-ja` | 日语，用 ReazonSpeech | 约 160 MB |
-   | `…-en` | 英语，用 Parakeet | 约 660 MB |
-   | `…-macos-none.zip` | Mac 自带识别器支持的语言 | 无 |
+   | 中文 | 中文，用 SenseVoice，也能听懂英语、日语、韩语和粤语 | 约 240 MB |
+   | 实时字幕 | 边说边出中文字（随中文一起） | 约 167 MB |
+   | English | 英语，用 Parakeet，更准 | 约 663 MB |
+   | 日本語 | 日语，用 ReazonSpeech | 约 160 MB |
+   | 区分说话人 | 新的声音依次记作 A、B、C（CAM++ 和 Nemotron） | 约 132 MB |
 
-   每个安装包还都带着会议搜索用的模型，约 334 MB。目前提供 macOS（Apple Silicon 和 Intel）、x64 的 Linux 和 x64 的 Windows 安装包。
+   在 Mac 上，Apple 自带的识别器不用下载就能用，语音包下好前由它收听。之后可以随时在 设置 › 语音 里添加或删除语音包。每个安装包都带着会议搜索用的模型，约 334 MB。目前提供 macOS（Apple Silicon 和 Intel）、x64 的 Linux 和 x64 的 Windows 安装包。
 
 2. **macOS：** 打开 `.dmg`，把 Alcyo 拖进“应用程序”即可；应用已签名并经过 Apple 公证，像其他应用一样直接打开。每个安装包也有内容相同的 `.zip`。**Linux：** 解压后运行 `./install.sh`（装到 `~/.local`，不需要 root；`--uninstall` 卸载并保留数据）。之后的版本会自动安装。**Windows：** 解压后运行 `bin\alcyo.exe`；没有安装程序，暂时也不会自动更新。
-3. 第一次启动时，设置会停在**板书模型**：下载一个在本机运行的模型，或者设置远程模型。语音识别已经内置。
+3. 第一次启动时，设置会停在**板书模型**：下载一个在本机运行的模型，或者设置远程模型。语音包会同时在后台继续下载。
 4. 点**开始收音**（或按 `空格`），也可以在转写下方的输入框里打一句话，回车上板。
 
 安装版启动后不久会检查新版本，在后台安装，等你重启后生效，不会打断正在开的会。

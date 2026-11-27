@@ -143,10 +143,10 @@ jobs:
         with:
           path: resources/search
           key: search-${{ hashFiles('crates/models/src/lib.rs') }}
-      # The script ends by running each packaged app's self-check. A second variant checks the model selection.
+      # The script ends by running the packaged app's self-check.
       - run: sh packaging/linux/package.sh
-        env:
-          VARIANTS: all ja
+      # The package carries only the voice detector; the tests below hear with every model.
+      - run: target/release/alcyo-tools fetch voice
       # Its own target folder: the cache keeps compiled crates but not the speech library they were
       # built against, so rebuilding that crate in the restored folder cannot find it.
       - name: How speech is heard, with the packaged models
@@ -203,7 +203,6 @@ jobs:
       # hand, as that takes minutes per package.
       - run: sh packaging/macos/package.sh
         env:
-          VARIANTS: all none
           NOTARIZE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -294,8 +293,6 @@ jobs:
           path: resources/search
           key: search-${{ hashFiles('crates/models/src/lib.rs') }}
       - run: sh packaging/windows/package.sh
-        env:
-          VARIANTS: all
       - uses: actions/upload-artifact@v4
         with:
           name: alcyo-windows

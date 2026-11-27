@@ -86,9 +86,14 @@ fn build_manifest(dir: &Path, tag: &str, version: &str, notes: &str, repo: &str)
         );
     }
     ensure!(platforms.contains_key("x86_64-linux"), "the full Linux package is missing");
-    // The SenseVoice-only package is no longer made, so its installs move to the one with every model.
-    let retired: Vec<(String, serde_json::Value)> =
-        platforms.iter().filter(|(key, _)| key.ends_with("-linux")).map(|(key, entry)| (format!("{key}-sensevoice"), entry.clone())).collect();
+    // Since the voice packs (0.35) there is one package; the variants an install may still look for (the
+    // SenseVoice-only one, and the English and Japanese ones of 0.34) move to it, and the app downloads the packs
+    // they came with.
+    let retired: Vec<(String, serde_json::Value)> = platforms
+        .iter()
+        .filter(|(key, _)| key.ends_with("-linux"))
+        .flat_map(|(key, entry)| ["sensevoice", "en", "ja"].map(|variant| (format!("{key}-{variant}"), entry.clone())))
+        .collect();
     for (key, entry) in retired {
         platforms.entry(key).or_insert(entry);
     }
@@ -163,7 +168,10 @@ mod tests {
         assert_eq!(manifest["platforms"]["x86_64-linux"]["size"], 4);
         assert_eq!(manifest["platforms"]["x86_64-linux"]["signature"], "c2ln");
         assert_eq!(manifest["platforms"]["x86_64-linux-sensevoice"], manifest["platforms"]["x86_64-linux"], "retired variant follows the full one");
-        assert_eq!(manifest["platforms"].as_object().unwrap().len(), 3);
+        assert_eq!(manifest["platforms"]["x86_64-linux-en"], manifest["platforms"]["x86_64-linux"], "since the voice packs, one package for every install");
+        // A package of its own, as an old release had, is still listed as it is.
+        assert_eq!(manifest["platforms"]["x86_64-linux-ja"]["size"], 2);
+        assert_eq!(manifest["platforms"].as_object().unwrap().len(), 4);
         assert!(build_manifest(&dir, "v1.3.0", "1.3.0", "", "o/r").is_err(), "a package of another version");
         fs::remove_file(dir.join("alcyo-1.2.0-x86_64-linux.tar.gz")).unwrap();
         assert!(build_manifest(&dir, "v1.2.0", "1.2.0", "", "o/r").is_err(), "no full package");
