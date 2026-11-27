@@ -1,6 +1,7 @@
 //! The meeting a window has open: the board, what was said, undo, and the replay record.
 //! It keeps the file's raw JSON and overwrites only the fields it owns.
 
+use crate::edit::{self, assign_ids, editable, history_of, is_gone, join_words, keep_heard, mark_edited, next_line_id, shown, EditKind};
 use crate::store::{new_id, Loaded, Origin};
 use alcyo_board::graph::{Graph, Kind};
 use alcyo_board::speakers::{identify_in_slot, move_sentence, MOST_SPEAKERS, raised_by, rename_by, rename_by_in_steps, rename_voice, Voice};
@@ -58,6 +59,16 @@ impl<T> History<T> {
         !self.future.is_empty()
     }
 
+    /// What undo would go back to, without going.
+    pub fn last(&self) -> Option<&T> {
+        self.past.last()
+    }
+
+    /// What redo would go forward to, without going.
+    pub fn next(&self) -> Option<&T> {
+        self.future.last()
+    }
+
     fn each_mut(&mut self, mut change: impl FnMut(&mut T)) {
         self.past.iter_mut().chain(&mut self.future).for_each(&mut change);
     }
@@ -74,11 +85,54 @@ pub enum ViewOnly {
     ImportedContent,
 }
 
-/// One undo position: the board, and where everything was placed.
-#[derive(Clone)]
+/// One undo position: the board, and where everything was placed. An edit of the transcript also keeps the
+/// lines it changed, by their place, and any other board its redraw changed, so undo puts all of it back at once.
+#[derive(Clone, Default)]
 pub struct Snap {
     pub graph: Graph,
     pub memory: Value,
+    /// Lines as they were, by place: only for an edit of the transcript.
+    pub lines: Vec<(usize, Value)>,
+    /// Boards other than the one on screen, by page, as their graphs were before a redraw changed them.
+    pub pages: Vec<(usize, Value)>,
+    /// The edit this position comes before, which its redraw joins rather than making a step of its own.
+    pub edit: Option<u64>,
+}
+
+impl Snap {
+    fn board(graph: Graph, memory: Value) -> Self {
+        Self { graph, memory, ..Self::default() }
+    }
+}
+
+/// A line handed to the model and given back with what it drew: its id where it has one, so it is found again
+/// whatever its words, and who said what.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Spoken {
+    pub id: Option<String>,
+    pub speaker: Option<String>,
+    pub text: String,
+}
+
+impl From<(Option<String>, String)> for Spoken {
+    /// A line sent without an id, found again by its words.
+    fn from((speaker, text): (Option<String>, String)) -> Self {
+        Self { id: None, speaker, text }
+    }
+}
+
+/// An edit of the transcript, as made: what the board then has to follow.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineEdit {
+    /// Its number in this meeting, which its redraw carries.
+    pub edit: u64,
+    pub kind: EditKind,
+    /// The line that holds the result: the edited line, the line merged into, the first deleted.
+    pub line: usize,
+    /// Every line it touched, by place, gone ones included.
+    pub lines: Vec<usize>,
+    /// Those lines as they were before, in the same order.
+    pub before: Vec<Value>,
 }
 
 /// A note about a change made by hand: its text in English, which the meeting keeps as the line's text and a
@@ -114,6 +168,8 @@ pub struct Live {
     /// What the replay record has reached, to diff the next change against.
     recorded: Graph,
     undo: History<Snap>,
+    /// Edits of the transcript made in this window, to number the next.
+    edits: u64,
     /// Bumped by every change, so a save knows whether it caught up.
     pub changes: u64,
     /// Why this meeting can only be viewed, if so.
@@ -146,6 +202,8 @@ impl Live {
         let unreadable = graph.is_err();
         let graph = graph.unwrap_or_default();
         let mut lines = array(&raw, "lines");
+        // Lines kept before lines had ids get them now; the next save keeps them.
+        assign_ids(&mut lines);
         // A line still waiting for the model when the meeting closed will never be drawn.
         for line in &mut lines {
             if line["ms"].is_null() && !line["manual"].as_bool().unwrap_or(false) {
@@ -185,6 +243,7 @@ impl Live {
             recorded,
             graph,
             undo: History::default(),
+            edits: 0,
             changes: 0,
             read_only,
             raw,
@@ -415,10 +474,12 @@ impl Live {
         }
     }
 
-    /// A line of speech or typing. Without `ms` it counts as still waiting for the model.
-    pub fn add_line(&mut self, speaker: Option<&str>, text: &str, asr_ms: Option<u128>) {
+    /// A line of speech or typing. Without `ms` it counts as still waiting for the model. Gives its id, for the
+    /// model's answer to find it by.
+    pub fn add_line(&mut self, speaker: Option<&str>, text: &str, asr_ms: Option<u128>) -> String {
         // When it was said, on the wall clock, for the transcript to show beside the speaker.
-        let mut line = json!({ "text": text, "page": self.page(), "at": now_ms() });
+        let id = next_line_id(&self.lines);
+        let mut line = json!({ "id": id, "text": text, "page": self.page(), "at": now_ms() });
         if let Some(speaker) = speaker {
             line["speaker"] = json!(speaker);
         }
@@ -427,6 +488,12 @@ impl Live {
         }
         self.lines.push(line);
         self.touch();
+        id
+    }
+
+    /// Where the line with this id is now.
+    pub fn line_index(&self, id: &str) -> Option<usize> {
+        self.lines.iter().position(|l| l["id"] == id)
     }
 
     /// Who else was heard talking at the same time as the last line, whose words are lost under it. An
@@ -487,7 +554,7 @@ impl Live {
     /// Everyone in this meeting, in the order they first spoke.
     pub fn speakers(&self) -> Vec<String> {
         let mut names: Vec<String> = vec![];
-        let spoken = self.lines.iter().filter_map(|l| l["speaker"].as_str());
+        let spoken = shown(&self.lines).filter_map(|(_, l)| l["speaker"].as_str());
         for name in spoken.chain(self.voices.iter().map(|v| v.name.as_str())) {
             if !name.is_empty() && !names.iter().any(|n| n == name) {
                 names.push(name.to_string());
@@ -498,7 +565,7 @@ impl Live {
 
     /// What renaming a speaker touches: lines of the transcript, things on boards, and how many boards.
     pub fn speaker_impact(&self, who: &str) -> (usize, usize, usize) {
-        let lines = self.lines.iter().filter(|l| l["speaker"] == who).count();
+        let lines = shown(&self.lines).filter(|(_, l)| l["speaker"] == who).count();
         let raised: Vec<usize> = self.boards().iter().map(|graph| raised_by(graph, who)).collect();
         (lines, raised.iter().sum(), raised.iter().filter(|n| **n > 0).count())
     }
@@ -585,38 +652,44 @@ impl Live {
     /// A note about a hand-made change. Marked manual, so it is never read as something said; its text is in
     /// English, and its message shows it in the language of whoever looks.
     pub fn add_note(&mut self, note: &Note) {
-        let mut line = json!({ "text": note.text, "manual": true, "ms": 0, "page": self.page() });
+        let mut line = json!({ "id": next_line_id(&self.lines), "text": note.text, "manual": true, "ms": 0, "page": self.page() });
         if !note.message.is_null() {
             line["note"] = note.message.clone();
         }
         self.lines.push(line);
     }
 
-    fn settle(&mut self, text: &str, update: impl Fn(&mut Value)) {
-        // The earliest waiting line with this text: lines finish in the order they were said.
-        if let Some(line) = self.lines.iter_mut().find(|l| l["ms"].is_null() && l["text"] == text) {
-            update(line);
-        }
+    /// Finish the waiting line this was: by its id, or for a line sent without one, the earliest waiting line with
+    /// its text, as lines finish in the order they were said. Gives its place.
+    fn settle(&mut self, said: &Spoken, update: impl Fn(&mut Value)) -> Option<usize> {
+        let at = match &said.id {
+            Some(id) => self.lines.iter().position(|l| l["ms"].is_null() && l["id"] == id.as_str()),
+            None => self.lines.iter().position(|l| l["ms"].is_null() && l["text"] == said.text.as_str()),
+        }?;
+        update(&mut self.lines[at]);
+        Some(at)
     }
 
     /// The model finished this batch of lines and the board became `graph`.
-    pub fn model_drew(&mut self, spoken: &[(Option<String>, String)], graph: Graph, memory: Value, ops: &str, llm_ms: u128) {
-        for (i, (speaker, text)) in spoken.iter().enumerate() {
+    pub fn model_drew(&mut self, spoken: &[Spoken], graph: Graph, memory: Value, ops: &str, llm_ms: u128) {
+        let mut from = vec![];
+        for (i, said) in spoken.iter().enumerate() {
             // A merged batch produced one set of operations, shown on its last line.
             let shown = if i + 1 == spoken.len() { ops } else { "" };
-            self.settle(text, |line| {
+            from.extend(self.settle(said, |line| {
                 line["ms"] = json!(llm_ms);
                 line["ops"] = json!(shown);
-            });
-            self.remember(speaker.as_deref(), text);
+            }));
+            self.remember(said.speaker.as_deref(), &said.text);
         }
-        self.change_board(graph, memory);
+        self.change_board_from(graph, memory, from);
     }
 
     /// The model could not answer. The lines stay in the transcript, marked for a retry later.
-    pub fn model_failed(&mut self, spoken: &[(Option<String>, String)]) {
-        for (speaker, text) in spoken {
-            self.settle(text, |line| {
+    pub fn model_failed(&mut self, spoken: &[Spoken]) {
+        for said in spoken {
+            let (speaker, text) = (&said.speaker, &said.text);
+            self.settle(said, |line| {
                 line["ms"] = json!(0);
                 line["failed"] = json!(true);
                 line["boardFailure"] = json!("request");
@@ -637,22 +710,35 @@ impl Live {
 
     /// Any change to the board: it can be undone, and replay records it.
     pub fn change_board(&mut self, graph: Graph, memory: Value) {
+        self.change_board_from(graph, memory, vec![]);
+    }
+
+    /// A change to the board drawn from these lines, by place, which its step records so that an edit of one of
+    /// them later finds what it drew.
+    fn change_board_from(&mut self, graph: Graph, memory: Value, from: Vec<usize>) {
         if graph == self.graph {
             self.memory = memory;
             self.touch();
             return;
         }
-        let before = Snap { graph: std::mem::replace(&mut self.graph, graph), memory: std::mem::replace(&mut self.memory, memory) };
+        let before = Snap::board(std::mem::replace(&mut self.graph, graph), std::mem::replace(&mut self.memory, memory));
         self.undo.record(before);
-        self.record_step();
+        self.record_step(&from, None);
         self.refresh_title();
         self.touch();
     }
 
-    fn record_step(&mut self) {
+    fn record_step(&mut self, from: &[usize], edit: Option<u64>) {
         let shown = ink_only(&self.graph);
         if let Some(d) = diff(&self.recorded, &shown) {
-            self.steps.push(json!({ "t": now_ms(), "line": self.lines.len(), "d": d }));
+            let mut step = json!({ "t": now_ms(), "line": self.lines.len(), "d": d });
+            if !from.is_empty() {
+                step["from"] = json!(from);
+            }
+            if let Some(edit) = edit {
+                step["edit"] = json!(edit);
+            }
+            self.steps.push(step);
             self.recorded = shown;
         }
     }
@@ -665,28 +751,251 @@ impl Live {
         self.read_only.is_none() && self.undo.can_redo()
     }
 
-    fn current(&self) -> Snap {
-        Snap { graph: self.graph.clone(), memory: self.memory.clone() }
+    /// Where things stand now, covering what `like` covers: the same lines and other boards, so going back to
+    /// `like` can come forward again.
+    fn current(&self, like: Option<&Snap>) -> Snap {
+        let mut now = Snap::board(self.graph.clone(), self.memory.clone());
+        if let Some(like) = like {
+            now.lines = like.lines.iter().filter_map(|(i, _)| Some((*i, self.lines.get(*i)?.clone()))).collect();
+            now.pages = like.pages.iter().map(|(p, _)| (*p, self.page_graph(*p))).collect();
+            now.edit = like.edit;
+        }
+        now
     }
 
     fn step_to(&mut self, snap: Snap) -> Snap {
         self.graph = snap.graph.clone();
         self.memory = snap.memory.clone();
-        self.record_step();
+        for (i, line) in &snap.lines {
+            if let Some(slot) = self.lines.get_mut(*i) {
+                *slot = line.clone();
+            }
+        }
+        for (page, graph) in &snap.pages {
+            self.set_page_graph(*page, graph.clone());
+        }
+        if !snap.lines.is_empty() {
+            self.history = history_of(&self.lines);
+        }
+        self.record_step(&[], snap.edit);
         self.touch();
         snap
     }
 
+    /// Go back one change. What comes back says whether lines changed too ([`Snap::lines`]): the model's context
+    /// then has to be told.
     pub fn undo(&mut self) -> Option<Snap> {
-        let current = self.current();
+        let current = self.current(self.undo.last());
         let snap = self.undo.undo(current)?;
         Some(self.step_to(snap))
     }
 
     pub fn redo(&mut self) -> Option<Snap> {
-        let current = self.current();
+        let current = self.current(self.undo.next());
         let snap = self.undo.redo(current)?;
         Some(self.step_to(snap))
+    }
+
+    /// A board's graph as the file has it; the one on screen as it is now.
+    fn page_graph(&self, page: usize) -> Value {
+        if page == self.page() {
+            return json!(self.graph);
+        }
+        self.raw.get("pages").and_then(|p| p.get(page)).map_or(Value::Null, |p| p["graph"].clone())
+    }
+
+    fn set_page_graph(&mut self, page: usize, graph: Value) {
+        if page == self.page() {
+            return;
+        }
+        if let Some(entry) = self.raw.get_mut("pages").and_then(|p| p.get_mut(page)).and_then(Value::as_object_mut) {
+            entry.insert("graph".into(), graph);
+        }
+    }
+
+    /// The record of one board, by page: the one on screen as it is now.
+    pub fn page_steps(&self, page: usize) -> Vec<Value> {
+        if page == self.page() {
+            return self.steps.clone();
+        }
+        self.raw.get("pages").and_then(|p| p.get(page)).and_then(|p| p["steps"].as_array()).cloned().unwrap_or_default()
+    }
+
+    /// One board's graph, by page.
+    pub fn board_of(&self, page: usize) -> Graph {
+        if page == self.page() {
+            return self.graph.clone();
+        }
+        serde_json::from_value(self.page_graph(page)).unwrap_or_default()
+    }
+
+    // ---- editing the transcript (#362) ----
+
+    /// Start an edit: the lines it will change are kept as they are, with the board, as one undo position.
+    fn begin_edit(&mut self, kind: EditKind, line: usize, touched: &[usize]) -> LineEdit {
+        self.edits += 1;
+        let before: Vec<Value> = touched.iter().map(|i| self.lines[*i].clone()).collect();
+        let mut snap = Snap::board(self.graph.clone(), self.memory.clone());
+        snap.lines = touched.iter().copied().zip(before.iter().cloned()).collect();
+        snap.edit = Some(self.edits);
+        self.undo.record(snap);
+        LineEdit { edit: self.edits, kind, line, lines: touched.to_vec(), before }
+    }
+
+    fn end_edit(&mut self, edit: LineEdit) -> Option<LineEdit> {
+        self.history = history_of(&self.lines);
+        self.touch();
+        Some(edit)
+    }
+
+    /// Fix the words of a line already on the board. Nothing happens for the same words, an empty text, or a line
+    /// that cannot be edited ([`edit::editable`]).
+    pub fn edit_text(&mut self, i: usize, text: &str) -> Option<LineEdit> {
+        let text = text.trim();
+        let line = self.lines.get(i).filter(|l| editable(l))?;
+        if text.is_empty() || line["text"] == text {
+            return None;
+        }
+        let edit = self.begin_edit(EditKind::Text, i, &[i]);
+        let line = &mut self.lines[i];
+        keep_heard(line);
+        line["text"] = json!(text);
+        mark_edited(line, EditKind::Text, now_ms());
+        self.end_edit(edit)
+    }
+
+    /// Give one line to someone else, voice and all ([`Live::move_line`]), as an edit that can be undone.
+    pub fn edit_speaker(&mut self, i: usize, to: &str) -> Option<LineEdit> {
+        let line = self.lines.get(i).filter(|l| editable(l))?;
+        if to.is_empty() || line["speaker"] == to {
+            return None;
+        }
+        let edit = self.begin_edit(EditKind::Speaker, i, &[i]);
+        keep_heard(&mut self.lines[i]);
+        self.move_line(i, to);
+        mark_edited(&mut self.lines[i], EditKind::Speaker, now_ms());
+        self.end_edit(edit)
+    }
+
+    /// Join lines said one after another into the first: their words in order, under `speaker` (the first line's
+    /// when none is given) or as `text` when it was written out. The others stay where they were, merged into it.
+    pub fn merge_lines(&mut self, picked: &[usize], speaker: Option<&str>, text: Option<&str>) -> Option<LineEdit> {
+        if !edit::adjacent(&self.lines, picked) {
+            return None;
+        }
+        let mut picked = picked.to_vec();
+        picked.sort_unstable();
+        picked.dedup();
+        let first = picked[0];
+        let joined = join_words(picked.iter().map(|i| self.lines[*i]["text"].as_str().unwrap_or_default()));
+        let text = text.map(str::trim).filter(|t| !t.is_empty()).map_or(joined, str::to_string);
+        let edit = self.begin_edit(EditKind::Merge, first, &picked);
+        let at = now_ms();
+        let line = &mut self.lines[first];
+        keep_heard(line);
+        line["text"] = json!(text);
+        if let Some(speaker) = speaker.filter(|s| !s.is_empty()) {
+            line["speaker"] = json!(speaker);
+        }
+        mark_edited(line, EditKind::Merge, at);
+        line["edited"]["merged"] = json!(picked[1..]);
+        for i in &picked[1..] {
+            self.lines[*i]["mergedInto"] = json!(first);
+        }
+        self.end_edit(edit)
+    }
+
+    /// Take lines out of the transcript. They stay in the file, deleted, with what was said.
+    pub fn delete_lines(&mut self, picked: &[usize]) -> Option<LineEdit> {
+        let mut picked: Vec<usize> = picked.iter().copied().filter(|i| self.lines.get(*i).is_some_and(editable)).collect();
+        picked.sort_unstable();
+        picked.dedup();
+        let first = *picked.first()?;
+        let edit = self.begin_edit(EditKind::Delete, first, &picked);
+        let at = now_ms();
+        for i in &picked {
+            let line = &mut self.lines[*i];
+            line["deleted"] = json!(true);
+            mark_edited(line, EditKind::Delete, at);
+        }
+        self.end_edit(edit)
+    }
+
+    /// Put a line back to what was heard: its words, who said it, and the lines merged into it.
+    pub fn restore_line(&mut self, i: usize) -> Option<LineEdit> {
+        let line = self.lines.get(i).filter(|l| !is_gone(l))?;
+        let (text, speaker) = edit::heard(line).map(|(t, s)| (t.to_string(), s.map(str::to_string)))?;
+        let merged: Vec<usize> = line["edited"]["merged"].as_array().map(|m| m.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect()).unwrap_or_default();
+        let mut touched = vec![i];
+        touched.extend(merged.iter().copied().filter(|m| self.lines.get(*m).is_some_and(|l| l["mergedInto"] == i)));
+        let edit = self.begin_edit(EditKind::Restore, i, &touched);
+        let line = &mut self.lines[i];
+        line["text"] = json!(text);
+        match speaker {
+            Some(s) => line["speaker"] = json!(s),
+            None => {
+                if let Some(fields) = line.as_object_mut() {
+                    fields.remove("speaker");
+                }
+            }
+        }
+        for field in ["edited"] {
+            if let Some(fields) = line.as_object_mut() {
+                fields.remove(field);
+            }
+        }
+        if let Some(heard) = line["heard"].as_object_mut() {
+            heard.remove("text");
+            heard.remove("speaker");
+        }
+        for m in &touched[1..] {
+            if let Some(fields) = self.lines[*m].as_object_mut() {
+                fields.remove("mergedInto");
+            }
+        }
+        self.end_edit(edit)
+    }
+
+    /// The board an edit's redraw came back with, for `page`. It joins the edit's undo position when nothing came
+    /// between them, and is its own position otherwise. `false` if the edit has been undone meanwhile: the board is
+    /// left as it is.
+    pub fn redrawn(&mut self, edit: u64, page: usize, graph: Graph, memory: Option<Value>) -> bool {
+        let Some(at) = self.undo.past.iter().rposition(|s| s.edit == Some(edit)) else { return false };
+        if page != self.page() {
+            if page >= self.pages() {
+                return false;
+            }
+            let before = self.page_graph(page);
+            let snap = &mut self.undo.past[at];
+            if !snap.pages.iter().any(|(p, _)| *p == page) {
+                snap.pages.push((page, before));
+            }
+            self.set_page_graph(page, json!(graph));
+            // The other board's record goes on from where it was, so its replay shows the redraw.
+            if let Some(entry) = self.raw.get_mut("pages").and_then(|p| p.get_mut(page)).and_then(Value::as_object_mut) {
+                let mut steps = entry.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+                if let Some(d) = diff(&replay(&steps), &ink_only(&graph)) {
+                    steps.push(json!({ "t": now_ms(), "line": self.lines.len(), "d": d, "edit": edit }));
+                    entry.insert("steps".into(), json!(steps));
+                }
+            }
+            self.touch();
+            return true;
+        }
+        let memory = memory.unwrap_or_else(|| self.memory.clone());
+        if at + 1 == self.undo.past.len() {
+            self.graph = graph;
+            self.memory = memory;
+            self.record_step(&[], Some(edit));
+            self.refresh_title();
+            self.touch();
+        } else {
+            let before = Snap::board(std::mem::replace(&mut self.graph, graph), std::mem::replace(&mut self.memory, memory));
+            self.undo.record(before);
+            self.record_step(&[], Some(edit));
+            self.touch();
+        }
+        true
     }
 
     /// Every board of the meeting, with the one on screen as it is now.
@@ -819,7 +1128,7 @@ impl Live {
             .find(|n| n.kind == Kind::Topic)
             .or_else(|| self.graph.nodes.first())
             .map(|n| n.label.clone())
-            .or_else(|| self.lines.first().and_then(|l| l["text"].as_str()).map(|t| t.chars().take(20).collect()));
+            .or_else(|| shown(&self.lines).next().and_then(|(_, l)| l["text"].as_str()).map(|t| t.chars().take(20).collect()));
         if let Some(name) = name {
             self.raw.insert("title".into(), json!(name));
         }
@@ -878,6 +1187,173 @@ mod tests {
     fn loaded(value: Value, origin: Origin) -> Live {
         let Value::Object(raw) = value else { panic!("object") };
         Live::from_loaded(Loaded { raw, origin, revision: 0 })
+    }
+
+    /// A meeting with these lines said and drawn, each drawing one node named after its words.
+    fn drawn(said: &[(&str, &str)]) -> Live {
+        let mut live = Live::new();
+        for (who, text) in said {
+            let id = live.add_line(Some(who), text, Some(10));
+            let mut g = live.graph.clone();
+            g.apply(&parse_ops(&format!("N 「{text}」")));
+            live.model_drew(&[Spoken { id: Some(id), speaker: Some(who.to_string()), text: text.to_string() }], g, Value::Null, "N", 5);
+        }
+        live
+    }
+
+    #[test]
+    fn lines_get_ids_and_the_model_finds_them_by_id() {
+        let mut live = Live::new();
+        let a = live.add_line(Some("A"), "同一句", None);
+        let b = live.add_line(Some("A"), "同一句", None);
+        assert_ne!(a, b);
+        // The second comes back first: found by its id, not by its words.
+        live.model_drew(&[Spoken { id: Some(b.clone()), speaker: Some("A".into()), text: "同一句".into() }], Graph::default(), Value::Null, "", 7);
+        assert!(live.lines[0]["ms"].is_null());
+        assert_eq!(live.lines[1]["ms"], 7);
+        assert_eq!(live.line_index(&b), Some(1));
+        // Lines from before ids get them when opened.
+        let old = loaded(json!({ "id": "m", "lines": [{ "text": "a", "ms": 1 }, { "text": "b", "ms": 1 }] }), Origin::Current);
+        assert_eq!(old.lines[0]["id"], "L1");
+        assert_eq!(old.lines[1]["id"], "L2");
+    }
+
+    #[test]
+    fn a_step_records_the_lines_it_drew() {
+        let live = drawn(&[("A", "甲"), ("B", "乙")]);
+        assert_eq!(live.steps[0]["from"], json!([0]));
+        assert_eq!(live.steps[1]["from"], json!([1]));
+    }
+
+    #[test]
+    fn an_edit_keeps_what_was_heard_and_its_redraw_undoes_with_it() {
+        let mut live = drawn(&[("E", "删掉选项一")]);
+        let before = live.graph.clone();
+        let edit = live.edit_text(0, "先留着选项一").unwrap();
+        assert_eq!(edit.kind, EditKind::Text);
+        assert_eq!(live.lines[0]["text"], "先留着选项一");
+        assert_eq!(live.lines[0]["heard"]["text"], "删掉选项一");
+        assert_eq!(live.lines[0]["heard"]["asrMs"], 10);
+        assert_eq!(live.history, vec![json!({ "text": "先留着选项一", "speaker": "E" })]);
+        let mut redrawn = live.graph.clone();
+        redrawn.apply(&parse_ops("R n1 「先留着选项一」"));
+        assert!(live.redrawn(edit.edit, 0, redrawn.clone(), None));
+        assert_eq!(live.steps.last().unwrap()["edit"], edit.edit);
+        // One undo puts back both the words and the board.
+        let snap = live.undo().unwrap();
+        assert!(!snap.lines.is_empty());
+        assert_eq!(live.lines[0]["text"], "删掉选项一");
+        assert_eq!(live.graph, before);
+        assert_eq!(live.history, vec![json!({ "text": "删掉选项一", "speaker": "E" })]);
+        // Redo brings both back without asking the model again.
+        live.redo().unwrap();
+        assert_eq!(live.lines[0]["text"], "先留着选项一");
+        assert_eq!(live.graph, redrawn);
+    }
+
+    #[test]
+    fn a_redraw_after_other_changes_is_its_own_step_and_an_undone_edit_takes_none() {
+        let mut live = drawn(&[("A", "甲")]);
+        let edit = live.edit_text(0, "甲乙").unwrap();
+        let mut g = live.graph.clone();
+        g.apply(&parse_ops("N 「手画的」"));
+        live.change_board(g, Value::Null);
+        let mut redrawn = live.graph.clone();
+        redrawn.apply(&parse_ops("R n1 「甲乙」"));
+        assert!(live.redrawn(edit.edit, 0, redrawn.clone(), None));
+        assert_eq!(live.graph, redrawn);
+        live.undo();
+        assert!(live.graph.nodes.iter().any(|n| n.label == "甲"), "undo takes off the redraw first");
+        let mut live = drawn(&[("A", "甲")]);
+        let edit = live.edit_text(0, "乙").unwrap();
+        live.undo();
+        assert!(!live.redrawn(edit.edit, 0, Graph::default(), None), "the edit was undone before its redraw came");
+        assert_eq!(live.graph.nodes.len(), 1);
+    }
+
+    #[test]
+    fn merging_keeps_the_others_as_tombstones_and_restore_brings_them_back() {
+        let mut live = drawn(&[("D", "可以共同的多少"), ("B", "钱"), ("D", "要算清楚。")]);
+        let steps = live.steps.len();
+        assert!(live.merge_lines(&[0, 2], None, None).is_none(), "B said something between");
+        let edit = live.merge_lines(&[0, 1, 2], None, None).unwrap();
+        assert_eq!(edit.lines, vec![0, 1, 2]);
+        assert_eq!(live.lines[0]["text"], "可以共同的多少钱要算清楚。");
+        assert_eq!(live.lines[0]["speaker"], "D", "the first line's speaker by default");
+        assert_eq!(live.lines[1]["mergedInto"], 0);
+        assert_eq!(live.lines.len(), 3, "no line leaves the file");
+        assert_eq!(shown(&live.lines).count(), 1);
+        assert_eq!(live.steps.len(), steps, "steps keep their places");
+        assert_eq!(live.speakers(), vec!["D".to_string()]);
+        live.restore_line(0).unwrap();
+        assert_eq!(live.lines[0]["text"], "可以共同的多少");
+        assert!(live.lines[0]["edited"].is_null() && live.lines[0]["heard"]["text"].is_null());
+        assert_eq!(shown(&live.lines).count(), 3);
+        // A merge written out, under another speaker.
+        let edit = live.merge_lines(&[1, 2], Some("B"), Some("钱要算清楚")).unwrap();
+        assert_eq!((edit.line, live.lines[1]["text"].as_str(), live.lines[1]["speaker"].as_str()), (1, Some("钱要算清楚"), Some("B")));
+    }
+
+    #[test]
+    fn deleting_hides_lines_and_waiting_or_noted_lines_cannot_be_edited() {
+        let mut live = drawn(&[("A", "嗯"), ("A", "正题")]);
+        live.add_line(Some("A"), "还在等", None);
+        live.add_note(&Note::plain("note"));
+        assert!(live.edit_text(2, "x").is_none(), "still waiting for the board");
+        assert!(live.edit_text(3, "x").is_none(), "a note about a change");
+        assert!(live.edit_text(1, "正题").is_none(), "the same words");
+        let edit = live.delete_lines(&[0, 2]).unwrap();
+        assert_eq!(edit.lines, vec![0], "only lines on the board");
+        assert_eq!(live.lines[0]["deleted"], true);
+        assert_eq!(live.lines[0]["text"], "嗯", "what was said stays in the file");
+        assert_eq!(live.history, vec![json!({ "text": "正题", "speaker": "A" })]);
+        live.undo();
+        assert!(live.lines[0]["deleted"].is_null());
+    }
+
+    #[test]
+    fn one_line_to_someone_else_is_an_edit_too() {
+        let mut live = drawn(&[("B", "那你要什么？")]);
+        live.edit_speaker(0, "D").unwrap();
+        assert_eq!(live.lines[0]["speaker"], "D");
+        assert_eq!(live.lines[0]["heard"]["speaker"], "B");
+        live.undo();
+        assert_eq!(live.lines[0]["speaker"], "B");
+    }
+
+    #[test]
+    fn an_edited_meeting_is_written_as_the_newer_format_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("alcyo-edit-{}", std::process::id()));
+        let store = Store::new(dir.clone());
+        let mut live = drawn(&[("A", "甲"), ("A", "乙")]);
+        let id = live.id().to_string();
+        let rev = store.save(&id, live.snapshot(), &live.origin, 0).unwrap();
+        assert_eq!(store.load(&id).unwrap().unwrap().raw["version"], 2, "nothing edited: older versions still edit it");
+        live.saved(rev);
+        live.delete_lines(&[1]).unwrap();
+        let rev = store.save(&id, live.snapshot(), &live.origin, rev).unwrap();
+        let back = Live::from_loaded(store.load(&id).unwrap().unwrap());
+        assert_eq!(back.raw["version"], 3);
+        assert!(back.read_only.is_none(), "this version reads what it wrote");
+        assert_eq!(back.lines[1]["deleted"], true);
+        assert_eq!(rev, 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_redraw_of_another_board_is_undone_with_its_edit() {
+        let mut live = drawn(&[("A", "甲")]);
+        live.add_board(&Note::plain("new board"));
+        assert_eq!(live.page(), 1);
+        let edit = live.edit_text(0, "甲乙").unwrap();
+        let mut other = live.board_of(0);
+        other.apply(&parse_ops("R n1 「甲乙」"));
+        assert!(live.redrawn(edit.edit, 0, other, None));
+        assert_eq!(live.board_of(0).nodes[0].label, "甲乙");
+        assert_eq!(live.page_steps(0).last().unwrap()["edit"], edit.edit);
+        live.undo();
+        assert_eq!(live.board_of(0).nodes[0].label, "甲");
+        assert_eq!(live.lines[0]["text"], "甲");
     }
 
     #[test]
@@ -1175,7 +1651,7 @@ mod tests {
         let print = [1.0, 0.0];
         let name = live.identify_voice(&print, 3.0, None).unwrap();
         live.add_line(Some(&name), "网关", None);
-        live.model_drew(&[(Some(name.clone()), "网关".into())], board_by(&name), Value::Null, "", 1);
+        live.model_drew(&[Spoken::from((Some(name.clone()), "网关".into()))], board_by(&name), Value::Null, "", 1);
         live.add_pages(vec![(board_by("别人"), "asset:a.jpg".into())], &Note::plain("导入了"));
         // On this page the old name is only in the replay record and the undo stack.
         live.change_board(board_by(&name), Value::Null);
@@ -1248,14 +1724,14 @@ mod tests {
         let mut live = Live::new();
         live.add_line(Some("A"), "网关", None);
         live.add_line(None, "还在等", None);
-        live.model_failed(&[(Some("A".into()), "网关".into())]);
+        live.model_failed(&[Spoken::from((Some("A".into()), "网关".into()))]);
         assert_eq!(live.history.len(), 1);
         assert_eq!(live.retry_line(1), None, "only a failed line");
         assert_eq!(live.retry_line(0), Some((Some("A".into()), "网关".into())));
         assert!(live.lines[0]["ms"].is_null() && live.lines[0]["failed"].is_null());
         assert!(live.history.is_empty());
         // Back to waiting, so the reply settles it as usual.
-        live.model_drew(&[(Some("A".into()), "网关".into())], Graph::default(), Value::Null, "", 5);
+        live.model_drew(&[Spoken::from((Some("A".into()), "网关".into()))], Graph::default(), Value::Null, "", 5);
         assert_eq!(live.lines[0]["ms"], 5);
         assert_eq!(live.history.len(), 1);
     }
@@ -1316,7 +1792,7 @@ mod tests {
         live.add_line(Some("A"), "用户调网关", None);
         assert!(live.lines[0]["ms"].is_null());
         let g = with(&live.graph, "E 「用户」 -> 「网关」");
-        live.model_drew(&[(Some("A".into()), "用户调网关".into())], g, json!({ "regionAt": [] }), "E 「用户」 -> 「网关」", 12);
+        live.model_drew(&[Spoken::from((Some("A".into()), "用户调网关".into()))], g, json!({ "regionAt": [] }), "E 「用户」 -> 「网关」", 12);
         assert_eq!(live.lines[0]["ms"], 12);
         assert_eq!(live.history[0]["speaker"], "A");
         assert_eq!(live.title(), "用户");
@@ -1390,7 +1866,7 @@ mod tests {
         let g = json!({ "nodes": [], "edges": [], "groups": [], "nextNode": 1, "nextGroup": 1 });
         let cases = [
             json!({ "id": "a", "graph": g, "scene": { "elements": [{ "id": "e" }] } }),
-            json!({ "id": "a", "version": 3, "graph": g }),
+            json!({ "id": "a", "version": 4, "graph": g }),
             json!({ "id": "a", "graph": { "nodes": [{ "id": 7 }] } }),
         ];
         for case in cases {
@@ -1442,7 +1918,7 @@ mod tests {
         let mut live = Live::new();
         live.add_line(None, "用户调网关", None);
         let g = with(&live.graph, "E 「用户」 -> 「网关」\nM 「网关」 星标");
-        live.model_drew(&[(None, "用户调网关".into())], g, json!({ "regionAt": [["n", { "x": 1, "y": 2 }]] }), "ops", 5);
+        live.model_drew(&[Spoken::from((None, "用户调网关".into()))], g, json!({ "regionAt": [["n", { "x": 1, "y": 2 }]] }), "ops", 5);
         let id = live.id().to_string();
         let revision = store.save(&id, live.snapshot(), &live.origin.clone(), live.revision).unwrap();
         live.saved(revision);
