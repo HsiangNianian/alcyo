@@ -1725,6 +1725,7 @@ impl Workbench {
         rows.push(super::ipad_dialogs::MenuRow::new(t("tidy-the-layout"), |w, _, cx| w.tidy(cx)).glyph("ipad/tidy"));
         rows.push(super::ipad_dialogs::MenuRow::new(t("export"), |w, _, cx| w.toggle_panel(Panel::Export, cx)).glyph("ipad/export").apart());
         rows.push(super::ipad_dialogs::MenuRow::new(t("share"), |w, _, cx| w.toggle_panel(Panel::Share, cx)).glyph("ipad/live"));
+        rows.push(super::ipad_dialogs::MenuRow::new(t("diag-export-menu"), |w, _, cx| w.toggle_panel(Panel::Diagnostics, cx)).glyph("ipad/info").apart());
         let more = self.ipad_menu("ipad-more", round_button("ipad-more", "more", false), rows, false, cx);
         glass(div(), false)
             .occlude()

@@ -493,6 +493,7 @@ pub fn consolidate(provider: &Provider, graph: &Graph, history: &[Utterance], en
     if !applies_to(graph) || !wanted {
         return Ok(None);
     }
+    let _purpose = alcyo_diag::Purpose::set("consolidate");
     let started = std::time::Instant::now();
     let style = system.is_none().then(|| classify(provider, graph, history, english));
     let instructions = system.map_or_else(|| style.unwrap_or(Style::General).system(english), str::to_string);

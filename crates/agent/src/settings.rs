@@ -86,7 +86,8 @@ impl Default for Settings {
     }
 }
 
-fn config_dir() -> Result<PathBuf> {
+/// The settings folder (`ALCYO_CONFIG`, or the system's place for an app's settings), as a diagnostic bundle reads it.
+pub fn config_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("ALCYO_CONFIG") {
         return Ok(PathBuf::from(dir));
     }

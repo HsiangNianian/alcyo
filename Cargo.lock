@@ -158,6 +158,7 @@ name = "alcyo-agent"
 version = "0.34.1"
 dependencies = [
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-llama",
  "alcyo-models",
  "anyhow",
@@ -195,6 +196,7 @@ name = "alcyo-audio"
 version = "0.34.1"
 dependencies = [
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-keep",
  "anyhow",
  "cpal",
@@ -227,6 +229,18 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "alcyo-diag"
+version = "0.34.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
+ "zip",
 ]
 
 [[package]]
@@ -364,6 +378,7 @@ version = "0.34.1"
 dependencies = [
  "alcyo-agent",
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-export",
  "alcyo-import",
  "alcyo-keep",
@@ -391,6 +406,7 @@ dependencies = [
  "alcyo-agent",
  "alcyo-audio",
  "alcyo-board",
+ "alcyo-diag",
  "alcyo-export",
  "alcyo-fonts",
  "alcyo-import",

@@ -26,6 +26,7 @@ alcyo-import = { path = "crates/import" }
 alcyo-update = { path = "crates/update" }
 alcyo-search = { path = "crates/search" }
 alcyo-llama = { path = "crates/llama" }
+alcyo-diag = { path = "crates/diag" }
 
 [profile.dev]
 opt-level = 1

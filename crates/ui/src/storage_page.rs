@@ -1,6 +1,11 @@
 //! Settings › Storage (#357), on the iPad and the desktop: what the app keeps, item by item, each to delete by itself,
 //! and "Delete all data" behind a confirmation in which the meetings are a choice of their own, off unless ticked. The
 //! items and their sizes are found off the window's thread (crate::storage). A child of `app`.
+//!
+//! What is listed is looked at again whenever the page comes into view, and whenever something elsewhere may have
+//! changed what is kept (`storage_changed`): a compile cache cleared on the Board model page, another model chosen,
+//! a model downloaded, a model's first start compiled. The Board model page reads the disk as it draws, so what is
+//! deleted here shows there by itself.
 
 use super::*;
 use crate::storage::{self, Item, Kind};
@@ -19,6 +24,52 @@ pub(crate) struct StorageState {
     /// The confirmation for "Delete all data" is up, with the meetings ticked or not.
     confirm: Option<bool>,
     note: Option<String>,
+    /// Counts what may have changed on disk since; a look begun before the last change is taken again.
+    changed: u64,
+    /// The `changed` the items were looked at for.
+    looked: Option<u64>,
+    /// The window's frames, and the last one the page was drawn in: a page not drawn in the frame before has just
+    /// come into view.
+    frame: u64,
+    drawn: u64,
+}
+
+impl StorageState {
+    /// Something may have changed what is kept: look again once the page is drawn.
+    pub(crate) fn changed(&mut self) {
+        self.changed += 1;
+    }
+
+    /// A frame of the window begins.
+    pub(crate) fn next_frame(&mut self) {
+        self.frame += 1;
+    }
+
+    /// The page is drawn: whether to look at what is kept now, because it was never looked at, has changed since,
+    /// or the page has just come into view.
+    fn due(&mut self) -> bool {
+        if self.drawn != self.frame && self.drawn + 1 != self.frame {
+            self.changed += 1;
+            // What was freed on an earlier visit is no news now.
+            self.freed = None;
+            self.note = None;
+        }
+        self.drawn = self.frame;
+        !self.scanning && self.looked != Some(self.changed)
+    }
+
+    /// A look begins; it stands for what was there at the change it returns.
+    fn begin(&mut self) -> u64 {
+        self.scanning = true;
+        self.changed
+    }
+
+    /// A look begun at `at` is back. When something changed meanwhile, `due` asks for another.
+    fn found(&mut self, at: u64, items: Vec<Item>) {
+        self.scanning = false;
+        self.items = Some(items);
+        self.looked = Some(at);
+    }
 }
 
 impl Workbench {
@@ -35,19 +86,25 @@ impl Workbench {
         }
     }
 
-    /// Look at what is kept again, off the window's thread.
-    pub(crate) fn scan_storage(&mut self, cx: &mut Context<Self>) {
-        if self.storage.scanning {
+    /// Something elsewhere may have changed what is kept: Storage looks again when it is next drawn, or at once
+    /// when it is on screen.
+    pub(crate) fn storage_changed(&mut self, cx: &mut Context<Self>) {
+        self.storage.changed();
+        cx.notify();
+    }
+
+    /// Look at what is kept again, off the window's thread, when the page is drawn and that is due.
+    fn scan_storage(&mut self, cx: &mut Context<Self>) {
+        if !self.storage.due() {
             return;
         }
-        self.storage.scanning = true;
+        let at = self.storage.begin();
         let places = self.storage_places();
         let found = cx.background_executor().spawn(async move { storage::survey(&places) });
         cx.spawn(async move |this, cx| {
             let items = found.await;
             let _ = this.update(cx, |this, cx| {
-                this.storage.scanning = false;
-                this.storage.items = Some(items);
+                this.storage.found(at, items);
                 cx.notify();
             });
         })
@@ -82,6 +139,7 @@ impl Workbench {
             Kind::SearchIndex => t("storage-search-index").to_string(),
             Kind::Meetings => t("storage-meetings").to_string(),
             Kind::Temporary => t("storage-temporary").to_string(),
+            Kind::Logs => t("storage-logs").to_string(),
         }
     }
 
@@ -98,6 +156,7 @@ impl Workbench {
             Kind::SearchIndex => t("storage-hint-search-index"),
             Kind::Meetings => t("storage-hint-meetings"),
             Kind::Temporary => t("storage-hint-temporary"),
+            Kind::Logs => t("storage-hint-logs"),
         }
     }
 
@@ -108,7 +167,7 @@ impl Workbench {
             then(self, cx);
             return;
         }
-        self.session().pause_local();
+        self.session().pause_local_because("storage delete");
         cx.spawn(async move |this, cx| {
             let started = Instant::now();
             loop {
@@ -166,7 +225,7 @@ impl Workbench {
                 if models || forget_secrets {
                     this.apply_backend();
                 }
-                this.scan_storage(cx);
+                this.storage.changed();
                 cx.notify();
             });
         })
@@ -197,26 +256,31 @@ impl Workbench {
         });
     }
 
-    /// The rows, as (name, what it is, size, state), for both pages.
-    fn storage_rows(&self) -> Vec<(Item, String, &'static str, bool)> {
+    /// The rows, as (item, name, what it is or that it is in use, its size, whether in use), for both pages. A model's
+    /// compile cache that only notes the model was built (the iPad's; its compiled code is counted in Metal's row) says
+    /// so as the Board model page does, and no size of a few bytes.
+    fn storage_rows(&self) -> Vec<(Item, String, String, Option<String>, bool)> {
         self.storage.items.clone().unwrap_or_default().into_iter().map(|item| {
             let used = self.storage_in_use(&item);
             let name = Self::storage_name(&item);
-            let hint = Self::storage_hint(&item);
-            (item, name, hint, used)
+            let noted = item.cache.as_ref().filter(|entry| compile_cache::only_noted(entry, cfg!(target_os = "ios")));
+            let (hint, size) = match noted {
+                Some(entry) => (Self::compile_cache_detail(entry), None),
+                None if used && !item.built_in => (t("storage-in-use").to_string(), Some(storage::human(item.bytes))),
+                None => (Self::storage_hint(&item).to_string(), Some(storage::human(item.bytes))),
+            };
+            (item, name, hint, size, used)
         }).collect()
     }
 
     /// Storage on the iPad: groups of rounded rows, pills, and the confirmation as a card of its own.
     pub(super) fn sheet_storage(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        if self.storage.items.is_none() {
-            self.scan_storage(cx);
-        }
+        self.scan_storage(cx);
         let p = pal();
         let rows = self.storage_rows();
         let total: u64 = rows.iter().map(|(i, ..)| i.bytes).sum();
         let busy = self.storage.busy;
-        let row = |i: usize, (item, name, hint, used): (Item, String, &'static str, bool), cx: &mut Context<Self>| {
+        let row = |i: usize, (item, name, hint, size, used): (Item, String, String, Option<String>, bool), cx: &mut Context<Self>| {
             let kind = item.kind.clone();
             let right: AnyElement = if item.built_in {
                 div().flex_none().text_size(px(13.5)).text_color(rgb(p.faint)).child(t("storage-built-in")).into_any_element()
@@ -247,7 +311,7 @@ impl Workbench {
                         .flex_col()
                         .gap(px(2.))
                         .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
-                        .child(div().text_size(px(12.5)).text_color(rgb(p.faint)).child(format!("{} · {}", storage::human(item.bytes), if used && !item.built_in { t("storage-in-use") } else { hint }))),
+                        .child(div().text_size(px(12.5)).text_color(rgb(p.faint)).child(size.map_or_else(|| hint.clone(), |size| format!("{size} · {hint}")))),
                 )
                 .child(right)
                 .into_any_element()
@@ -272,7 +336,7 @@ impl Workbench {
             (t("storage-models"), |k| matches!(k, Kind::BoardModel(_) | Kind::ImageReader(_) | Kind::SearchModel | Kind::Unfinished(_) | Kind::Speech)),
             (t("compile-cache"), |k| matches!(k, Kind::CompileCache(_))),
             (t("storage-your-data"), |k| matches!(k, Kind::Meetings)),
-            (t("storage-other"), |k| matches!(k, Kind::SearchIndex | Kind::Temporary)),
+            (t("storage-other"), |k| matches!(k, Kind::SearchIndex | Kind::Temporary | Kind::Logs)),
         ];
         let mut index = 0;
         for (title, belongs) in sections {
@@ -350,13 +414,11 @@ impl Workbench {
 
     /// Storage on the desktop, in its settings' own style: rows of name and what it is, the size and a button.
     pub(super) fn desktop_storage(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.storage.items.is_none() {
-            self.scan_storage(cx);
-        }
+        self.scan_storage(cx);
         let rows = self.storage_rows();
         let total: u64 = rows.iter().map(|(i, ..)| i.bytes).sum();
         let busy = self.storage.busy;
-        let lines = rows.into_iter().enumerate().map(|(i, (item, name, hint, used))| {
+        let lines = rows.into_iter().enumerate().map(|(i, (item, name, hint, size, used))| {
             let kind = item.kind.clone();
             div()
                 .flex()
@@ -367,8 +429,8 @@ impl Workbench {
                 .py_3()
                 .border_b_1()
                 .border_color(rgb(pal().line))
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_ui().child(name)).child(div().text_small().text_color(rgb(pal().muted)).child(if used && !item.built_in { t("storage-in-use") } else { hint })))
-                .child(div().font_family(theme::MONO).text_small().text_color(rgb(pal().muted)).child(storage::human(item.bytes)))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_ui().child(name)).child(div().text_small().text_color(rgb(pal().muted)).child(hint)))
+                .child(div().font_family(theme::MONO).text_small().text_color(rgb(pal().muted)).child(size.unwrap_or_default()))
                 .child(if item.built_in || (used && matches!(item.kind, Kind::CompileCache(_))) {
                     div().w(px(110.)).into_any_element()
                 } else {
@@ -410,4 +472,63 @@ fn alpha_of(color: u32, a: f32) -> Hsla {
     let mut c: Hsla = rgb(color).into();
     c.a = a;
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StorageState;
+
+    /// Draw the page in the next frame, and say whether it looked again.
+    fn draw(state: &mut StorageState) -> bool {
+        state.next_frame();
+        state.due()
+    }
+
+    /// The page looks at what is kept when it first shows, again whenever it comes back into view, and again when
+    /// something elsewhere changed it (a cache cleared on the Board model page), but not at every frame.
+    #[test]
+    fn storage_looks_again_when_shown_or_changed() {
+        let mut state = StorageState::default();
+        assert!(draw(&mut state), "first shown");
+        let at = state.begin();
+        assert!(!draw(&mut state), "a look is under way");
+        state.found(at, vec![]);
+        assert!(!draw(&mut state), "nothing changed while it stayed in view");
+        // Settings › Board model is shown for a while and clears a cache there.
+        state.next_frame();
+        state.next_frame();
+        state.changed();
+        assert!(draw(&mut state), "back on Storage after a change elsewhere");
+        look(&mut state);
+        // Away and back with nothing changed: the disk is looked at anyway, as anything could have.
+        state.next_frame();
+        assert!(draw(&mut state), "coming back into view looks again");
+        look(&mut state);
+        // A change while the page is in view (a model's first start compiled) is seen at once.
+        state.changed();
+        assert!(draw(&mut state));
+        // Drawn twice in one frame is still one look.
+        let at = state.begin();
+        state.found(at, vec![]);
+        assert!(!state.due() && !state.due());
+    }
+
+    /// A look, from beginning to end, with nothing found.
+    fn look(state: &mut StorageState) {
+        let at = state.begin();
+        state.found(at, vec![]);
+    }
+
+    /// A look begun before a change is not taken for what is there after it.
+    #[test]
+    fn a_look_begun_before_a_change_is_taken_again() {
+        let mut state = StorageState::default();
+        assert!(draw(&mut state));
+        let at = state.begin();
+        state.changed();
+        state.found(at, vec![]);
+        assert!(draw(&mut state), "the look came back stale");
+        look(&mut state);
+        assert!(!draw(&mut state));
+    }
 }

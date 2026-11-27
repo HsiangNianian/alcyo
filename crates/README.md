@@ -15,6 +15,7 @@ is kept as frozen fixtures.
 | `alcyo-fonts` | The fonts built into the program (DM Sans, JetBrains Mono, Noto Sans CJK SC) and their check | Everything else |
 | `alcyo-import` | Turning PDFs and images into boards: reading a page's layout, its picture and arXiv | UI, audio |
 | `alcyo-update` | Finding, verifying and installing a new version | UI, audio, board |
+| `alcyo-diag` | The rolling app log, structured events, and a meeting's diagnostic bundle (#360) | UI, audio, board, network |
 | `alcyo-ui` | The GPUI window, tiled ink rendering, wiring the chain together | |
 | `alcyo-tools` | `check` and `agent-eval` for CI and model evaluation | UI |
 | `alcyo-asr-eval` | `asr-eval`: the app's speech recognition measured on fixed recordings | UI, board |

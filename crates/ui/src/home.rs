@@ -466,6 +466,15 @@ impl Workbench {
         }
     }
 
+    /// A meeting's diagnostic bundle from its card (#360): it opens, with the bundle's sheet over it.
+    fn home_diagnostics(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.home.menu = None;
+        self.open_meeting(id, cx);
+        if self.live.id() == id {
+            self.toggle_panel(Panel::Diagnostics, cx);
+        }
+    }
+
     /// The meeting screen on the iPad, with a card still growing into it.
     pub(super) fn home_zoom_over(&mut self, screen: AnyElement, window: &mut Window, _cx: &mut Context<Self>) -> AnyElement {
         self.home.shown = false;
@@ -685,7 +694,7 @@ impl Workbench {
             div().pt(px(40.)).text_size(px(15.)).text_color(rgb(p.faint)).child(if query.is_empty() { t("home-nothing-here") } else { t("home-nothing-found") })
         });
 
-        // Header: the kingfisher and the page's name, then search, import, settings and a new meeting.
+        // Header: the page's name, then search, import, settings and a new meeting.
         let narrow = f32::from(window.viewport_size().width) < 760.0;
         let header = div()
             .absolute()
@@ -701,9 +710,7 @@ impl Workbench {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
                     .text_size(px(if narrow { 28. } else { 34. }))
-                    .child(theme::app_icon(if narrow { 30. } else { 36. }))
                     .child(div().font_weight(FontWeight::BOLD).whitespace_nowrap().child(t("meetings")))
                     .map(|brand| self.intro_brand(brand, window)),
             )
@@ -1288,7 +1295,7 @@ impl Workbench {
         let screen = window.viewport_size();
         const W: f32 = 232.;
         const ROW: f32 = 44.;
-        let h = ROW * 4. + 9.;
+        let h = ROW * 5. + 9.;
         let x = (f32::from(at.x) - 12.).clamp(12., f32::from(screen.width) - W - 12.);
         let y = (f32::from(at.y) + 8.).min(f32::from(screen.height) - h - 24.).max(12.);
         let row = |key: &'static str, name: &'static str, label: &'static str, danger: bool| {
@@ -1307,7 +1314,7 @@ impl Workbench {
                 .child(label)
                 .child(icon(&format!("ipad/{name}")).size(px(20.)))
         };
-        let (a, b, c, d) = (id.clone(), id.clone(), id.clone(), id.clone());
+        let (a, b, c, d, e) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         Some(
             div()
                 .absolute()
@@ -1335,6 +1342,7 @@ impl Workbench {
                         })))
                         .child(row("home-menu-rename", "pen", t("rename"), false).on_click(cx.listener(move |this, _, window, cx| this.home_start_rename(&b, window, cx))))
                         .child(row("home-menu-export", "export", t("export"), false).on_click(cx.listener(move |this, _, _, cx| this.home_export(&c, cx))))
+                        .child(row("home-menu-diag", "info", t("diag-export-menu"), false).on_click(cx.listener(move |this, _, _, cx| this.home_diagnostics(&e, cx))))
                         .child(div().h(px(1.)).mx(px(0.)).my(px(0.5)).bg(rgb(p.line)))
                         .child(row("home-menu-delete", "trash", t("delete"), true).on_click(cx.listener(move |this, _, _, cx| {
                             this.home.menu = None;
@@ -1394,8 +1402,8 @@ impl Workbench {
         let top = f32::from(crate::platform::safe_area(window).top);
         let (cx, cy) = Self::splash_centre(window);
         let (_, animation) = intro_animation();
-        // The brand's width at a title size: the mark, the gap and the word, near enough.
-        let width = |size: f32| 40. + size * 4.85;
+        // The title's width at a size, near enough.
+        let width = |size: f32| size * 4.85;
         let home_y = top + 14. + 22.;
         brand
             .relative()
@@ -1414,7 +1422,7 @@ impl Workbench {
         let word = word.clone();
         let (cx, cy) = Self::splash_centre(window);
         let top = f32::from(crate::platform::safe_area(window).top);
-        let (to_x, to_y) = (SIDE + (40. + 34. * 4.85) / 2., top + 14. + 22.);
+        let (to_x, to_y) = (SIDE + 34. * 4.85 / 2., top + 14. + 22.);
         let (_, animation) = intro_animation();
         Some(
             div()

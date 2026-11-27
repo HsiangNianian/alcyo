@@ -51,6 +51,8 @@ pub enum Kind {
     Meetings,
     /// Temporary files, as exports waiting to be shared.
     Temporary,
+    /// The app log and the events behind a diagnostic bundle (crates/diag), and the models' hashes kept for it.
+    Logs,
 }
 
 /// One row of Storage.
@@ -115,6 +117,10 @@ pub fn survey(places: &Places) -> Vec<Item> {
     let meetings: Vec<PathBuf> = ["meetings", "inbox"].iter().map(|d| places.data.join(d)).filter(|p| p.exists()).collect();
     if !meetings.is_empty() {
         out.push(item(Kind::Meetings, meetings, false));
+    }
+    let logs = alcyo_diag::logs_dir(&places.data);
+    if logs.is_dir() {
+        out.push(item(Kind::Logs, vec![logs], false));
     }
     let temp = temporary(places);
     if !temp.is_empty() {
@@ -215,6 +221,8 @@ mod tests {
         write(&p.data.join("inbox/card.json"), 50);
         write(&p.data.join("search/a.index"), 60);
         write(&p.temp.join("export.pdf"), 80);
+        write(&p.data.join("logs/app-20261126.log"), 70);
+        write(&p.data.join("logs/events-20261126.jsonl"), 30);
         compile_cache::note_ready(&compile_cache::root(&p.models), Path::new("some-future-model.gguf"), "1.0").unwrap();
         let items = survey(&p);
         let find = |kind: &Kind| items.iter().find(|i| &i.kind == kind).unwrap_or_else(|| panic!("no {kind:?} in {items:?}"));
@@ -227,6 +235,7 @@ mod tests {
         assert_eq!(find(&Kind::Meetings).bytes, 1050, "meetings, their sound and the inbox");
         assert_eq!(find(&Kind::SearchIndex).bytes, 60);
         assert_eq!(find(&Kind::Temporary).bytes, 80);
+        assert!(find(&Kind::Logs).bytes == 100 && find(&Kind::Logs).deletable(), "the logs are a row of their own, to delete");
         assert!(items.iter().any(|i| i.kind == Kind::CompileCache(compile_cache::Kind::Model("some-future-model.gguf".into()))));
         assert!(!items.iter().any(|i| i.paths.iter().any(|p| p.ends_with("selected.txt"))), "the choice of model is not an item");
         let _ = std::fs::remove_dir_all(p.data.parent().unwrap());
