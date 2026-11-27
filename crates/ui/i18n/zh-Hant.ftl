@@ -526,3 +526,55 @@ share-network-wifi = Wi-Fi
 share-network-wired = 有線
 share-scan-on = 用連著「{ $network }」的手機掃碼，已含存取碼
 share-retired = 已停止共享：有人輸錯存取碼太多次。重新開始共享會換一個新的存取碼。
+
+## Editing the transcript (#362)
+line-waiting = 還在等待上板，畫好之後才能修改。
+line-copy = 拷貝
+line-speaker-heading = 只改這一句，它在板上畫的內容也跟著改。
+line-drew =
+    { $items ->
+        [0] 這一句在板上沒有畫東西
+       *[other] 這一句在板上畫了 { $items } 項
+    }
+line-edit-text = 修改文字
+line-change-speaker = 換說話人
+line-select-lines = 選擇多句
+line-delete = 刪除這一句
+line-edited = 已改
+line-heard = 原本聽到的：{ $text }
+line-restore = 恢復成原本聽到的
+lines-selected =
+    { $count ->
+        [0] 選擇多句
+       *[other] 已選 { $count } 句
+    }
+select-all = 全選
+lines-give-to = 把這 { $count } 句改給：
+lines-merge = 合併
+lines-speaker = 說話人
+lines-delete = 刪除
+merge-title = 合併 { $count } 句
+merge-line = 合併後的一句
+merge-said-by = 說話人
+merge-joins = 由這幾句合成
+merge-foot = 這幾句在板上畫的內容，會按合併後的一句重畫。還原可以把原本的幾句恢復。
+delete-title =
+    { $count ->
+        [1] 刪除這一句？
+       *[other] 刪除這 { $count } 句？
+    }
+delete-message = 板上有 { $items } 項是從這裡畫出來的。診斷包裡仍然保留原話。
+delete-lines-only = 只刪除句子
+delete-with-items = 連同板書一起刪除
+redraw-board-title = 重畫整塊板？
+redraw-board-message = 這些句子在 { $topics } 個主題下畫了 { $items } 項。模型會按改好的逐字稿把整塊板重新寫一遍，你手寫的筆跡不動。
+redraw-only-text = 只改文字
+redraw-board-go = 重畫
+redrawing-items = 正在重畫 { $items } 項板書…
+redrawing-section = 正在重畫「{ $name }」…
+redrawing-board = 正在重畫整塊板…
+redraw-waits = 停止收音後再重畫整塊板。
+redraw-failed = 沒能重畫：文字已經改好，板書還沒跟上。
+redraw-try-again = 再試一次
+board-updated = 板書已更新 · { $items } 項
+board-redrew-section = 已重畫「{ $name }」

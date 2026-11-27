@@ -757,3 +757,55 @@ diag-prompts-off = 关掉后只保留长度和耗时。
 diag-privacy = API key、密码和令牌一律不包含，只注明是否已设置。
 diag-export-dots = 导出…
 diag-ready = 已准备好
+
+## Editing the transcript (#362)
+line-waiting = 还在等待上板，画好之后才能修改。
+line-copy = 拷贝
+line-speaker-heading = 只改这一句，它在板上画的内容也跟着改。
+line-drew =
+    { $items ->
+        [0] 这一句在板上没有画东西
+       *[other] 这一句在板上画了 { $items } 项
+    }
+line-edit-text = 修改文字
+line-change-speaker = 换说话人
+line-select-lines = 选择多句
+line-delete = 删除这一句
+line-edited = 已改
+line-heard = 原来听到的：{ $text }
+line-restore = 恢复成原来听到的
+lines-selected =
+    { $count ->
+        [0] 选择多句
+       *[other] 已选 { $count } 句
+    }
+select-all = 全选
+lines-give-to = 把这 { $count } 句改给：
+lines-merge = 合并
+lines-speaker = 说话人
+lines-delete = 删除
+merge-title = 合并 { $count } 句
+merge-line = 合并后的一句
+merge-said-by = 说话人
+merge-joins = 由这几句合成
+merge-foot = 这几句在板上画的内容，会按合并后的一句重画。撤销可以把原来的几句恢复。
+delete-title =
+    { $count ->
+        [1] 删除这一句？
+       *[other] 删除这 { $count } 句？
+    }
+delete-message = 板上有 { $items } 项是从这里画出来的。诊断包里仍然保留原话。
+delete-lines-only = 只删除句子
+delete-with-items = 连同板书一起删除
+redraw-board-title = 重画整块板？
+redraw-board-message = 这些句子在 { $topics } 个主题下画了 { $items } 项。模型会按改好的转写把整块板重新写一遍，你手写的笔迹不动。
+redraw-only-text = 只改文字
+redraw-board-go = 重画
+redrawing-items = 正在重画 { $items } 项板书…
+redrawing-section = 正在重画“{ $name }”…
+redrawing-board = 正在重画整块板…
+redraw-waits = 停止收音后再重画整块板。
+redraw-failed = 没能重画：文字已经改好，板书还没跟上。
+redraw-try-again = 再试一次
+board-updated = 板书已更新 · { $items } 项
+board-redrew-section = 已重画“{ $name }”

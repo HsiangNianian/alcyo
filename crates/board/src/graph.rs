@@ -434,6 +434,35 @@ impl Graph {
         Some(self.add(name, kind, None))
     }
 
+    /// What a reference names on the board now, without making anything.
+    fn peek(&self, r: &Ref) -> Option<String> {
+        match r {
+            Ref::Id(id) if self.index(id).is_some() => Some(id.clone()),
+            Ref::Id(id) if looks_like_id(id) => None,
+            Ref::Id(name) | Ref::Name(name) => self.find(name).map(|i| self.nodes[i].id.clone()),
+        }
+    }
+
+    /// The operations of a partial redraw that stay within what it may change (#362): `editable` items may be
+    /// changed or deleted, `anchors` (their parents) only hung under or linked to, and anything the reply makes new is
+    /// its own. An operation that touches anything else is dropped.
+    pub fn keep_within(&self, ops: Vec<Op>, editable: &HashSet<String>, anchors: &HashSet<String>) -> Vec<Op> {
+        let ours = |r: &Ref| self.peek(r).is_none_or(|id| editable.contains(&id));
+        let hang = |r: &Ref| self.peek(r).is_none_or(|id| editable.contains(&id) || anchors.contains(&id));
+        let named = |n: &String| ours(&Ref::Name(n.clone()));
+        ops.into_iter()
+            .filter(|op| match op {
+                Op::N(n) | Op::T(n) => named(n),
+                Op::L(parent, n) => hang(parent) && named(n),
+                Op::Attached(_, parent, text) => parent.as_ref().is_none_or(&hang) && named(text),
+                Op::K(target, _) => hang(target),
+                Op::M(target, _, _) | Op::H(target) | Op::I(target, _) | Op::R(target, _) | Op::A(target, _) | Op::D(target) | Op::C(target, _) => ours(target),
+                Op::E(a, b, _) | Op::X(a, b) => hang(a) && hang(b) && (ours(a) || ours(b)),
+                Op::G(_, members) => members.iter().all(&ours),
+            })
+            .collect()
+    }
+
     /// A hand-made mark from the board's toolbar: on if absent, off if present.
     pub fn toggle_mark(&mut self, id: &str, mark: &str) {
         let Some(i) = self.index(id) else { return };
@@ -1329,6 +1358,25 @@ mod pen_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_partial_redraw_keeps_only_operations_on_its_items() {
+        let mut g = Graph::default();
+        g.apply(&parse_ops("T 「两个选项」\nL 「两个选项」 「删掉选项一」\nL 「两个选项」 「选项二」\nT 「待定」"));
+        let editable: HashSet<String> = HashSet::from(["n2".to_string()]);
+        let anchors: HashSet<String> = HashSet::from(["n1".to_string()]);
+        let reply = "R n2 「先留着选项一」\nR n3 「改别的」\nD n4\nM n2 星标\nL n1 「新的一点」\nL n4 「挂错地方」\nE n2 -> n3\nE 「新的一点」 -> n2\nR n1 「改主题」\nN 「选项二」";
+        let kept = g.keep_within(parse_ops(reply), &editable, &anchors);
+        let shown: Vec<String> = kept.iter().map(|op| format!("{op:?}")).collect();
+        assert_eq!(kept.len(), 4, "{shown:#?}");
+        let mut after = g.clone();
+        after.apply(&kept);
+        assert_eq!(after.nodes.iter().find(|n| n.id == "n2").unwrap().label, "先留着选项一");
+        assert_eq!(after.nodes.iter().find(|n| n.id == "n3").unwrap().label, "选项二", "not ours");
+        assert!(after.nodes.iter().any(|n| n.id == "n4"), "not ours to delete");
+        assert_eq!(after.nodes.iter().find(|n| n.id == "n1").unwrap().label, "两个选项", "its parent is only a place to hang things");
+        assert!(after.nodes.iter().any(|n| n.label == "新的一点" && n.parent.as_deref() == Some("n1")));
+    }
 
     fn long_meeting() -> Graph {
         let mut ops = String::new();

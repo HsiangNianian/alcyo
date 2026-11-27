@@ -595,3 +595,58 @@ share-network-wifi = Wi-Fi
 share-network-wired = Кабель
 share-scan-on = Отсканируйте телефоном в сети { $network }, код уже внутри
 share-retired = Показ остановлен: слишком много неверных кодов доступа. Начните заново, чтобы получить новый код.
+
+## Editing the transcript (#362)
+line-waiting = Ждёт доски: изменить можно после того, как она будет нарисована.
+line-copy = Скопировать
+line-speaker-heading = Меняется только эта строка; нарисованное ею на доске переходит вместе с ней.
+line-drew =
+    { $items ->
+        [0] Эта строка ничего не нарисовала на доске
+        [one] Эта строка нарисовала на доске { $items } элемент
+        [few] Эта строка нарисовала на доске { $items } элемента
+        [many] Эта строка нарисовала на доске { $items } элементов
+       *[other] Эта строка нарисовала на доске { $items } элемента
+    }
+line-edit-text = Изменить текст
+line-change-speaker = Сменить говорящего
+line-select-lines = Выбрать строки
+line-delete = Удалить строку
+line-edited = Изменено
+line-heard = Услышано: { $text }
+line-restore = Вернуть услышанное
+lines-selected =
+    { $count ->
+        [0] Выбрать строки
+       *[other] Выбрано: { $count }
+    }
+select-all = Выбрать все
+lines-give-to = Отдать эти строки ({ $count }):
+lines-merge = Объединить
+lines-speaker = Говорящий
+lines-delete = Удалить
+merge-title = Объединить строки: { $count }
+merge-line = Объединённая строка
+merge-said-by = Говорит
+merge-joins = Объединяет
+merge-foot = То, что эти строки нарисовали на доске, будет перерисовано по объединённой строке. Отмена вернёт строки.
+delete-title =
+    { $count ->
+        [one] Удалить эту строку?
+       *[other] Удалить строки ({ $count })?
+    }
+delete-message = Элементов доски отсюда: { $items }. Диагностический пакет сохранит сказанное.
+delete-lines-only = Удалить только строки
+delete-with-items = Удалить вместе с элементами доски
+redraw-board-title = Перерисовать всю доску?
+redraw-board-message = Эти строки нарисовали элементов: { $items }, тем: { $topics }. Модель заново напишет доску по исправленной расшифровке; ваши пометки останутся.
+redraw-only-text = Только исправить текст
+redraw-board-go = Перерисовать
+redrawing-items = Перерисовка элементов доски: { $items }…
+redrawing-section = Перерисовка «{ $name }»…
+redrawing-board = Перерисовка доски…
+redraw-waits = Вся доска будет перерисована, когда прослушивание остановится.
+redraw-failed = Не удалось перерисовать: текст исправлен, доска пока нет.
+redraw-try-again = Ещё раз
+board-updated = Доска обновлена · элементов: { $items }
+board-redrew-section = «{ $name }» перерисовано

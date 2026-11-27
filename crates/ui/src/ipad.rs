@@ -874,6 +874,8 @@ impl Workbench {
             .when_some(circle_card, |d, card| d.child(card))
             .when_some(card, |d, card| d.child(card))
             .when_some(dock, |d, dock| d.child(dock))
+            // After an edit of the transcript redrew the board: what changed, with Undo, just over the dock (#362).
+            .when_some((!page_open).then(|| self.ipad_edit_toast(f.dock_bottom() + DOCK_H + 14.0, cx)).flatten(), |d, toast| d.child(toast))
             .when_some(status, |d, status| d.child(fade("ipad-fade-status", status)))
             .when_some(actions, |d, actions| d.child(fade("ipad-fade-actions", actions)))
             // Meetings and Settings lie over the board and under the meeting's card, which leads back.

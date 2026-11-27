@@ -12,7 +12,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const MEETING_VERSION: u64 = 2;
+/// The newest meeting format this version reads and writes: 3 adds edited, merged and deleted lines (#362). A
+/// meeting is written as 2 until it has such lines ([`crate::edit::format_version`]), so older versions go on
+/// editing every other meeting.
+pub const MEETING_VERSION: u64 = crate::edit::EDITED_VERSION;
 
 /// The app's folder name on every platform.
 pub const APP_ID: &str = "app.alcyo.board";
@@ -88,7 +91,7 @@ const SPEAKERS_SHOWN: usize = 4;
 /// The first speakers of a meeting's lines, each once, in the order they first spoke.
 pub fn speakers_of(lines: &[Value]) -> Vec<String> {
     let mut seen: Vec<String> = vec![];
-    for name in lines.iter().filter_map(|l| l["speaker"].as_str()).filter(|s| !s.is_empty()) {
+    for name in crate::edit::shown(lines).filter_map(|(_, l)| l["speaker"].as_str()).filter(|s| !s.is_empty()) {
         if !seen.iter().any(|s| s == name) {
             seen.push(name.to_string());
             if seen.len() == SPEAKERS_SHOWN {
@@ -352,7 +355,8 @@ impl Store {
             meeting.entry("migration").or_insert_with(|| json!({ "sourceHash": source_hash }));
         }
         let revision = expected + 1;
-        meeting.insert("version".into(), json!(MEETING_VERSION));
+        let lines = meeting.get("lines").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        meeting.insert("version".into(), json!(crate::edit::format_version(lines)));
         meeting.insert("storageRevision".into(), json!(revision));
         let text = serde_json::to_string(&meeting)?;
         let tmp = dir.join(format!("{id}.json.tmp"));
@@ -640,9 +644,9 @@ mod tests {
         let dir = Dir::new();
         let store = Store::new(dir.0.clone());
         fs::create_dir_all(store.current_dir()).unwrap();
-        fs::write(store.current_dir().join("a-1.json"), r#"{"id":"a-1","version":3,"storageRevision":4}"#).unwrap();
+        fs::write(store.current_dir().join("a-1.json"), r#"{"id":"a-1","version":4,"storageRevision":4}"#).unwrap();
         assert!(store.save("a-1", meeting("a-1"), &Origin::Current, 4).is_err());
-        assert_eq!(store.load("a-1").unwrap().unwrap().raw["version"], 3);
+        assert_eq!(store.load("a-1").unwrap().unwrap().raw["version"], 4);
         fs::write(store.current_dir().join("b-1.deleted"), "").unwrap();
         assert!(store.save("b-1", meeting("b-1"), &Origin::New, 0).is_err());
         assert!(store.load("b-1").unwrap().is_none());

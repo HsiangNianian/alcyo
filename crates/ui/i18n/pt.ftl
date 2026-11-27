@@ -577,3 +577,85 @@ share-network-wifi = Wi-Fi
 share-network-wired = Cabo
 share-scan-on = Escaneie com um celular em { $network }, com o código
 share-retired = Compartilhamento encerrado: muitos códigos de acesso errados foram tentados. Comece de novo para ter um código novo.
+
+## Editing the transcript (#362)
+line-waiting = Aguardando o quadro: pode ser editada depois de desenhada.
+line-copy = Copiar
+line-speaker-heading = Só esta linha muda; o que ela desenhou no quadro acompanha.
+line-drew =
+    { $items ->
+        [0] Esta linha não desenhou nada no quadro
+        [one] Esta linha desenhou 1 item no quadro
+       *[other] Esta linha desenhou { $items } itens no quadro
+    }
+line-edit-text = Editar texto
+line-change-speaker = Mudar orador
+line-select-lines = Selecionar linhas
+line-delete = Apagar linha
+line-edited = Editada
+line-heard = Ouvido: { $text }
+line-restore = Restaurar o que foi ouvido
+lines-selected =
+    { $count ->
+        [0] Selecionar linhas
+        [one] 1 selecionada
+       *[other] { $count } selecionadas
+    }
+select-all = Selecionar tudo
+lines-give-to =
+    { $count ->
+        [one] Atribuir esta linha a:
+       *[other] Atribuir estas { $count } linhas a:
+    }
+lines-merge = Juntar
+lines-speaker = Orador
+lines-delete = Apagar
+merge-title =
+    { $count ->
+        [one] Juntar 1 linha
+       *[other] Juntar { $count } linhas
+    }
+merge-line = Linha juntada
+merge-said-by = Dito por
+merge-joins = Junta
+merge-foot = O que estas linhas desenharam no quadro é redesenhado a partir da linha juntada. Desfazer traz as linhas de volta.
+delete-title =
+    { $count ->
+        [one] Apagar esta linha?
+       *[other] Apagar { $count } linhas?
+    }
+delete-message =
+    { $items ->
+        [one] 1 item do quadro veio daqui.
+       *[other] { $items } itens do quadro vieram daqui.
+    } O pacote de diagnóstico guarda o que foi dito.
+delete-lines-only =
+    { $count ->
+        [one] Apagar só a linha
+       *[other] Apagar só as linhas
+    }
+delete-with-items =
+    { $count ->
+        [one] Apagar com os itens do quadro
+       *[other] Apagar com os itens do quadro
+    }
+redraw-board-title = Redesenhar o quadro inteiro?
+redraw-board-message = Estas linhas desenharam { $items } itens em { $topics } tópicos. O modelo reescreve o quadro a partir da transcrição corrigida; a sua tinta fica.
+redraw-only-text = Só corrigir o texto
+redraw-board-go = Redesenhar
+redrawing-items =
+    { $items ->
+        [one] Redesenhando 1 item…
+       *[other] Redesenhando { $items } itens…
+    }
+redrawing-section = Redesenhando “{ $name }”…
+redrawing-board = Redesenhando o quadro…
+redraw-waits = O quadro inteiro é redesenhado quando parar de ouvir.
+redraw-failed = Não foi possível redesenhar: o texto está corrigido, o quadro ainda não.
+redraw-try-again = Tentar de novo
+board-updated =
+    { $items ->
+        [one] Quadro atualizado · 1 item
+       *[other] Quadro atualizado · { $items } itens
+    }
+board-redrew-section = “{ $name }” redesenhado

@@ -330,6 +330,13 @@ const ROUND6_ICONS: [(&str, &str); 6] = [
 ];
 
 /// The iPad's meetings page (crates/ui/src/home.rs): its line icons.
+/// Editing the transcript (#362): merging lines, giving them to someone, picking several.
+const EDIT_ICONS: [(&str, &str); 3] = [
+    ("icons/ipad/merge.svg", include_str!("../icons/ipad/merge.svg")),
+    ("icons/ipad/people.svg", include_str!("../icons/ipad/people.svg")),
+    ("icons/ipad/select.svg", include_str!("../icons/ipad/select.svg")),
+];
+
 const HOME_ICONS: [(&str, &str); 6] = [
     ("icons/ipad/import.svg", include_str!("../icons/ipad/import.svg")),
     ("icons/ipad/pen.svg", include_str!("../icons/ipad/pen.svg")),
@@ -360,7 +367,7 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).chain(&ROUND6_ICONS).find(|(name, _)| *name == path) {
+        if let Some((_, svg)) = PICTOGRAMS.iter().chain(&IPAD_ICONS).chain(&HOME_ICONS).chain(&IPAD_SHEET_ICONS).chain(&ROUND6_ICONS).chain(&EDIT_ICONS).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(svg.as_bytes())));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {

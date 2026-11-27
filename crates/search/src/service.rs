@@ -92,12 +92,28 @@ pub enum Event {
 
 /// The passages of a meeting, and the text its index fingerprint is taken from.
 pub fn passages(live: &Live) -> Vec<Chunk> {
-    let said: Vec<Said> = live
-        .lines
-        .iter()
-        .map(|l| Said { speaker: l["speaker"].as_str(), text: l["text"].as_str().unwrap_or_default() })
+    // The corrected words, and for an edited line what was heard too, so either finds it (#362). Deleted lines and
+    // lines merged into another are not part of the transcript.
+    let places: Vec<usize> = alcyo_meetings::shown(&live.lines).map(|(i, _)| i).collect();
+    let texts: Vec<(Option<&str>, String)> = alcyo_meetings::shown(&live.lines)
+        .map(|(_, l)| {
+            let text = l["text"].as_str().unwrap_or_default();
+            let text = match alcyo_meetings::edit::heard(l).map(|(heard, _)| heard).filter(|heard| *heard != text) {
+                Some(heard) => format!("{text} ({heard})"),
+                None => text.to_string(),
+            };
+            (l["speaker"].as_str(), text)
+        })
         .collect();
+    let said: Vec<Said> = texts.iter().map(|(speaker, text)| Said { speaker: *speaker, text }).collect();
     let mut out = chunk::transcript(&said);
+    // Passages name lines by their place in the meeting, which the gone lines still hold.
+    for chunk in &mut out {
+        if let Source::Transcript { first, last } = &mut chunk.source {
+            *first = places.get(*first).copied().unwrap_or(*first);
+            *last = places.get(*last).copied().unwrap_or(*last);
+        }
+    }
     for (page, (graph, _)) in live.board_pages().iter().enumerate() {
         out.extend(chunk::board(page, graph));
     }
@@ -411,6 +427,21 @@ fn run(data: &Path, model: PathBuf, backend: Backend, idle: Duration) -> (Sender
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn passages_find_edited_lines_by_either_text_and_skip_gone_ones() {
+        let serde_json::Value::Object(raw) = json!({ "id": "m", "lines": [
+            { "text": "这一句被删掉了，内容很长很长很长", "speaker": "B", "ms": 1, "deleted": true },
+            { "text": "那就先留着选项一，再看看结算怎么算", "speaker": "E", "ms": 1, "heard": { "text": "那就删掉选项一，再看看结算怎么算" } },
+            { "text": "固定费用每个月要算清楚才行", "speaker": "D", "ms": 1 },
+        ] }) else { unreachable!() };
+        let live = Live::from_loaded(alcyo_meetings::Loaded { raw, origin: alcyo_meetings::Origin::Current, revision: 0 });
+        let all = passages(&live);
+        let said = all.iter().find(|c| matches!(c.source, Source::Transcript { .. })).unwrap();
+        assert!(said.text.contains("先留着选项一") && said.text.contains("删掉选项一"), "{}", said.text);
+        assert!(!said.text.contains("被删掉了"));
+        assert!(matches!(said.source, Source::Transcript { first: 1, .. }), "named by its place in the meeting: {:?}", said.source);
+    }
 
     #[test]
     fn indexing_waits_while_held_and_goes_on_after() {

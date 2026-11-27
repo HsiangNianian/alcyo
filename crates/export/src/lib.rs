@@ -113,9 +113,9 @@ impl Said {
     /// The lines as kept, each line's text as `text_of` gives it: a note about a change made by hand can be
     /// shown in the reader's language rather than as kept.
     pub fn from_stored(lines: &[Value], text_of: &dyn Fn(&Value) -> String) -> Vec<Self> {
-        lines
-            .iter()
-            .map(|l| Self {
+        // Deleted lines, and lines merged into another, are not part of the transcript (#362).
+        alcyo_meetings::shown(lines)
+            .map(|(_, l)| Self {
                 speaker: l["speaker"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
                 text: text_of(l),
                 page: l["page"].as_u64().unwrap_or(0),

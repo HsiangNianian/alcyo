@@ -332,6 +332,8 @@ pub enum When {
     /// meeting the three passes rewritten at the end scored 0.70-0.73 item F1, the three left with a rewrite 3
     /// to 23 lines earlier 0.48-0.67. A board that piled up is rewritten whatever its length.
     Final,
+    /// Asked for by an edit of the transcript (#362): whatever the board's size, as long as it is an outline.
+    Asked,
 }
 
 /// A board smaller than this is not rewritten at the end: there is nothing to organise.
@@ -489,6 +491,7 @@ pub fn consolidate(provider: &Provider, graph: &Graph, history: &[Utterance], en
     let wanted = match when {
         When::Piled => needed(graph),
         When::Final => needed(graph) || (history.len() >= FINAL_LINES && graph.nodes.len() >= FINAL_LEAST),
+        When::Asked => true,
     };
     if !applies_to(graph) || !wanted {
         return Ok(None);

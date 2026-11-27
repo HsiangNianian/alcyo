@@ -229,7 +229,7 @@ impl Workbench {
         let speakers_ = self.live.speakers();
         // The folded pill's face: what is being said now, or the last line said.
         let newest = self.draft.as_ref().map(|d| (self.speaker.clone(), d.text.clone())).or_else(|| {
-            self.live.lines.iter().rev().find(|l| !l["manual"].as_bool().unwrap_or(false)).map(|l| (l["speaker"].as_str().filter(|s| !s.is_empty()).map(str::to_string), l["text"].as_str().unwrap_or_default().to_string()))
+            self.live.lines.iter().rev().find(|l| !l["manual"].as_bool().unwrap_or(false) && !alcyo_meetings::is_gone(l)).map(|l| (l["speaker"].as_str().filter(|s| !s.is_empty()).map(str::to_string), l["text"].as_str().unwrap_or_default().to_string()))
         });
         let (name, text) = newest.unwrap_or((None, t("transcript-2").to_string()));
         let pill = div()
@@ -270,10 +270,19 @@ impl Workbench {
                     .child(icon("ipad/chevron-down").size(px(18.)))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_side(cx))),
             );
-        // The grip carries the card: a drag on it throws the card to a corner. The tabs below only switch.
-        let header = div().flex_none().flex().flex_col().child(self.ipad_grip(Grab::Card, 20., cx)).child(tabs);
+        // The grip carries the card: a drag on it throws the card to a corner. The tabs below only switch, and give
+        // way to Cancel and Done while a line is edited or lines are picked (#362).
         let side_panel = if self.panel.beside_board() { self.panel } else { Panel::Transcript };
-        let typing = (side_panel == Panel::Transcript && self.editable()).then(|| div().flex_none().p(px(12.)).child(self.ipad_typing(false, cx)));
+        let on_transcript = side_panel == Panel::Transcript;
+        let edit_bar = self.ipad_edit_header(cx).filter(|_| on_transcript);
+        let header = div().flex_none().flex().flex_col().child(self.ipad_grip(Grab::Card, 20., cx)).map(|d| match edit_bar {
+            Some(bar) => d.child(bar),
+            None => d.child(tabs),
+        });
+        let typing = match self.ipad_select_bar(cx).filter(|_| on_transcript) {
+            Some(bar) => Some(bar),
+            None => (on_transcript && self.editable() && self.edit.editing.is_none()).then(|| div().flex_none().p(px(12.)).child(self.ipad_typing(false, cx))),
+        };
         // As tall as the card is open at its corner, shorter at the bottom, so the box to type in is never cut off.
         let (_, _, _, open_h) = self.ipad_card_rect(f, true);
         let card = div()
@@ -321,7 +330,12 @@ impl Workbench {
         let height = self.ipad_sheet_height(f) + f.keyboard;
         let dragging = self.ipad.drag.as_ref().is_some_and(|d| d.grab == Grab::Sheet && d.moved);
         let side_panel = if self.panel.beside_board() { self.panel } else { Panel::Transcript };
-        let typing = (side_panel == Panel::Transcript && self.editable()).then(|| div().flex_none().pt(px(12.)).px(px(16.)).pb(px(f.dock_bottom().max(30.0) + f.keyboard)).child(self.ipad_typing(true, cx)));
+        let on_transcript = side_panel == Panel::Transcript;
+        let edit_bar = self.ipad_edit_header(cx).filter(|_| on_transcript);
+        let typing = match self.ipad_select_bar(cx).filter(|_| on_transcript) {
+            Some(bar) => Some(bar.pb(px(f.dock_bottom().max(30.0)))),
+            None => (on_transcript && self.editable() && self.edit.editing.is_none()).then(|| div().flex_none().pt(px(12.)).px(px(16.)).pb(px(f.dock_bottom().max(30.0) + f.keyboard)).child(self.ipad_typing(true, cx))),
+        };
         let sheet = glass(div(), true)
             .id("ipad-sheet")
             .occlude()
@@ -338,7 +352,8 @@ impl Workbench {
                     .flex_col()
                     // Moved by its grip only, a strip over the tabs, so a tap on a tab is never taken for a drag.
                     .child(self.ipad_grip(Grab::Sheet, if compact { 24. } else { 34. }, cx))
-                    .child(div().flex().items_center().gap(px(10.)).pb(px(4.)).px(px(16.)).child(self.ipad_tabs(true, cx)).when(compact, |d| {
+                    .when_some(edit_bar, |d, bar| d.child(bar))
+                    .child(div().flex().items_center().gap(px(10.)).pb(px(4.)).px(px(16.)).when(self.ipad_edit_header_shown() && on_transcript, |d| d.hidden()).child(self.ipad_tabs(true, cx)).when(compact, |d| {
                         d.child(
                             div()
                                 .id("ipad-sheet-close")

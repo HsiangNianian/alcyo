@@ -12,3 +12,4 @@ pub mod spans;
 pub mod speakers;
 pub mod steps;
 pub mod sugiyama;
+pub mod trace;
