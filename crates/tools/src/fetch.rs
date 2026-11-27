@@ -119,27 +119,14 @@ fn voice() -> Result<()> {
             fs::copy(copy, &dest)?;
             continue;
         }
-        let mut sources = vec![];
-        if let Some(path) = file.modelscope {
-            sources.push(alcyo_models::Source { name: "ModelScope".into(), url: format!("https://modelscope.cn/models/{path}"), direct: true });
-        }
-        for (name, host) in [("hf-mirror", "https://hf-mirror.com"), ("Hugging Face", "https://huggingface.co")] {
-            if let Some(path) = &file.huggingface {
-                sources.push(alcyo_models::Source { name: name.into(), url: format!("{host}/{path}"), direct: false });
-            }
-        }
-        if let Some(url) = file.github {
-            sources.push(alcyo_models::Source { name: "GitHub".into(), url: url.into(), direct: false });
-        }
         let model = alcyo_models::Model {
             id: file.name,
             label: file.name,
             file: dest.file_name().context("voice file name")?.to_string_lossy().into_owned(),
             size: file.size,
             sha256: file.sha256.into(),
-            vram_mib: 0,
             note: None,
-            sources,
+            sources: file.sources(),
         };
         println!("fetch: {}", file.name);
         let mut last = u64::MAX;

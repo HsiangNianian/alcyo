@@ -131,9 +131,8 @@ Alcyo 把讨论变成一张持续生长的白板：流程、要点、分工、�
 |---|---|---|
 | **Qwen3-4B（Instruct 2507）· Q4_K_M** | 约 2.5 GB | 默认；笔记本和集成显卡都能用。不能读图。 |
 | **Qwen3.5-4B · Q4_K_M** | 约 2.7 GB | 装上看图插件（约 670 MB）后能读懂图片；画板书不如 Qwen3-4B。 |
-| **Qwen3.5-9B · Q4_K_M** | 约 5.7 GB | 更大；建议 6 GB 以上显存。 |
 
-下载可以暂停和续传，会检查剩余空间并校验 SHA-256，依次尝试 ModelScope、hf-mirror 和 Hugging Face。第一次启动会为显卡编译着色器，大约半分钟，只需一次。
+下载可以暂停和续传，会检查剩余空间并校验 SHA-256，从 Alcyo 自己的镜像（models.alcyo.app）和 ModelScope 中选更快的一个，hf-mirror 和 Hugging Face 作为后备。第一次启动会为显卡编译着色器，大约半分钟，只需一次。
 
 - **会议搜索**：用自己的话提问，就能在所有会议里找到相关的那段。用的是 [EmbeddingGemma 300M](https://huggingface.co/google/embeddinggemma-300m)，每个安装包都自带，在本机运行，遵循 [Gemma 使用条款](https://ai.google.dev/gemma/terms)。默认打开，可以在**设置 › 通用**里关掉；第一次启动会给所有会议建索引，需要一些时间。
 - **默认本地**：音频在本机识别，会议也留在本机。不需要账号或 API key。

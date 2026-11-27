@@ -212,7 +212,10 @@ mod tests {
         write(&p.models.join("Qwen3-4B-Instruct-2507-Q4_K_M.gguf"), 5000);
         write(&p.models.join("some-future-model.gguf"), 3000);
         write(&p.models.join("Qwen3.5-4B-mmproj-F16.gguf"), 2000);
-        write(&p.models.join("Qwen3.5-9B-Q4_K_M.gguf.part"), 1000);
+        write(&p.models.join("Qwen3.5-4B-Q4_K_M.gguf.part"), 1000);
+        // Qwen3.5-9B was dropped from the catalog; a copy downloaded before stays a row, to delete.
+        write(&p.models.join("Qwen3.5-9B-Q4_K_M.gguf"), 6000);
+        write(&p.models.join("Qwen3.5-9B-mmproj-F16.gguf"), 900);
         write(&p.models.join("selected.txt"), 10);
         write(&p.voice.join("sense-voice/model.onnx"), 4000);
         write(&p.search.join(alcyo_models::embedding().file), 700);
@@ -229,7 +232,9 @@ mod tests {
         assert_eq!(find(&Kind::BoardModel("some-future-model.gguf".into())).bytes, 3000, "a model the app does not know is listed too");
         assert_eq!(find(&Kind::BoardModel("Qwen3-4B-Instruct-2507-Q4_K_M.gguf".into())).bytes, 5000);
         assert_eq!(find(&Kind::ImageReader("Qwen3.5-4B-mmproj-F16.gguf".into())).bytes, 2000);
-        assert_eq!(find(&Kind::Unfinished("Qwen3.5-9B-Q4_K_M.gguf".into())).bytes, 1000);
+        assert_eq!(find(&Kind::Unfinished("Qwen3.5-4B-Q4_K_M.gguf".into())).bytes, 1000);
+        assert!(find(&Kind::BoardModel("Qwen3.5-9B-Q4_K_M.gguf".into())).deletable(), "a dropped model is still listed to delete");
+        assert!(find(&Kind::ImageReader("Qwen3.5-9B-mmproj-F16.gguf".into())).deletable());
         assert!(find(&Kind::Speech).built_in && find(&Kind::Speech).bytes == 4000);
         assert!(find(&Kind::SearchModel).built_in);
         assert_eq!(find(&Kind::Meetings).bytes, 1050, "meetings, their sound and the inbox");

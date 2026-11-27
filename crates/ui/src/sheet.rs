@@ -987,9 +987,9 @@ impl Workbench {
         };
         let current = alcyo_models::current(&self.models);
         let using_remote = self.form.saved.enabled && self.form.saved.is_complete();
-        let recommended = alcyo_models::recommended(0);
+        let recommended = alcyo_models::recommended();
         let busy = self.download.as_ref().map(|d| (d.id, d.progress.as_ref().map_or(0.0, |p| p.done as f32 / p.total.max(1) as f32)));
-        let models = alcyo_models::catalog().into_iter().filter(|m| m.vram_mib == 0).enumerate().map(|(i, model)| {
+        let models = alcyo_models::catalog().into_iter().enumerate().map(|(i, model)| {
             let installed = alcyo_models::installed(&model, &self.models);
             let active = !using_remote && current.as_ref().is_some_and(|path| path.ends_with(&model.file));
             let what = match model.id {
